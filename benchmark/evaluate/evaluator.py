@@ -245,7 +245,7 @@ def evaluate_output(
         i = page.index
         notes: list[str] = []
         base = cache.get("src", source, i, configs[0])
-        pc = PageCells.build(page, cfg.dpi, base.shape)
+        pc = PageCells.build(page, cfg.dpi, base.shape, cfg.bands)
         pcs[i] = pc
         region_units[i] = defaultdict(list)
         for c in pc.cells:

@@ -24,7 +24,7 @@ from ..schemas import GTPage
 from .config import EvalConfig
 
 
-BANDS = 3  # sub-cells across the text line: top / middle / bottom
+BANDS = 4  # default sub-cells across the text line (EvalConfig.bands); calibrated in docs/metrics.md
 
 
 @dataclass
@@ -60,7 +60,7 @@ class PageCells:
     cols: list[np.ndarray] = field(default_factory=list)
 
     @classmethod
-    def build(cls, page: GTPage, dpi: float, shape: tuple[int, int]) -> "PageCells":
+    def build(cls, page: GTPage, dpi: float, shape: tuple[int, int], bands: int = BANDS) -> "PageCells":
         pc = cls(page=page, dpi=dpi, shape=shape)
         for w in page.words:
             if w.char_polys:
@@ -69,7 +69,7 @@ class PageCells:
                 polys = oriented_cells(as_poly(w.poly), max(1, len(w.text)), w.angle)
             idxs = []
             for k, p in enumerate(polys):
-                for b, band in enumerate(oriented_cells(p, BANDS, w.angle + 90.0)):
+                for b, band in enumerate(oriented_cells(p, bands, w.angle + 90.0)):
                     idxs.append(pc._add(Cell(w.id, None, k, b, band)))
             pc.word_cells[w.id] = idxs
         for r in page.regions:
@@ -80,7 +80,7 @@ class PageCells:
             angle = 0.0 if (x1 - x0) >= (y1 - y0) else 90.0
             idxs = []
             for k, p in enumerate(oriented_cells(poly, n, angle)):
-                for b, band in enumerate(oriented_cells(p, BANDS, angle + 90.0)):
+                for b, band in enumerate(oriented_cells(p, bands, angle + 90.0)):
                     idxs.append(pc._add(Cell(None, r.id, k, b, band)))
             pc.region_cells[r.id] = idxs
         return pc
@@ -149,10 +149,20 @@ class PageCells:
 Unit = tuple[str, int]  # (word or region id, character / slice index)
 
 
+def run_needed(word_length: int) -> int:
+    """Consecutive visible characters needed for any of them to count: 1 for initials,
+    2 for short words, 3 for words of 6+ characters (where two adjacent capitals of a
+    different name can match the original's strokes by chance)."""
+    if word_length <= 2:
+        return 1
+    return 2 if word_length < 6 else 3
+
+
 def unit_flags(pc: PageCells, informative: np.ndarray, flags: np.ndarray) -> dict[Unit, bool]:
     """Aggregate band evidence to characters (units). Only informative units appear.
 
-    A character counts when (a) at least two of its bands are flagged, or one band is
+    A character counts when (a) at least two of its informative bands are flagged (all of
+    them if it has only one, e.g. a dash), or one band is
     flagged together with the same band of a neighbouring character (a box shifted
     half a line leaves whole top bands legible), and (b) it belongs to a run of at
     least two such characters, unless its word has at most two characters (initials).
@@ -170,11 +180,22 @@ def unit_flags(pc: PageCells, informative: np.ndarray, flags: np.ndarray) -> dic
     for (owner, idx), b in bands.items():
         n = sum(b.values())
         neighbour = any(v and bands.get((owner, idx + d), {}).get(bi, False) for bi, v in b.items() for d in (-1, 1))
-        char[(owner, idx)] = n >= 2 or (n >= 1 and neighbour)
+        # min(2, informative bands): a glyph with ink in a single band (a dash, a full stop)
+        # counts when that band survives.
+        char[(owner, idx)] = n >= min(2, len(b)) or (n >= 1 and neighbour)
     out: dict[Unit, bool] = {}
     for (owner, idx), v in char.items():
-        out[(owner, idx)] = v and (length[owner] <= 2 or char.get((owner, idx - 1), False)
-                                   or char.get((owner, idx + 1), False))
+        need = run_needed(length[owner])
+        if not v:
+            out[(owner, idx)] = False
+            continue
+        lo = idx
+        while char.get((owner, lo - 1), False):
+            lo -= 1
+        hi = idx
+        while char.get((owner, hi + 1), False):
+            hi += 1
+        out[(owner, idx)] = hi - lo + 1 >= need
     return out
 
 

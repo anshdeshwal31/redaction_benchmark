@@ -125,7 +125,8 @@ def test_partial_boxes_are_partial_leaks():
 def test_box_shifted_half_a_line_leaves_legible_tops(variant):
     ev = evaluated(variant, MockSpec("shift", method="rasterize", shift_pt=(0, 6)))
     statuses = [m.status for m in must(ev)]
-    assert statuses.count(MentionStatus.PARTIAL) >= len(statuses) // 2
+    leaking = [s for s in statuses if s in (MentionStatus.PARTIAL, MentionStatus.LEAK_VISIBLE)]
+    assert len(leaking) >= len(statuses) // 2
 
 
 def test_dpi_scale_confusion_misses_everything():

@@ -1,4 +1,4 @@
-# Metric definitions (evaluation version eval-0.1)
+# Metric definitions (evaluation version eval-0.2)
 
 All thresholds live in `benchmark/evaluate/config.py` (`EvalConfig`). Every result
 records the configuration digest; changing a threshold creates a new evaluation version.
@@ -8,7 +8,7 @@ records the configuration digest; changing a threshold creates a new evaluation 
 - **GT word**: a word of the visible page, with a polygon in `display_pt`.
 - **Character cell**: one character of a GT word (exact box for born-digital words,
   otherwise an equal split of the word polygon along its reading direction).
-- **Band**: a third of a character cell across the text line (top, middle, bottom).
+- **Band**: a quarter of a character cell across the text line (`EvalConfig.bands`, default 4).
 - **Unit**: one character (or one slice of a non-text region such as a signature).
 
 ## End-to-end verdict per required mention
@@ -19,23 +19,36 @@ For each band the original and output renderings (same engine, same DPI) are com
   contrast / original contrast.
 - A band is **visible** if `|ncc| ≥ 0.6`, `amp ≥ 0.35` and output contrast ≥ 6 grey levels;
   **latent** if correlated but fainter (above noise).
-- Bands aggregate to units: a character counts when ≥ 2 of its bands are flagged, or one
-  band together with the same band of a neighbour, *and* it is part of a run of ≥ 2 such
-  characters (single characters count only in words of ≤ 2 characters, e.g. initials).
+- Bands aggregate to units: a character counts when at least two of its informative bands
+  are flagged (its only band, for glyphs such as a dash), or one band together with the same
+  band of a neighbour; *and* it belongs to a run of visible characters of at least 3 (words of
+  6+ characters), 2 (shorter words) or 1 (initials).
 
-The rule was calibrated on synthetic fixtures across five encodings (digital, single
-raster, MRC, vector outline, rotated content) at 150 and 200 DPI:
+Calibration (`EvalConfig` eval-0.2), synthetic fixtures in six encodings (digital, single
+raster, raster skewed 1.2°, MRC, vector outline, content rotated 90°), 72 required mentions
+each, MuPDF renderer:
 
-| Situation | Characters judged visible |
-|---|---|
-| Untouched text | 100% |
-| Removed (true redaction or rasterised black box) | 0% |
-| Replaced by a different name | ~1% at band level, 0% after the run rule |
-| Gaussian blur (σ 1.2) | ≥ 99% (blur is not redaction) |
-| Box shifted down half a line | ~34% (tops of letters legible) |
+| Situation | Judged not safe, 150 DPI | 200 DPI | 300 DPI |
+|---|---|---|---|
+| True redaction / rasterised black box | 0 / 72 | 0 / 72 | 0 / 72 |
+| Box offset by half a text line (perpendicular to the reading direction) | 72 / 72 | 72 / 72 | 72 / 72 |
+| Box covering half of each word | 72 / 72 | 72 / 72 | 72 / 72 |
+| Gaussian blur (σ 1.2) | 72 / 72 | 72 / 72 | 72 / 72 |
+| Names and contact details correctly pseudonymised (text and rasterised) | 0 / 26 | 0 / 26 | 0 / 26 |
 
-The evaluator is valid between 150 and 300 DPI (`EvalConfig.dpi` enforces ≥ 150); below
-~120 DPI, bands of 8 pt text are too coarse and produce false leaks.
+eval-0.1 used three bands and a run of 2 for every word. It missed 17 of 59 half-line
+offsets (the uncovered top half of rotated lowercase text sits in half-uncovered bands whose
+correlation stays below the threshold), and four bands with the old run rule flagged two
+correct replacements of an all-capitals surname (adjacent capitals with similar strokes).
+Both were found by running the evaluator self-check on more layouts.
+
+Real documents (machine-drafted GT, so names without titles were not annotated): every
+self-check passes on the two born-digital seed documents (TRN 4 pages, PSY 23 pages, 118
+required mentions). Under eval-0.1, blur on 9-pt bold running headers was judged `PARTIAL`;
+under eval-0.2 all 118 blurred mentions are `LEAK_VISIBLE`. The scanned seed documents need GT
+first.
+
+The evaluator is valid between 150 and 300 DPI (`EvalConfig.dpi` enforces ≥ 150).
 
 Each required mention then gets exactly one status, checked in this order:
 
