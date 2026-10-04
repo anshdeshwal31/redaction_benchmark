@@ -1,0 +1,23 @@
+# Environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.hypothesis/
+
+# Sensitive material. Source documents, ground-truth drafts and every generated
+# artifact (renders, inventories, candidate outputs, reports) can contain real PII.
+# Nothing here is committed until the data-governance decision (PLAN.md §16 Q12) is made.
+representative_pdfs/
+data/
+runs/
+results/
+*.pdf
+
+# Packaging artefacts
+*.egg-info/
+
+# Dataset manifests and datasheets derived from the real seed PDFs (hashes, per-page
+# measurements). Regenerate with `rb dataset ingest`; track only once Q12 is decided.
+datasets/seed/
