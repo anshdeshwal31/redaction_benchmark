@@ -1,0 +1,863 @@
+{
+ "$defs": {
+  "AttributeValue": {
+   "additionalProperties": false,
+   "properties": {
+    "value": {
+     "title": "Value",
+     "type": "string"
+    },
+    "evidence": {
+     "default": [],
+     "items": {
+      "type": "string"
+     },
+     "title": "Evidence",
+     "type": "array"
+    }
+   },
+   "required": [
+    "value"
+   ],
+   "title": "AttributeValue",
+   "type": "object"
+  },
+  "ClassifiedClass": {
+   "description": "Non-PII content that matters for over-redaction (PLAN.md §1.1 finding 7, §3.4).",
+   "enum": [
+    "MEDICAL_TERM",
+    "MEDICATION",
+    "MEDICAL_EPONYM",
+    "LEGAL_CITATION",
+    "HOMOGRAPH_COMMON_WORD",
+    "BOILERPLATE",
+    "PLACEHOLDER_PSEUDONYM",
+    "OTHER_PROTECTED"
+   ],
+   "title": "ClassifiedClass",
+   "type": "string"
+  },
+  "EntityKind": {
+   "enum": [
+    "person",
+    "organisation",
+    "location",
+    "other"
+   ],
+   "title": "EntityKind",
+   "type": "string"
+  },
+  "GTClassified": {
+   "additionalProperties": false,
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "cls": {
+     "$ref": "#/$defs/ClassifiedClass"
+    },
+    "segments": {
+     "items": {
+      "$ref": "#/$defs/Segment"
+     },
+     "minItems": 1,
+     "title": "Segments",
+     "type": "array"
+    },
+    "text": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Text"
+    },
+    "note": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Note"
+    }
+   },
+   "required": [
+    "id",
+    "cls",
+    "segments"
+   ],
+   "title": "GTClassified",
+   "type": "object"
+  },
+  "GTEntity": {
+   "additionalProperties": false,
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "kind": {
+     "$ref": "#/$defs/EntityKind"
+    },
+    "role": {
+     "$ref": "#/$defs/Role",
+     "default": "unknown"
+    },
+    "canonical_name": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Canonical Name"
+    },
+    "attributes": {
+     "additionalProperties": {
+      "$ref": "#/$defs/AttributeValue"
+     },
+     "default": {},
+     "title": "Attributes",
+     "type": "object"
+    },
+    "matter": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Matter"
+    }
+   },
+   "required": [
+    "id",
+    "kind"
+   ],
+   "title": "GTEntity",
+   "type": "object"
+  },
+  "GTMention": {
+   "additionalProperties": false,
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "type": {
+     "$ref": "#/$defs/PiiType"
+    },
+    "subtype": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Subtype"
+    },
+    "entity": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Entity"
+    },
+    "text": {
+     "description": "The mention as it appears, segments joined by single spaces",
+     "title": "Text",
+     "type": "string"
+    },
+    "segments": {
+     "items": {
+      "$ref": "#/$defs/Segment"
+     },
+     "minItems": 1,
+     "title": "Segments",
+     "type": "array"
+    },
+    "optional_words": {
+     "default": [],
+     "description": "Words whose redaction is neither required nor penalised",
+     "items": {
+      "type": "string"
+     },
+     "title": "Optional Words",
+     "type": "array"
+    },
+    "components": {
+     "additionalProperties": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "default": {},
+     "propertyNames": {
+      "$ref": "#/$defs/NameComponent"
+     },
+     "title": "Components",
+     "type": "object"
+    },
+    "form": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Form"
+    },
+    "parent": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Enclosing mention for nested PII",
+     "title": "Parent"
+    },
+    "conditions": {
+     "default": [],
+     "items": {
+      "type": "string"
+     },
+     "title": "Conditions",
+     "type": "array"
+    }
+   },
+   "required": [
+    "id",
+    "type",
+    "text",
+    "segments"
+   ],
+   "title": "GTMention",
+   "type": "object"
+  },
+  "GTPage": {
+   "additionalProperties": false,
+   "properties": {
+    "index": {
+     "minimum": 0,
+     "title": "Index",
+     "type": "integer"
+    },
+    "width_pt": {
+     "description": "Display width (after /Rotate)",
+     "exclusiveMinimum": 0,
+     "title": "Width Pt",
+     "type": "number"
+    },
+    "height_pt": {
+     "description": "Display height (after /Rotate)",
+     "exclusiveMinimum": 0,
+     "title": "Height Pt",
+     "type": "number"
+    },
+    "rotation": {
+     "default": 0,
+     "enum": [
+      0,
+      90,
+      180,
+      270
+     ],
+     "title": "Rotation",
+     "type": "integer"
+    },
+    "conditions": {
+     "default": [],
+     "items": {
+      "type": "string"
+     },
+     "title": "Conditions",
+     "type": "array"
+    },
+    "measured": {
+     "additionalProperties": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "integer"
+       },
+       {
+        "type": "string"
+       },
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "default": {},
+     "title": "Measured",
+     "type": "object"
+    },
+    "words": {
+     "default": [],
+     "items": {
+      "$ref": "#/$defs/GTWord"
+     },
+     "title": "Words",
+     "type": "array"
+    },
+    "regions": {
+     "default": [],
+     "items": {
+      "$ref": "#/$defs/GTRegion"
+     },
+     "title": "Regions",
+     "type": "array"
+    }
+   },
+   "required": [
+    "index",
+    "width_pt",
+    "height_pt"
+   ],
+   "title": "GTPage",
+   "type": "object"
+  },
+  "GTRegion": {
+   "additionalProperties": false,
+   "description": "Non-text visual content: signatures, initials, avatars, photos, logos, stamps.",
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "kind": {
+     "$ref": "#/$defs/RegionKind"
+    },
+    "poly": {
+     "description": "Vertices in the declared frame",
+     "items": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "number"
+       }
+      ],
+      "type": "array"
+     },
+     "minItems": 3,
+     "title": "Poly",
+     "type": "array"
+    },
+    "transcription": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Transcription"
+    }
+   },
+   "required": [
+    "id",
+    "kind",
+    "poly"
+   ],
+   "title": "GTRegion",
+   "type": "object"
+  },
+  "GTRelation": {
+   "additionalProperties": false,
+   "properties": {
+    "type": {
+     "title": "Type",
+     "type": "string"
+    },
+    "source": {
+     "title": "Source",
+     "type": "string"
+    },
+    "target": {
+     "title": "Target",
+     "type": "string"
+    }
+   },
+   "required": [
+    "type",
+    "source",
+    "target"
+   ],
+   "title": "GTRelation",
+   "type": "object"
+  },
+  "GTWord": {
+   "additionalProperties": false,
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "text": {
+     "title": "Text",
+     "type": "string"
+    },
+    "poly": {
+     "description": "Vertices in the declared frame",
+     "items": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "number"
+       }
+      ],
+      "type": "array"
+     },
+     "minItems": 3,
+     "title": "Poly",
+     "type": "array"
+    },
+    "order": {
+     "description": "Reading order within the page",
+     "minimum": 0,
+     "title": "Order",
+     "type": "integer"
+    },
+    "line": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Line"
+    },
+    "block": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Block"
+    },
+    "angle": {
+     "default": 0.0,
+     "description": "Baseline direction, degrees clockwise from +x in display_pt",
+     "title": "Angle",
+     "type": "number"
+    },
+    "source": {
+     "$ref": "#/$defs/WordSource"
+    },
+    "legibility": {
+     "$ref": "#/$defs/Legibility",
+     "default": "clear"
+    },
+    "char_polys": {
+     "anyOf": [
+      {
+       "items": {
+        "description": "Vertices in the declared frame",
+        "items": {
+         "maxItems": 2,
+         "minItems": 2,
+         "prefixItems": [
+          {
+           "type": "number"
+          },
+          {
+           "type": "number"
+          }
+         ],
+         "type": "array"
+        },
+        "minItems": 3,
+        "type": "array"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Exact character cells when known (born-digital); one per character of `text`",
+     "title": "Char Polys"
+    }
+   },
+   "required": [
+    "id",
+    "text",
+    "poly",
+    "order",
+    "source"
+   ],
+   "title": "GTWord",
+   "type": "object"
+  },
+  "Legibility": {
+   "enum": [
+    "clear",
+    "degraded",
+    "illegible"
+   ],
+   "title": "Legibility",
+   "type": "string"
+  },
+  "NameComponent": {
+   "enum": [
+    "title",
+    "given",
+    "middle",
+    "surname",
+    "nickname",
+    "initials",
+    "former_surname",
+    "suffix"
+   ],
+   "title": "NameComponent",
+   "type": "string"
+  },
+  "PiiType": {
+   "enum": [
+    "PERSON_NAME",
+    "SIGNATURE",
+    "HANDWRITTEN_MARK",
+    "IMAGE_PII",
+    "ADDRESS",
+    "LOCATION",
+    "PHONE",
+    "EMAIL",
+    "URL",
+    "DATE",
+    "AGE",
+    "ID_CLAIM",
+    "ID_LEGAL_REF",
+    "ID_PROVIDER",
+    "ID_GOVERNMENT",
+    "ID_BUSINESS",
+    "ID_FINANCIAL",
+    "ID_OTHER",
+    "FILE_PATH",
+    "ORGANISATION",
+    "QUASI_IDENTIFIER"
+   ],
+   "title": "PiiType",
+   "type": "string"
+  },
+  "RegionKind": {
+   "enum": [
+    "signature",
+    "initials",
+    "handwriting",
+    "photo",
+    "avatar",
+    "logo",
+    "stamp",
+    "other"
+   ],
+   "title": "RegionKind",
+   "type": "string"
+  },
+  "Role": {
+   "enum": [
+    "claimant",
+    "family_member",
+    "treating_clinician",
+    "examining_expert",
+    "legal_representative",
+    "insurer_staff",
+    "employer_staff",
+    "witness",
+    "alleged_perpetrator",
+    "official",
+    "admin_staff",
+    "other_private",
+    "org_employer",
+    "org_clinic",
+    "org_law_firm",
+    "org_insurer",
+    "org_school",
+    "org_government",
+    "org_other",
+    "unknown"
+   ],
+   "title": "Role",
+   "type": "string"
+  },
+  "Segment": {
+   "additionalProperties": false,
+   "description": "A contiguous piece of a mention on one page.\n\n``char_start``/``char_end`` select a sub-word span (e.g. the name inside an email\naddress) and are only valid when the segment has exactly one word.",
+   "properties": {
+    "page": {
+     "minimum": 0,
+     "title": "Page",
+     "type": "integer"
+    },
+    "words": {
+     "default": [],
+     "items": {
+      "type": "string"
+     },
+     "title": "Words",
+     "type": "array"
+    },
+    "regions": {
+     "default": [],
+     "items": {
+      "type": "string"
+     },
+     "title": "Regions",
+     "type": "array"
+    },
+    "char_start": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Char Start"
+    },
+    "char_end": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Char End"
+    }
+   },
+   "required": [
+    "page"
+   ],
+   "title": "Segment",
+   "type": "object"
+  },
+  "SurfaceItem": {
+   "additionalProperties": false,
+   "description": "PII outside the page content: metadata fields, filename, outlines, ...",
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "location": {
+     "description": "e.g. \"info:/Author\", \"xmp\", \"filename\", \"outline\"",
+     "title": "Location",
+     "type": "string"
+    },
+    "text": {
+     "title": "Text",
+     "type": "string"
+    },
+    "type": {
+     "$ref": "#/$defs/PiiType"
+    },
+    "entity": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Entity"
+    }
+   },
+   "required": [
+    "id",
+    "location",
+    "text",
+    "type"
+   ],
+   "title": "SurfaceItem",
+   "type": "object"
+  },
+  "WordSource": {
+   "enum": [
+    "text_layer",
+    "raster",
+    "vector",
+    "handwriting"
+   ],
+   "title": "WordSource",
+   "type": "string"
+  }
+ },
+ "additionalProperties": false,
+ "properties": {
+  "schema": {
+   "const": "rb.gt/0.1",
+   "default": "rb.gt/0.1",
+   "title": "Schema",
+   "type": "string"
+  },
+  "doc_id": {
+   "minLength": 1,
+   "title": "Doc Id",
+   "type": "string"
+  },
+  "source_sha256": {
+   "pattern": "^[0-9a-f]{64}$",
+   "title": "Source Sha256",
+   "type": "string"
+  },
+  "gt_version": {
+   "title": "Gt Version",
+   "type": "string"
+  },
+  "matter": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Matter"
+  },
+  "pages": {
+   "items": {
+    "$ref": "#/$defs/GTPage"
+   },
+   "title": "Pages",
+   "type": "array"
+  },
+  "mentions": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/GTMention"
+   },
+   "title": "Mentions",
+   "type": "array"
+  },
+  "entities": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/GTEntity"
+   },
+   "title": "Entities",
+   "type": "array"
+  },
+  "relations": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/GTRelation"
+   },
+   "title": "Relations",
+   "type": "array"
+  },
+  "classified": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/GTClassified"
+   },
+   "title": "Classified",
+   "type": "array"
+  },
+  "surface": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/SurfaceItem"
+   },
+   "title": "Surface",
+   "type": "array"
+  },
+  "annotators": {
+   "default": [],
+   "items": {
+    "type": "string"
+   },
+   "title": "Annotators",
+   "type": "array"
+  },
+  "notes": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Notes"
+  }
+ },
+ "required": [
+  "doc_id",
+  "source_sha256",
+  "gt_version",
+  "pages"
+ ],
+ "title": "GTDocument",
+ "type": "object"
+}

@@ -1,0 +1,130 @@
+{
+ "$defs": {
+  "ModelInfo": {
+   "additionalProperties": false,
+   "properties": {
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "version": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Version"
+    },
+    "extra": {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "default": {},
+     "title": "Extra",
+     "type": "object"
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "title": "ModelInfo",
+   "type": "object"
+  }
+ },
+ "additionalProperties": false,
+ "properties": {
+  "schema": {
+   "const": "rb.runinfo/0.1",
+   "default": "rb.runinfo/0.1",
+   "title": "Schema",
+   "type": "string"
+  },
+  "candidate": {
+   "title": "Candidate",
+   "type": "string"
+  },
+  "candidate_version": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Candidate Version"
+  },
+  "config": {
+   "additionalProperties": true,
+   "default": {},
+   "title": "Config",
+   "type": "object"
+  },
+  "seed": {
+   "anyOf": [
+    {
+     "type": "integer"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Seed"
+  },
+  "models": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/ModelInfo"
+   },
+   "title": "Models",
+   "type": "array"
+  },
+  "started_at": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Started At"
+  },
+  "finished_at": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Finished At"
+  },
+  "notes": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Notes"
+  }
+ },
+ "required": [
+  "candidate"
+ ],
+ "title": "RunInfo",
+ "type": "object"
+}

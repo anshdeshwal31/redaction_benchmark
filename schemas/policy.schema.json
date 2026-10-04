@@ -1,0 +1,302 @@
+{
+ "$defs": {
+  "Action": {
+   "enum": [
+    "remove",
+    "replace",
+    "either"
+   ],
+   "title": "Action",
+   "type": "string"
+  },
+  "ClassifiedClass": {
+   "description": "Non-PII content that matters for over-redaction (PLAN.md §1.1 finding 7, §3.4).",
+   "enum": [
+    "MEDICAL_TERM",
+    "MEDICATION",
+    "MEDICAL_EPONYM",
+    "LEGAL_CITATION",
+    "HOMOGRAPH_COMMON_WORD",
+    "BOILERPLATE",
+    "PLACEHOLDER_PSEUDONYM",
+    "OTHER_PROTECTED"
+   ],
+   "title": "ClassifiedClass",
+   "type": "string"
+  },
+  "EntityKind": {
+   "enum": [
+    "person",
+    "organisation",
+    "location",
+    "other"
+   ],
+   "title": "EntityKind",
+   "type": "string"
+  },
+  "PiiType": {
+   "enum": [
+    "PERSON_NAME",
+    "SIGNATURE",
+    "HANDWRITTEN_MARK",
+    "IMAGE_PII",
+    "ADDRESS",
+    "LOCATION",
+    "PHONE",
+    "EMAIL",
+    "URL",
+    "DATE",
+    "AGE",
+    "ID_CLAIM",
+    "ID_LEGAL_REF",
+    "ID_PROVIDER",
+    "ID_GOVERNMENT",
+    "ID_BUSINESS",
+    "ID_FINANCIAL",
+    "ID_OTHER",
+    "FILE_PATH",
+    "ORGANISATION",
+    "QUASI_IDENTIFIER"
+   ],
+   "title": "PiiType",
+   "type": "string"
+  },
+  "PolicyMatch": {
+   "additionalProperties": false,
+   "properties": {
+    "target": {
+     "default": "mention",
+     "enum": [
+      "mention",
+      "classified"
+     ],
+     "title": "Target",
+     "type": "string"
+    },
+    "type": {
+     "anyOf": [
+      {
+       "items": {
+        "$ref": "#/$defs/PiiType"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Type"
+    },
+    "subtype": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Subtype"
+    },
+    "role": {
+     "anyOf": [
+      {
+       "items": {
+        "$ref": "#/$defs/Role"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Role"
+    },
+    "entity_kind": {
+     "anyOf": [
+      {
+       "items": {
+        "$ref": "#/$defs/EntityKind"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Entity Kind"
+    },
+    "cls": {
+     "anyOf": [
+      {
+       "items": {
+        "$ref": "#/$defs/ClassifiedClass"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Cls"
+    }
+   },
+   "title": "PolicyMatch",
+   "type": "object"
+  },
+  "PolicyRule": {
+   "additionalProperties": false,
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "when": {
+     "$ref": "#/$defs/PolicyMatch"
+    },
+    "requirement": {
+     "$ref": "#/$defs/Requirement"
+    },
+    "action": {
+     "$ref": "#/$defs/Action",
+     "default": "either"
+    },
+    "pending": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Open question this rule depends on, e.g. 'Q3'",
+     "title": "Pending"
+    },
+    "note": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Note"
+    }
+   },
+   "required": [
+    "id",
+    "when",
+    "requirement"
+   ],
+   "title": "PolicyRule",
+   "type": "object"
+  },
+  "Requirement": {
+   "enum": [
+    "MUST",
+    "MAY",
+    "MUST_NOT"
+   ],
+   "title": "Requirement",
+   "type": "string"
+  },
+  "Role": {
+   "enum": [
+    "claimant",
+    "family_member",
+    "treating_clinician",
+    "examining_expert",
+    "legal_representative",
+    "insurer_staff",
+    "employer_staff",
+    "witness",
+    "alleged_perpetrator",
+    "official",
+    "admin_staff",
+    "other_private",
+    "org_employer",
+    "org_clinic",
+    "org_law_firm",
+    "org_insurer",
+    "org_school",
+    "org_government",
+    "org_other",
+    "unknown"
+   ],
+   "title": "Role",
+   "type": "string"
+  }
+ },
+ "additionalProperties": false,
+ "properties": {
+  "schema": {
+   "const": "rb.policy/0.1",
+   "default": "rb.policy/0.1",
+   "title": "Schema",
+   "type": "string"
+  },
+  "name": {
+   "title": "Name",
+   "type": "string"
+  },
+  "version": {
+   "title": "Version",
+   "type": "string"
+  },
+  "description": {
+   "default": "",
+   "title": "Description",
+   "type": "string"
+  },
+  "consistency_scope": {
+   "default": "pending",
+   "enum": [
+    "document",
+    "matter",
+    "global",
+    "pending"
+   ],
+   "title": "Consistency Scope",
+   "type": "string"
+  },
+  "rules": {
+   "items": {
+    "$ref": "#/$defs/PolicyRule"
+   },
+   "title": "Rules",
+   "type": "array"
+  },
+  "default_mention": {
+   "$ref": "#/$defs/Requirement",
+   "default": "MAY"
+  },
+  "default_classified": {
+   "$ref": "#/$defs/Requirement",
+   "default": "MUST_NOT"
+  },
+  "optional_words": {
+   "$ref": "#/$defs/Requirement",
+   "default": "MAY"
+  }
+ },
+ "required": [
+  "name",
+  "version",
+  "rules"
+ ],
+ "title": "PolicyProfile",
+ "type": "object"
+}

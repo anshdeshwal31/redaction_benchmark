@@ -1,0 +1,57 @@
+{
+ "$defs": {
+  "Cluster": {
+   "additionalProperties": false,
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "mentions": {
+     "items": {
+      "type": "string"
+     },
+     "minItems": 1,
+     "title": "Mentions",
+     "type": "array"
+    },
+    "attributes": {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "default": {},
+     "title": "Attributes",
+     "type": "object"
+    }
+   },
+   "required": [
+    "id",
+    "mentions"
+   ],
+   "title": "Cluster",
+   "type": "object"
+  }
+ },
+ "additionalProperties": false,
+ "properties": {
+  "schema": {
+   "const": "rb.entities/0.1",
+   "default": "rb.entities/0.1",
+   "title": "Schema",
+   "type": "string"
+  },
+  "clusters": {
+   "items": {
+    "$ref": "#/$defs/Cluster"
+   },
+   "title": "Clusters",
+   "type": "array"
+  }
+ },
+ "required": [
+  "clusters"
+ ],
+ "title": "EntitiesArtifact",
+ "type": "object"
+}

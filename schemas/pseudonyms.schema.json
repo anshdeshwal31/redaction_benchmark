@@ -1,0 +1,81 @@
+{
+ "$defs": {
+  "MentionReplacement": {
+   "additionalProperties": false,
+   "properties": {
+    "mention": {
+     "title": "Mention",
+     "type": "string"
+    },
+    "replacement": {
+     "title": "Replacement",
+     "type": "string"
+    }
+   },
+   "required": [
+    "mention",
+    "replacement"
+   ],
+   "title": "MentionReplacement",
+   "type": "object"
+  },
+  "PseudonymEntry": {
+   "additionalProperties": false,
+   "properties": {
+    "cluster": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Cluster"
+    },
+    "original": {
+     "title": "Original",
+     "type": "string"
+    },
+    "replacement": {
+     "title": "Replacement",
+     "type": "string"
+    }
+   },
+   "required": [
+    "original",
+    "replacement"
+   ],
+   "title": "PseudonymEntry",
+   "type": "object"
+  }
+ },
+ "additionalProperties": false,
+ "properties": {
+  "schema": {
+   "const": "rb.pseudonyms/0.1",
+   "default": "rb.pseudonyms/0.1",
+   "title": "Schema",
+   "type": "string"
+  },
+  "entries": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/PseudonymEntry"
+   },
+   "title": "Entries",
+   "type": "array"
+  },
+  "mentions": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/MentionReplacement"
+   },
+   "title": "Mentions",
+   "type": "array"
+  }
+ },
+ "title": "PseudonymsArtifact",
+ "type": "object"
+}

@@ -1,0 +1,386 @@
+{
+ "$defs": {
+  "Datasheet": {
+   "additionalProperties": false,
+   "properties": {
+    "document_type": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Document Type"
+    },
+    "provenance": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Provenance"
+    },
+    "authorisation": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Authorisation"
+    },
+    "notes": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Notes"
+    }
+   },
+   "title": "Datasheet",
+   "type": "object"
+  },
+  "DocumentEntry": {
+   "additionalProperties": false,
+   "properties": {
+    "doc_id": {
+     "minLength": 1,
+     "title": "Doc Id",
+     "type": "string"
+    },
+    "sha256": {
+     "pattern": "^[0-9a-f]{64}$",
+     "title": "Sha256",
+     "type": "string"
+    },
+    "size_bytes": {
+     "exclusiveMinimum": 0,
+     "title": "Size Bytes",
+     "type": "integer"
+    },
+    "page_count": {
+     "exclusiveMinimum": 0,
+     "title": "Page Count",
+     "type": "integer"
+    },
+    "split": {
+     "enum": [
+      "dev",
+      "test",
+      "regression",
+      "synthetic"
+     ],
+     "title": "Split",
+     "type": "string"
+    },
+    "matter": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Matter"
+    },
+    "gt_version": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Gt Version"
+    },
+    "pdf_version": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Pdf Version"
+    },
+    "producer": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Producer"
+    },
+    "metadata_keys": {
+     "default": [],
+     "items": {
+      "type": "string"
+     },
+     "title": "Metadata Keys",
+     "type": "array"
+    },
+    "has_xmp": {
+     "default": false,
+     "title": "Has Xmp",
+     "type": "boolean"
+    },
+    "encrypted": {
+     "default": false,
+     "title": "Encrypted",
+     "type": "boolean"
+    },
+    "revisions": {
+     "default": 1,
+     "description": "Number of %%EOF-terminated revisions",
+     "minimum": 1,
+     "title": "Revisions",
+     "type": "integer"
+    },
+    "page_conditions": {
+     "items": {
+      "$ref": "#/$defs/PageConditions"
+     },
+     "title": "Page Conditions",
+     "type": "array"
+    },
+    "datasheet": {
+     "$ref": "#/$defs/Datasheet",
+     "default": {
+      "document_type": null,
+      "provenance": null,
+      "authorisation": null,
+      "notes": null
+     }
+    }
+   },
+   "required": [
+    "doc_id",
+    "sha256",
+    "size_bytes",
+    "page_count",
+    "split",
+    "page_conditions"
+   ],
+   "title": "DocumentEntry",
+   "type": "object"
+  },
+  "PageConditions": {
+   "additionalProperties": false,
+   "properties": {
+    "index": {
+     "minimum": 0,
+     "title": "Index",
+     "type": "integer"
+    },
+    "display_w": {
+     "title": "Display W",
+     "type": "number"
+    },
+    "display_h": {
+     "title": "Display H",
+     "type": "number"
+    },
+    "rotation_attr": {
+     "enum": [
+      0,
+      90,
+      180,
+      270
+     ],
+     "title": "Rotation Attr",
+     "type": "integer"
+    },
+    "cropbox_offset": {
+     "title": "Cropbox Offset",
+     "type": "boolean"
+    },
+    "encoding": {
+     "$ref": "#/$defs/PageEncoding"
+    },
+    "text_chars": {
+     "minimum": 0,
+     "title": "Text Chars",
+     "type": "integer"
+    },
+    "invisible_text_chars": {
+     "minimum": 0,
+     "title": "Invisible Text Chars",
+     "type": "integer"
+    },
+    "image_count": {
+     "minimum": 0,
+     "title": "Image Count",
+     "type": "integer"
+    },
+    "bilevel_image_count": {
+     "minimum": 0,
+     "title": "Bilevel Image Count",
+     "type": "integer"
+    },
+    "image_coverage": {
+     "description": "Fraction of the page covered by image placements",
+     "minimum": 0,
+     "title": "Image Coverage",
+     "type": "number"
+    },
+    "full_page_image_dpi": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Full Page Image Dpi"
+    },
+    "vector_paths": {
+     "minimum": 0,
+     "title": "Vector Paths",
+     "type": "integer"
+    },
+    "skew_deg": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Estimated text skew of raster content",
+     "title": "Skew Deg"
+    },
+    "text_axis": {
+     "anyOf": [
+      {
+       "enum": [
+        "horizontal",
+        "vertical",
+        "unknown"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Text Axis"
+    },
+    "tags": {
+     "default": [],
+     "description": "Annotated conditions (handwriting, form, table, ...)",
+     "items": {
+      "type": "string"
+     },
+     "title": "Tags",
+     "type": "array"
+    }
+   },
+   "required": [
+    "index",
+    "display_w",
+    "display_h",
+    "rotation_attr",
+    "cropbox_offset",
+    "encoding",
+    "text_chars",
+    "invisible_text_chars",
+    "image_count",
+    "bilevel_image_count",
+    "image_coverage",
+    "vector_paths"
+   ],
+   "title": "PageConditions",
+   "type": "object"
+  },
+  "PageEncoding": {
+   "enum": [
+    "digital_text",
+    "raster_single",
+    "raster_mrc",
+    "raster_hidden_text",
+    "raster_visible_text",
+    "vector_outline",
+    "mixed",
+    "blank"
+   ],
+   "title": "PageEncoding",
+   "type": "string"
+  }
+ },
+ "additionalProperties": false,
+ "properties": {
+  "schema": {
+   "const": "rb.dataset/0.1",
+   "default": "rb.dataset/0.1",
+   "title": "Schema",
+   "type": "string"
+  },
+  "name": {
+   "pattern": "^[a-z0-9][a-z0-9_-]*$",
+   "title": "Name",
+   "type": "string"
+  },
+  "version": {
+   "pattern": "^\\d+\\.\\d+\\.\\d+$",
+   "title": "Version",
+   "type": "string"
+  },
+  "created": {
+   "title": "Created",
+   "type": "string"
+  },
+  "measured_with": {
+   "additionalProperties": {
+    "type": "string"
+   },
+   "default": {},
+   "title": "Measured With",
+   "type": "object"
+  },
+  "documents": {
+   "items": {
+    "$ref": "#/$defs/DocumentEntry"
+   },
+   "title": "Documents",
+   "type": "array"
+  }
+ },
+ "required": [
+  "name",
+  "version",
+  "created",
+  "documents"
+ ],
+ "title": "DatasetManifest",
+ "type": "object"
+}

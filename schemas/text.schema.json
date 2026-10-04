@@ -1,0 +1,194 @@
+{
+ "$defs": {
+  "Frame": {
+   "enum": [
+    "display_pt",
+    "unrotated_pt",
+    "pdf_user",
+    "image_px"
+   ],
+   "title": "Frame",
+   "type": "string"
+  },
+  "TextPage": {
+   "additionalProperties": false,
+   "properties": {
+    "index": {
+     "minimum": 0,
+     "title": "Index",
+     "type": "integer"
+    },
+    "tokens": {
+     "default": [],
+     "items": {
+      "$ref": "#/$defs/TextToken"
+     },
+     "title": "Tokens",
+     "type": "array"
+    },
+    "detected_rotation": {
+     "anyOf": [
+      {
+       "enum": [
+        0,
+        90,
+        180,
+        270
+       ],
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Detected Rotation"
+    },
+    "skew_deg": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Skew Deg"
+    }
+   },
+   "required": [
+    "index"
+   ],
+   "title": "TextPage",
+   "type": "object"
+  },
+  "TextToken": {
+   "additionalProperties": false,
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "text": {
+     "title": "Text",
+     "type": "string"
+    },
+    "poly": {
+     "description": "Vertices in the declared frame",
+     "items": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "number"
+       }
+      ],
+      "type": "array"
+     },
+     "minItems": 3,
+     "title": "Poly",
+     "type": "array"
+    },
+    "conf": {
+     "anyOf": [
+      {
+       "maximum": 1,
+       "minimum": 0,
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Conf"
+    },
+    "line": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Line"
+    },
+    "order": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Order"
+    }
+   },
+   "required": [
+    "id",
+    "text",
+    "poly"
+   ],
+   "title": "TextToken",
+   "type": "object"
+  }
+ },
+ "additionalProperties": false,
+ "properties": {
+  "frame": {
+   "$ref": "#/$defs/Frame",
+   "default": "display_pt"
+  },
+  "dpi": {
+   "anyOf": [
+    {
+     "exclusiveMinimum": 0,
+     "type": "number"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Dpi"
+  },
+  "schema": {
+   "const": "rb.text/0.1",
+   "default": "rb.text/0.1",
+   "title": "Schema",
+   "type": "string"
+  },
+  "source": {
+   "enum": [
+    "ocr",
+    "text_layer",
+    "hybrid"
+   ],
+   "title": "Source",
+   "type": "string"
+  },
+  "pages": {
+   "items": {
+    "$ref": "#/$defs/TextPage"
+   },
+   "title": "Pages",
+   "type": "array"
+  }
+ },
+ "required": [
+  "source",
+  "pages"
+ ],
+ "title": "TextArtifact",
+ "type": "object"
+}

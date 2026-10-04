@@ -1,0 +1,51 @@
+{
+ "additionalProperties": false,
+ "properties": {
+  "schema": {
+   "const": "rb.experiment/0.1",
+   "default": "rb.experiment/0.1",
+   "title": "Schema",
+   "type": "string"
+  },
+  "name": {
+   "pattern": "^[a-z0-9][a-z0-9_-]*$",
+   "title": "Name",
+   "type": "string"
+  },
+  "mode": {
+   "default": "e2e",
+   "enum": [
+    "e2e",
+    "oracle_text",
+    "oracle_mentions",
+    "oracle_entities",
+    "oracle_regions"
+   ],
+   "title": "Mode",
+   "type": "string"
+  },
+  "repeats": {
+   "default": 1,
+   "maximum": 50,
+   "minimum": 1,
+   "title": "Repeats",
+   "type": "integer"
+  },
+  "vary_seed": {
+   "default": false,
+   "description": "Pass a different seed to each repeat (seed sensitivity)",
+   "title": "Vary Seed",
+   "type": "boolean"
+  },
+  "description": {
+   "default": "",
+   "title": "Description",
+   "type": "string"
+  }
+ },
+ "required": [
+  "name"
+ ],
+ "title": "ExperimentSpec",
+ "type": "object"
+}

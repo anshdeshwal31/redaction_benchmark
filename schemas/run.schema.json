@@ -1,0 +1,220 @@
+{
+ "$defs": {
+  "ExperimentSpec": {
+   "additionalProperties": false,
+   "properties": {
+    "schema": {
+     "const": "rb.experiment/0.1",
+     "default": "rb.experiment/0.1",
+     "title": "Schema",
+     "type": "string"
+    },
+    "name": {
+     "pattern": "^[a-z0-9][a-z0-9_-]*$",
+     "title": "Name",
+     "type": "string"
+    },
+    "mode": {
+     "default": "e2e",
+     "enum": [
+      "e2e",
+      "oracle_text",
+      "oracle_mentions",
+      "oracle_entities",
+      "oracle_regions"
+     ],
+     "title": "Mode",
+     "type": "string"
+    },
+    "repeats": {
+     "default": 1,
+     "maximum": 50,
+     "minimum": 1,
+     "title": "Repeats",
+     "type": "integer"
+    },
+    "vary_seed": {
+     "default": false,
+     "description": "Pass a different seed to each repeat (seed sensitivity)",
+     "title": "Vary Seed",
+     "type": "boolean"
+    },
+    "description": {
+     "default": "",
+     "title": "Description",
+     "type": "string"
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "title": "ExperimentSpec",
+   "type": "object"
+  },
+  "RunItem": {
+   "additionalProperties": false,
+   "properties": {
+    "doc_id": {
+     "title": "Doc Id",
+     "type": "string"
+    },
+    "repeat": {
+     "title": "Repeat",
+     "type": "integer"
+    },
+    "workdir": {
+     "title": "Workdir",
+     "type": "string"
+    },
+    "input_sha256": {
+     "title": "Input Sha256",
+     "type": "string"
+    },
+    "injected": {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "default": {},
+     "title": "Injected",
+     "type": "object"
+    },
+    "seed": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Seed"
+    },
+    "exit_code": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Exit Code"
+    },
+    "timed_out": {
+     "default": false,
+     "title": "Timed Out",
+     "type": "boolean"
+    },
+    "duration_s": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Duration S"
+    },
+    "artifacts": {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "default": {},
+     "title": "Artifacts",
+     "type": "object"
+    },
+    "invalid_artifacts": {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "default": {},
+     "title": "Invalid Artifacts",
+     "type": "object"
+    },
+    "error": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Error"
+    }
+   },
+   "required": [
+    "doc_id",
+    "repeat",
+    "workdir",
+    "input_sha256"
+   ],
+   "title": "RunItem",
+   "type": "object"
+  }
+ },
+ "additionalProperties": false,
+ "properties": {
+  "schema": {
+   "const": "rb.run/0.1",
+   "default": "rb.run/0.1",
+   "title": "Schema",
+   "type": "string"
+  },
+  "run_id": {
+   "title": "Run Id",
+   "type": "string"
+  },
+  "created": {
+   "title": "Created",
+   "type": "string"
+  },
+  "benchmark": {
+   "additionalProperties": true,
+   "title": "Benchmark",
+   "type": "object"
+  },
+  "dataset": {
+   "additionalProperties": true,
+   "title": "Dataset",
+   "type": "object"
+  },
+  "candidate": {
+   "additionalProperties": true,
+   "title": "Candidate",
+   "type": "object"
+  },
+  "experiment": {
+   "$ref": "#/$defs/ExperimentSpec"
+  },
+  "environment": {
+   "additionalProperties": true,
+   "title": "Environment",
+   "type": "object"
+  },
+  "items": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/RunItem"
+   },
+   "title": "Items",
+   "type": "array"
+  }
+ },
+ "required": [
+  "run_id",
+  "created",
+  "benchmark",
+  "dataset",
+  "candidate",
+  "experiment",
+  "environment"
+ ],
+ "title": "RunManifest",
+ "type": "object"
+}

@@ -1,0 +1,181 @@
+{
+ "$defs": {
+  "ArtifactKind": {
+   "enum": [
+    "output_pdf",
+    "text",
+    "mentions",
+    "entities",
+    "plan",
+    "pseudonyms",
+    "run_info"
+   ],
+   "title": "ArtifactKind",
+   "type": "string"
+  },
+  "Frame": {
+   "enum": [
+    "display_pt",
+    "unrotated_pt",
+    "pdf_user",
+    "image_px"
+   ],
+   "title": "Frame",
+   "type": "string"
+  },
+  "InjectionKind": {
+   "enum": [
+    "text",
+    "mentions",
+    "entities",
+    "regions"
+   ],
+   "title": "InjectionKind",
+   "type": "string"
+  },
+  "PiiType": {
+   "enum": [
+    "PERSON_NAME",
+    "SIGNATURE",
+    "HANDWRITTEN_MARK",
+    "IMAGE_PII",
+    "ADDRESS",
+    "LOCATION",
+    "PHONE",
+    "EMAIL",
+    "URL",
+    "DATE",
+    "AGE",
+    "ID_CLAIM",
+    "ID_LEGAL_REF",
+    "ID_PROVIDER",
+    "ID_GOVERNMENT",
+    "ID_BUSINESS",
+    "ID_FINANCIAL",
+    "ID_OTHER",
+    "FILE_PATH",
+    "ORGANISATION",
+    "QUASI_IDENTIFIER"
+   ],
+   "title": "PiiType",
+   "type": "string"
+  }
+ },
+ "additionalProperties": false,
+ "properties": {
+  "schema": {
+   "const": "rb.candidate/0.1",
+   "default": "rb.candidate/0.1",
+   "title": "Schema",
+   "type": "string"
+  },
+  "name": {
+   "pattern": "^[a-z0-9][a-z0-9_-]*$",
+   "title": "Name",
+   "type": "string"
+  },
+  "version": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Version"
+  },
+  "version_command": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Version Command"
+  },
+  "command": {
+   "description": "Template; placeholders: {input} {workdir} {mode} {inject} {seed}",
+   "title": "Command",
+   "type": "string"
+  },
+  "provides": {
+   "items": {
+    "$ref": "#/$defs/ArtifactKind"
+   },
+   "title": "Provides",
+   "type": "array"
+  },
+  "accepts_injection": {
+   "default": [],
+   "items": {
+    "$ref": "#/$defs/InjectionKind"
+   },
+   "title": "Accepts Injection",
+   "type": "array"
+  },
+  "label_map": {
+   "additionalProperties": {
+    "$ref": "#/$defs/PiiType"
+   },
+   "default": {},
+   "description": "Candidate label -> benchmark PiiType",
+   "title": "Label Map",
+   "type": "object"
+  },
+  "frame": {
+   "$ref": "#/$defs/Frame",
+   "default": "display_pt"
+  },
+  "dpi": {
+   "anyOf": [
+    {
+     "exclusiveMinimum": 0,
+     "type": "number"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Dpi"
+  },
+  "seed_flag": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Seed Flag"
+  },
+  "timeout_s": {
+   "default": 900,
+   "exclusiveMinimum": 0,
+   "title": "Timeout S",
+   "type": "integer"
+  },
+  "env": {
+   "additionalProperties": {
+    "type": "string"
+   },
+   "default": {},
+   "title": "Env",
+   "type": "object"
+  }
+ },
+ "required": [
+  "name",
+  "command",
+  "provides"
+ ],
+ "title": "CandidateManifest",
+ "type": "object"
+}

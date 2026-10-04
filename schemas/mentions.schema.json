@@ -1,0 +1,219 @@
+{
+ "$defs": {
+  "Frame": {
+   "enum": [
+    "display_pt",
+    "unrotated_pt",
+    "pdf_user",
+    "image_px"
+   ],
+   "title": "Frame",
+   "type": "string"
+  },
+  "PredMention": {
+   "additionalProperties": false,
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "label": {
+     "description": "The candidate's own label; mapped via the manifest's label_map",
+     "title": "Label",
+     "type": "string"
+    },
+    "text": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Text"
+    },
+    "tokens": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Token ids from text.json",
+     "title": "Tokens"
+    },
+    "regions": {
+     "anyOf": [
+      {
+       "items": {
+        "$ref": "#/$defs/RegionAnchor"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Regions"
+    },
+    "span": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/TextSpanAnchor"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Offsets into page_texts[page]"
+    },
+    "conf": {
+     "anyOf": [
+      {
+       "maximum": 1,
+       "minimum": 0,
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Conf"
+    }
+   },
+   "required": [
+    "id",
+    "label"
+   ],
+   "title": "PredMention",
+   "type": "object"
+  },
+  "RegionAnchor": {
+   "additionalProperties": false,
+   "properties": {
+    "page": {
+     "minimum": 0,
+     "title": "Page",
+     "type": "integer"
+    },
+    "poly": {
+     "description": "Vertices in the declared frame",
+     "items": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "number"
+       }
+      ],
+      "type": "array"
+     },
+     "minItems": 3,
+     "title": "Poly",
+     "type": "array"
+    }
+   },
+   "required": [
+    "page",
+    "poly"
+   ],
+   "title": "RegionAnchor",
+   "type": "object"
+  },
+  "TextSpanAnchor": {
+   "additionalProperties": false,
+   "properties": {
+    "page": {
+     "minimum": 0,
+     "title": "Page",
+     "type": "integer"
+    },
+    "start": {
+     "minimum": 0,
+     "title": "Start",
+     "type": "integer"
+    },
+    "end": {
+     "minimum": 0,
+     "title": "End",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "page",
+    "start",
+    "end"
+   ],
+   "title": "TextSpanAnchor",
+   "type": "object"
+  }
+ },
+ "additionalProperties": false,
+ "properties": {
+  "frame": {
+   "$ref": "#/$defs/Frame",
+   "default": "display_pt"
+  },
+  "dpi": {
+   "anyOf": [
+    {
+     "exclusiveMinimum": 0,
+     "type": "number"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Dpi"
+  },
+  "schema": {
+   "const": "rb.mentions/0.1",
+   "default": "rb.mentions/0.1",
+   "title": "Schema",
+   "type": "string"
+  },
+  "page_texts": {
+   "anyOf": [
+    {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "type": "object"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Page Texts"
+  },
+  "mentions": {
+   "items": {
+    "$ref": "#/$defs/PredMention"
+   },
+   "title": "Mentions",
+   "type": "array"
+  }
+ },
+ "required": [
+  "mentions"
+ ],
+ "title": "MentionsArtifact",
+ "type": "object"
+}

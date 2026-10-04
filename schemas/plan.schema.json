@@ -1,0 +1,122 @@
+{
+ "$defs": {
+  "Frame": {
+   "enum": [
+    "display_pt",
+    "unrotated_pt",
+    "pdf_user",
+    "image_px"
+   ],
+   "title": "Frame",
+   "type": "string"
+  },
+  "PlanRegion": {
+   "additionalProperties": false,
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "page": {
+     "minimum": 0,
+     "title": "Page",
+     "type": "integer"
+    },
+    "poly": {
+     "description": "Vertices in the declared frame",
+     "items": {
+      "maxItems": 2,
+      "minItems": 2,
+      "prefixItems": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "number"
+       }
+      ],
+      "type": "array"
+     },
+     "minItems": 3,
+     "title": "Poly",
+     "type": "array"
+    },
+    "action": {
+     "enum": [
+      "remove",
+      "replace"
+     ],
+     "title": "Action",
+     "type": "string"
+    },
+    "replacement": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Replacement"
+    },
+    "mentions": {
+     "default": [],
+     "items": {
+      "type": "string"
+     },
+     "title": "Mentions",
+     "type": "array"
+    }
+   },
+   "required": [
+    "id",
+    "page",
+    "poly",
+    "action"
+   ],
+   "title": "PlanRegion",
+   "type": "object"
+  }
+ },
+ "additionalProperties": false,
+ "properties": {
+  "frame": {
+   "$ref": "#/$defs/Frame",
+   "default": "display_pt"
+  },
+  "dpi": {
+   "anyOf": [
+    {
+     "exclusiveMinimum": 0,
+     "type": "number"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "title": "Dpi"
+  },
+  "schema": {
+   "const": "rb.plan/0.1",
+   "default": "rb.plan/0.1",
+   "title": "Schema",
+   "type": "string"
+  },
+  "regions": {
+   "items": {
+    "$ref": "#/$defs/PlanRegion"
+   },
+   "title": "Regions",
+   "type": "array"
+  }
+ },
+ "required": [
+  "regions"
+ ],
+ "title": "PlanArtifact",
+ "type": "object"
+}
