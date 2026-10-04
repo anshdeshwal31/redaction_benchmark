@@ -1,0 +1,35 @@
+"""Named mock specs usable through the adapter CLI (and therefore through the runner)."""
+
+from .mock import MockSpec
+
+NAMED = {spec.name: spec for spec in [
+    MockSpec("reference"),
+    MockSpec("reference-raster", method="rasterize"),
+    MockSpec("null", method="null"),
+    MockSpec("overlay", method="overlay"),
+    MockSpec("annotation", method="annotation"),
+    MockSpec("translucent", method="translucent"),
+    MockSpec("blur", method="blur"),
+    MockSpec("incremental", incremental=True),
+    MockSpec("keep-text-layer", method="rasterize", keep_text_layer=True),
+    MockSpec("leak-metadata", leak_metadata=True),
+    MockSpec("ocr-misses-names", ocr_drop_types=("PERSON_NAME",)),
+    MockSpec("ocr-noise", ocr_char_error=0.1),
+    MockSpec("boundary-shrink", boundary="shrink_last"),
+    MockSpec("drops-headers", drop_conditions=("running_header", "running_footer")),
+    MockSpec("type-swap", type_swap=(("PERSON_NAME", "ORGANISATION"),)),
+    MockSpec("fp-protected", redact_protected=True),
+    MockSpec("dpi-scale", scale=0.24),
+    MockSpec("y-flip", y_flip=True),
+    MockSpec("page-offset", page_offset=1),
+    MockSpec("shift", shift_pt=(0, 6)),
+    MockSpec("partial", partial=0.5),
+    MockSpec("over-redact", dilate_pt=8),
+    MockSpec("merge-same-given", merge_same_given=True),
+    MockSpec("split-aliases", split_aliases=True),
+    MockSpec("pseudonym-consistent", pseudonyms="consistent"),
+    MockSpec("pseudonym-inconsistent", pseudonyms="inconsistent"),
+    MockSpec("pseudonym-gender-flip", pseudonyms="gender_flip"),
+    MockSpec("nondeterministic", seed=None, drop_fraction=0.3),
+    MockSpec("corrupt", method="corrupt"),
+]}
