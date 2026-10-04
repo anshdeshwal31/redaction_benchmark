@@ -1,0 +1,5 @@
+schema: rb.experiment/0.1
+name: determinism
+mode: e2e
+repeats: 5
+description: "Five identical repeats: reproducibility at D0-D3."

@@ -1,0 +1,5 @@
+schema: rb.experiment/0.1
+name: e2e
+mode: e2e
+repeats: 1
+description: "Whole system, no injection."

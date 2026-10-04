@@ -1,0 +1,12 @@
+# Mock candidate (test double). Mocks may read GT through RB_GT_DIRS; real candidates never can.
+schema: rb.candidate/0.1
+name: mock-pseudonym-consistent
+version: "0.1.0"
+command: '{python} -m benchmark.mocks.adapter --input {input} --workdir {workdir} --mode {mode} --inject-dir {inject_dir} {seed} --spec pseudonym-consistent'
+provides: [output_pdf, text, mentions, entities, plan, pseudonyms, run_info]
+accepts_injection: [text, mentions, entities, regions]
+frame: display_pt
+seed_flag: --seed
+timeout_s: 300
+env:
+  RB_GT_DIRS: "{repo}/gt"

@@ -1,0 +1,5 @@
+schema: rb.experiment/0.1
+name: oracle-mentions
+mode: oracle_mentions
+repeats: 1
+description: "GT mentions injected: resolution, localization and application."

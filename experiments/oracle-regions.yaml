@@ -1,0 +1,5 @@
+schema: rb.experiment/0.1
+name: oracle-regions
+mode: oracle_regions
+repeats: 1
+description: "GT regions injected: does the engine redact correctly given correct coordinates?"

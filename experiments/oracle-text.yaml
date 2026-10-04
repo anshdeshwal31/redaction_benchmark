@@ -1,0 +1,5 @@
+schema: rb.experiment/0.1
+name: oracle-text
+mode: oracle_text
+repeats: 1
+description: "GT text injected: detector quality with perfect OCR."
