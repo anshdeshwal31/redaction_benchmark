@@ -1,1 +1,77 @@
 # redaction_benchmark
+
+A neutral evaluation framework for PII redaction tools working on Australian medico-legal
+PDFs (mostly scans). It answers which tool is better, where it is better, which stage a
+failure started in, and whether the tool behaves reproducibly. The design is in
+[PLAN.md](PLAN.md).
+
+The benchmark judges the **actual output document**, never a tool's claims. A required
+mention is only safe if its original content cannot be seen in any viewer, recovered from
+the file (text layer, image layers, vector paths, earlier revisions, metadata) or
+recovered by contrast enhancement. When a tool also exposes intermediate results (OCR,
+detections, entity clusters, planned regions), each stage is scored and failures are
+traced to the stage that caused them.
+
+## Setup
+
+```bash
+py -3.11 -m venv .venv
+.venv/Scripts/python -m pip install -e ".[dev]"
+.venv/Scripts/python -m pytest          # 213 tests, about 8 minutes
+```
+
+Optional: install Tesseract (and set `RB_TESSERACT` if not on PATH) to enable OCR-based GT
+drafting for scanned pages and pseudonym checks on image-only outputs.
+
+## Workflow
+
+```bash
+rb synth dataset --version 0.1.0                 # fictional fixtures in 9 encodings, with exact GT
+rb run --candidate candidates/my-tool.yaml --dataset synthetic@0.1.0 [--experiment experiments/oracle-regions.yaml]
+rb score <run_id> [--oracle oracle_regions=<oracle_run_id>]
+rb report <run_id> [--shareable]                 # static HTML: scorecard, components, slices, funnel, gallery
+rb query <run_id> "SELECT type, status, count(*) FROM mentions WHERE requirement='MUST' GROUP BY ALL"
+rb compare <run_a> <run_b>                       # mention-level fixed / regressed / category changed
+rb regress promote <run_id> <doc_id> <mention_id> ; rb regress check <run_id>
+```
+
+Real documents:
+
+```bash
+rb dataset ingest --name seed --version 0.1.0 --doc DPI=path.pdf ... --matter DPI=M1
+rb inspect path.pdf                              # every content surface: text, layers, paths, metadata, revisions
+rb gt draft --dataset seed@0.1.0                 # machine draft for annotators (written to data/, git-ignored)
+rb gt validate data/gt/DPI.gt.json --source path.pdf --policy policies/au-medicolegal-v0.yaml
+```
+
+## Layout
+
+| Path | Contents |
+|---|---|
+| `benchmark/geometry` | Coordinate frames (`display_pt` canonical), polygons, exact rasterisation |
+| `benchmark/schemas` | Versioned contracts (exported to `schemas/*.schema.json`) |
+| `benchmark/dataset`, `benchmark/forensics` | Registry with automatic condition measurement; PDF inventory |
+| `benchmark/gt` | GT IO, policy resolution, validators, drafts and review sheets |
+| `benchmark/evaluate` | Output evaluation: visible / recoverable / latent leakage, over-redaction, integrity |
+| `benchmark/metrics` | Text acquisition, detection, resolution, localization, fidelity, pseudonyms, determinism |
+| `benchmark/attribution.py`, `benchmark/score.py` | Root-cause attribution; per-document scoring |
+| `benchmark/runner`, `benchmark/report` | Running adapters, oracle inputs, scoring runs; Parquet store, HTML report, compare, regression |
+| `benchmark/mocks`, `benchmark/synth` | Fault-injecting mock candidates; synthetic documents, clean twins, degradation ladders |
+| `policies/` | Redaction policy profiles (draft; open questions are scored as MAY) |
+| `candidates/`, `experiments/` | Candidate manifests (mocks for now); experiment specs |
+| `docs/` | [Adapter guide](docs/adapter_guide.md), [metric definitions](docs/metrics.md), [annotation guidelines](docs/annotation_guidelines.md) |
+
+## Data handling
+
+Source PDFs, real-document GT, run outputs and reports can contain personal information.
+`data/`, `runs/`, `results/`, `representative_pdfs/` and all PDFs are git-ignored. PDFs are
+stored by hash under `data/store/`; dataset manifests contain hashes and measured
+conditions only. Reports of real documents include image crops; use `--shareable` to mask
+the PII spans before circulating one.
+
+## Status
+
+Built: the full evaluation pipeline, validated against fault-injecting mocks on synthetic
+documents in every encoding seen in the seed set. **Not yet done**: ground truth for the
+five seed documents (needs human annotation, see the guidelines), a measurement OCR
+install, decisions on the open policy questions (PLAN.md §16), and real candidate tools.
