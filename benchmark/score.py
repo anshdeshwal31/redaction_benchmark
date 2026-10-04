@@ -108,5 +108,6 @@ def score_document(
         regions_by_mention = {g: by_pred.get(p, []) for g, p in best_pred.items() if p}
     score.attribution = attribute(gt, policy, res, ev, text=score.text, det=score.detection,
                                   loc=score.localization, fid=score.fidelity, pseud=score.pseudonyms,
+                                  resolution=score.resolution,
                                   oracle=oracle, unstable=unstable, plan_regions_by_mention=regions_by_mention)
     return score

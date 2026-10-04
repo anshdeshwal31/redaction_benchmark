@@ -30,6 +30,8 @@ NAMED = {spec.name: spec for spec in [
     MockSpec("pseudonym-consistent", pseudonyms="consistent"),
     MockSpec("pseudonym-inconsistent", pseudonyms="inconsistent"),
     MockSpec("pseudonym-gender-flip", pseudonyms="gender_flip"),
+    MockSpec("replace-contacts-valid", pseudonyms="consistent", replace_other="valid"),
+    MockSpec("replace-contacts-invalid", pseudonyms="consistent", replace_other="invalid"),
     MockSpec("nondeterministic", seed=None, drop_fraction=0.3),
     MockSpec("corrupt", method="corrupt"),
 ]}

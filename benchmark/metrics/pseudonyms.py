@@ -7,6 +7,7 @@ then compared component by component using the GT name structure.
 
 from __future__ import annotations
 
+import re
 import string
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
@@ -54,12 +55,74 @@ class PseudonymResult:
     replacements: list[ComponentReplacement]
     checks: dict
     issues: dict = field(default_factory=dict)
+    other: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
+OTHER_TYPES = (PiiType.PHONE, PiiType.EMAIL, PiiType.ADDRESS, PiiType.ID_GOVERNMENT)
+
+# Australia Post postcode ranges by state/territory.
+POSTCODES = {
+    "NSW": [(1000, 2599), (2619, 2899), (2921, 2999)],
+    "ACT": [(200, 299), (2600, 2618), (2900, 2920)],
+    "VIC": [(3000, 3999), (8000, 8999)],
+    "QLD": [(4000, 4999), (9000, 9999)],
+    "SA": [(5000, 5999)],
+    "WA": [(6000, 6999)],
+    "TAS": [(7000, 7999)],
+    "NT": [(800, 999)],
+}
+_PHONE = re.compile(r"^(0[2-478]\d{8}|1[38]00\d{6}|13\d{4})$")
+_EMAIL = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+_STATE_POSTCODE = re.compile(r"\b(NSW|ACT|VIC|QLD|SA|WA|TAS|NT)\b[\s,]*(\d{4})\b", re.I)
+
+
+def phone_valid(text: str) -> bool:
+    digits = re.sub(r"[^\d+]", "", text)
+    if digits.startswith("+61"):
+        digits = "0" + digits[3:]
+    return bool(_PHONE.match(digits))
+
+
+def email_valid(text: str) -> bool:
+    return bool(_EMAIL.match(text.strip(".,;:()")))
+
+
+def postcode_state_valid(text: str) -> bool | None:
+    m = _STATE_POSTCODE.search(text)
+    if not m:
+        return None
+    pc = int(m.group(2))
+    return any(lo <= pc <= hi for lo, hi in POSTCODES[m.group(1).upper()])
+
+
+def medicare_valid(text: str) -> bool:
+    """Medicare card number: 10 (or 11 with IRN) digits, first digit 2-6, check digit =
+    weighted sum (1,3,7,9,1,3,7,9) of the first 8 digits mod 10."""
+    d = re.sub(r"\D", "", text)
+    if len(d) not in (10, 11) or d[0] not in "23456":
+        return False
+    return sum(int(x) * w for x, w in zip(d[:8], (1, 3, 7, 9, 1, 3, 7, 9))) % 10 == int(d[8])
+
+
+@dataclass
+class OtherReplacement:
+    mention_id: str
+    entity: str | None
+    type: str
+    subtype: str | None
+    original: str
+    replacement: str | None
+
+
 def _read_replacements(gt: GTDocument, res: Resolution, output: bytes) -> tuple[list[ComponentReplacement], bool]:
+    reps, _, any_text = _read_all(gt, res, output)
+    return reps, any_text
+
+
+def _read_all(gt: GTDocument, res: Resolution, output: bytes):
     import os
     import tempfile
 
@@ -74,7 +137,7 @@ def _read_replacements(gt: GTDocument, res: Resolution, output: bytes) -> tuple[
     words = gt.word_index()
     wanted: dict[int, set[str]] = defaultdict(set)
     for m in gt.mentions:
-        if m.type is PiiType.PERSON_NAME and res.mentions[m.id].requirement is Requirement.MUST:
+        if (m.type is PiiType.PERSON_NAME or m.type in OTHER_TYPES) and                 res.mentions[m.id].requirement is Requirement.MUST:
             for seg in m.segments:
                 wanted[seg.page].update(seg.words)
             for wid in m.optional_words:
@@ -101,11 +164,18 @@ def _read_replacements(gt: GTDocument, res: Resolution, output: bytes) -> tuple[
                 out.append(ComponentReplacement(m.id, m.entity, wid, comp.value, text, texts.get(wid)))
         for wid in m.optional_words:
             out.append(ComponentReplacement(m.id, m.entity, wid, "title", words[wid][1].text, texts.get(wid)))
-    return out, any_text
+    other = []
+    for m in gt.mentions:
+        if m.type not in OTHER_TYPES or res.mentions[m.id].requirement is not Requirement.MUST:
+            continue
+        got = [texts.get(wid) for seg in m.segments for wid in seg.words]
+        other.append(OtherReplacement(m.id, m.entity, m.type.value, m.subtype, m.text,
+                                      " ".join(t for t in got if t) or None))
+    return out, other, any_text
 
 
 def evaluate_pseudonyms(gt: GTDocument, res: Resolution, output: bytes) -> PseudonymResult:
-    reps, any_text = _read_replacements(gt, res, output)
+    reps, other, any_text = _read_all(gt, res, output)
     names = [r for r in reps if r.component != "title"]
     if not any_text:
         return PseudonymResult(False, "output has no text layer; replacement text needs the measurement OCR",
@@ -163,7 +233,64 @@ def evaluate_pseudonyms(gt: GTDocument, res: Resolution, output: bytes) -> Pseud
               "entity_inconsistent": entity_inconsistent, "collisions": collisions,
               "collides_with_real_name": real_name, "too_similar": similar,
               "honorific_gender_mismatch": gender_mismatch}
-    return PseudonymResult(True, None, reps, checks, issues)
+    checks_other, invalid = _validity(other, names)
+    checks.update(checks_other)
+    issues["invalid"] = invalid
+    return PseudonymResult(True, None, reps, checks, issues, other)
+
+
+def _rate(flags: list[bool]) -> float | None:
+    return round(sum(flags) / len(flags), 4) if flags else None
+
+
+def _validity(other: list[OtherReplacement], names: list[ComponentReplacement]) -> tuple[dict, dict]:
+    """Format validity of replaced contact details and identifiers. Only mentions whose
+    output text differs from the original are checked (removed ones have nothing to check)."""
+    new_names: dict[str, set[str]] = defaultdict(set)
+    old_names: dict[str, set[str]] = defaultdict(set)
+    for r in names:
+        if r.component in ("given", "surname", "nickname") and r.entity:
+            old_names[r.entity].add(_core(r.original).casefold())
+            if r.replacement and _core(r.replacement):
+                new_names[r.entity].add(_core(r.replacement).casefold())
+    phone, email, derived, postcode, medicare = [], [], [], [], []
+    invalid: dict[str, str] = {}
+    replaced = 0
+    for o in other:
+        new = (o.replacement or "").strip()
+        if not new or _core(o.original).casefold() in new.casefold():
+            continue
+        replaced += 1
+        if o.type == PiiType.PHONE.value:
+            ok = phone_valid(new)
+            phone.append(ok)
+            if not ok:
+                invalid[o.mention_id] = "phone format"
+        elif o.type == PiiType.EMAIL.value:
+            ok = email_valid(new)
+            email.append(ok)
+            if not ok:
+                invalid[o.mention_id] = "email syntax"
+            elif o.entity and new_names.get(o.entity):
+                local = new.split("@")[0].casefold()
+                ok_d = any(n in local for n in new_names[o.entity]) and                     not any(n in local for n in old_names[o.entity])
+                derived.append(ok_d)
+                if not ok_d:
+                    invalid[o.mention_id] = "email not derived from the new name"
+        elif o.type == PiiType.ADDRESS.value:
+            ok = postcode_state_valid(new)
+            if ok is not None:
+                postcode.append(ok)
+                if not ok:
+                    invalid[o.mention_id] = "postcode does not belong to the state"
+        elif o.type == PiiType.ID_GOVERNMENT.value and (o.subtype or "") == "medicare":
+            ok = medicare_valid(new)
+            medicare.append(ok)
+            if not ok:
+                invalid[o.mention_id] = "medicare checksum"
+    return {"other_replaced": replaced, "phone_valid_rate": _rate(phone), "email_valid_rate": _rate(email),
+            "email_from_new_name_rate": _rate(derived), "postcode_state_valid_rate": _rate(postcode),
+            "medicare_checksum_valid_rate": _rate(medicare), "invalid_replacements": len(invalid)}, invalid
 
 
 def replacements_by_mention(result: PseudonymResult) -> dict[str, dict[str, str]]:

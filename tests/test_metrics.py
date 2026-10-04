@@ -274,3 +274,43 @@ def test_nondeterministic_tool_is_flagged():
     d = _runs(MockSpec("nondet", seed=None, drop_fraction=0.4), n=4)
     assert not d.d3_decisions_identical and d.unstable_mentions and d.flip_rate > 0
     assert d.d1_structural["mentions"] is False and d.d1_structural["text"] is True
+
+
+# -- validity of replaced contact details and identifiers ----------------------------------
+
+
+def test_valid_contact_replacements_pass_format_checks():
+    fx, res, _ = setup("digital")
+    r = evaluate_pseudonyms(fx.gt, res, mock("digital", MockSpec("v", pseudonyms="consistent",
+                                                                  replace_other="valid")).pdf)
+    c = r.checks
+    assert c["other_replaced"] == 4 and c["invalid_replacements"] == 0
+    assert c["phone_valid_rate"] == c["email_valid_rate"] == c["email_from_new_name_rate"] == 1.0
+    assert c["postcode_state_valid_rate"] == c["medicare_checksum_valid_rate"] == 1.0
+
+
+def test_invalid_contact_replacements_are_flagged():
+    fx, res, _ = setup("digital")
+    r = evaluate_pseudonyms(fx.gt, res, mock("digital", MockSpec("i", pseudonyms="consistent",
+                                                                  replace_other="invalid")).pdf)
+    assert set(r.issues["invalid"]) == {"ph1", "em1", "addr1", "gov1"}
+    assert r.checks["postcode_state_valid_rate"] == 0.0
+
+
+@pytest.mark.parametrize("text,ok", [("0400 123 456", True), ("(07) 5575 2444", True), ("+61 2 5550 1234", True),
+                                     ("1300 333 767", True), ("12 34", False), ("0123 456", False)])
+def test_phone_formats(text, ok):
+    from benchmark.metrics.pseudonyms import phone_valid
+
+    assert phone_valid(text) is ok
+
+
+@pytest.mark.parametrize("text,ok", [("Mermaid Beach QLD 4218", True), ("Brisbane QLD 4000", True),
+                                     ("Sydney NSW 2000", True), ("Canberra ACT 2600", True),
+                                     ("Darwin NT 0800", True), ("Sydney NSW 4000", False), ("no postcode", None)])
+def test_postcode_state(text, ok):
+    from benchmark.metrics.pseudonyms import postcode_state_valid
+
+    assert postcode_state_valid(text) is ok
+
+

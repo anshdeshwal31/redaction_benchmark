@@ -75,6 +75,7 @@ class MockSpec:
     # [R] resolution faults
     merge_same_given: bool = False
     split_aliases: bool = False
+    split_conditions: tuple[str, ...] = ()  # mentions with these conditions get a cluster of their own
     # [L] localization faults
     shift_pt: tuple[float, float] = (0.0, 0.0)
     scale: float = 1.0
@@ -90,6 +91,7 @@ class MockSpec:
     leak_metadata: bool = False  # writes the claimant's name into /Author
     # [P] replacement
     pseudonyms: Literal["none", "consistent", "inconsistent", "gender_flip", "collision"] = "none"
+    replace_other: Literal["none", "valid", "invalid"] = "none"  # phones, emails, addresses, Medicare
     raster_dpi: float = 150
     seed: int | None = 0  # None = fresh randomness on every run (nondeterministic tool)
 
@@ -251,6 +253,9 @@ def _resolve_stage(gt: GTDocument, dets: list[_Det], spec: MockSpec) -> tuple[En
         if m and spec.split_aliases and m.components and set(m.components) & {
                 NameComponent.NICKNAME, NameComponent.INITIALS, NameComponent.FORMER_SURNAME}:
             key = f"{key}-alias-{m.id}"
+        hit = sorted(set(m.conditions) & set(spec.split_conditions)) if m else []
+        if hit:
+            key = f"{key}-split-{hit[0]}"
         cluster_of[d.id] = key
     if spec.merge_same_given:
         given_owner: dict[str, str] = {}
@@ -291,6 +296,44 @@ def _word_region(word, seg_start, seg_end, partial: float) -> np.ndarray:
     return poly
 
 
+OTHER_VALUES = {"PHONE", "EMAIL", "ADDRESS", "ID_GOVERNMENT"}
+
+
+def _medicare(first8: str, valid: bool, irn: str = "2") -> str:
+    check = sum(int(x) * w for x, w in zip(first8, (1, 3, 7, 9, 1, 3, 7, 9))) % 10
+    if not valid:
+        check = (check + 1) % 10
+    return f"{first8[:4]} {first8[4:]}{check} {irn}"
+
+
+def _other_value(m, kind: str, pseud: "_Pseudonymiser", cluster: str) -> str:
+    """A replacement for a non-name mention; ``invalid`` breaks the format on purpose.
+    Values are chosen so no two-character run lines up with the fixture's originals."""
+    valid = kind == "valid"
+    t = m.type.value
+    if t == "PHONE":
+        return "(02) 5550 1234" if valid else "12 34"
+    if t == "EMAIL":
+        given = pseud.value(cluster, NameComponent.GIVEN, "").casefold()
+        surname = pseud.value(cluster, NameComponent.SURNAME, "").casefold()
+        return f"{given}.{surname}@mail.test" if valid else f"{given}.{surname} at mail"
+    if t == "ADDRESS":
+        return "27 Banksia Road, Oakvale NSW " + ("2150" if valid else "4150")
+    if t == "ID_GOVERNMENT" and (m.subtype or "") == "medicare":
+        return _medicare("59867304", valid)
+    return ""
+
+
+def _distribute(text: str, n: int) -> list[str]:
+    """Spread replacement tokens over n word regions (extra tokens go to the last one)."""
+    toks = text.split()
+    if n <= 0:
+        return []
+    if len(toks) <= n:
+        return toks + [""] * (n - len(toks))
+    return toks[: n - 1] + [" ".join(toks[n - 1:])]
+
+
 def _plan_stage(gt: GTDocument, dets: list[_Det], cluster_of: dict[str, str], spec: MockSpec,
                 rng: random.Random) -> tuple[list[PlanRegion], dict[str, str]]:
     words = gt.word_index()
@@ -303,17 +346,24 @@ def _plan_stage(gt: GTDocument, dets: list[_Det], cluster_of: dict[str, str], sp
         e = entities.get(m.entity) if m and m.entity else None
         if e and "gender" in e.attributes:
             gender_of.setdefault(cluster_of[d.id], e.attributes["gender"].value)
-    pseud = _Pseudonymiser(gender_of, spec.pseudonyms, rng) if spec.pseudonyms != "none" else None
+    mode = spec.pseudonyms if spec.pseudonyms != "none" else "consistent"
+    pseud = _Pseudonymiser(gender_of, mode, rng) if (spec.pseudonyms != "none" or spec.replace_other != "none")         else None
     plan: list[PlanRegion] = []
     replacements: dict[str, str] = {}
     for d in dets:
         m = mentions.get(d.gt_mention) if d.gt_mention else None
         comp_of = {wid: c for c, wids in (m.components.items() if m else []) for wid in wids}
+        other = None
+        if spec.replace_other != "none" and m is not None and m.type.value in OTHER_VALUES:
+            other = _distribute(_other_value(m, spec.replace_other, pseud, cluster_of[d.id]), len(d.parts))
         for k, (page, wid, span) in enumerate(d.parts):
             w = words[wid][1]
             poly = _word_region(w, span[0] if span else None, span[1] if span else None, spec.partial)
             repl = None
-            if pseud is not None and m is not None and m.type is PiiType.PERSON_NAME and wid in comp_of:
+            if other is not None and other[k]:
+                repl = other[k]
+                replacements[f"{d.id}:{wid}"] = repl
+            elif spec.pseudonyms != "none" and m is not None and m.type is PiiType.PERSON_NAME and wid in comp_of:
                 original = w.text if span is None else w.text[span[0]:span[1]]
                 repl = _style(original, pseud.value(cluster_of[d.id], comp_of[wid], original))
                 replacements[f"{d.id}:{wid}"] = repl
@@ -351,6 +401,75 @@ def _mentions_artifact(gt: GTDocument, dets: list[_Det], token_of: dict[str, str
         out.append(PredMention(id=d.id, label=d.label, text=text, regions=regions, tokens=tokens))
     return MentionsArtifact(mentions=out)
 
+
+
+def _covered_words(gt: GTDocument, polys_by_page: dict[int, list], min_fraction: float = 0.5) -> set[str]:
+    """GT words whose area is at least ``min_fraction`` covered by the given display_pt polygons."""
+    from shapely import union_all
+
+    from ..geometry import to_shapely
+
+    out = set()
+    for page, polys in polys_by_page.items():
+        try:
+            gp = gt.page(page)
+        except KeyError:
+            continue
+        cover = union_all([to_shapely(as_poly(p)) for p in polys])
+        for w in gp.words:
+            wp = to_shapely(as_poly(w.poly))
+            if wp.area > 0 and wp.intersection(cover).area / wp.area >= min_fraction:
+                out.add(w.id)
+    return out
+
+
+def _read_from_text(gt: GTDocument, text: TextArtifact) -> set[str]:
+    """GT words an injected text artifact actually read: covered by a token whose text
+    resembles the word (so missed and garbled words stay unread downstream)."""
+    from rapidfuzz import fuzz
+    from shapely.strtree import STRtree
+
+    from ..geometry import to_shapely
+
+    read = set()
+    for tp in text.pages:
+        try:
+            gp = gt.page(tp.index)
+        except KeyError:
+            continue
+        if not tp.tokens:
+            continue
+        tpolys = [to_shapely(as_poly(t.poly)) for t in tp.tokens]
+        tree = STRtree(tpolys)
+        for w in gp.words:
+            wp = to_shapely(as_poly(w.poly))
+            hits = [i for i in tree.query(wp) if wp.area and tpolys[i].intersection(wp).area / wp.area >= 0.5]
+            joined = "".join(tp.tokens[i].text for i in hits)
+            if hits and fuzz.ratio(joined.casefold(), w.text.casefold()) >= 80:
+                read.add(w.id)
+    return read
+
+
+def _dets_from_injected(gt: GTDocument, dets: list["_Det"], art: MentionsArtifact) -> list["_Det"]:
+    """Use injected mentions as the detector would: keep exactly the GT words they cover
+    (inheriting boundary errors), and turn covered words outside any GT mention into
+    false-positive detections."""
+    polys: dict[int, list] = {}
+    for m in art.mentions:
+        for r in m.regions or []:
+            polys.setdefault(r.page, []).append(r.poly)
+    covered = _covered_words(gt, polys)
+    out, used = [], set()
+    for d in dets:
+        parts = [p for p in d.parts if p[1] in covered]
+        if parts:
+            out.append(_Det(id=d.id, gt_mention=d.gt_mention, label=d.label, parts=parts))
+            used.update(p[1] for p in parts)
+    words = gt.word_index()
+    extra = sorted(covered - used, key=lambda w: (words[w][0], words[w][1].order))
+    for wid in extra:
+        out.append(_Det(id=f"x{len(out)}", gt_mention=None, label="PERSON_NAME", parts=[(words[wid][0], wid, None)]))
+    return out
 
 def target_regions(gt: GTDocument, policy: PolicyProfile, spec: MockSpec) -> tuple[list[PlanRegion], list[str], dict]:
     """Plan regions for a spec (without applying them). Kept for callers that only need the plan."""
@@ -414,7 +533,8 @@ def _true_redact(source: bytes, plan: list[PlanRegion], geoms) -> pymupdf.Docume
         rect = _unrotated_rect(geoms[r.page], r.poly)
         page = doc[r.page]
         if r.replacement:
-            size = max(4.0, min(11.0, rect.height * 0.75))
+            unit = pymupdf.get_text_length(r.replacement, fontname="helv", fontsize=1) or 1.0
+            size = max(3.0, min(11.0, rect.height * 0.75, rect.width * 0.95 / unit))
             page.add_redact_annot(rect, text=r.replacement, fontname="helv", fontsize=size, fill=(1, 1, 1),
                                   text_color=(0, 0, 0), align=pymupdf.TEXT_ALIGN_LEFT)
         else:
@@ -536,13 +656,16 @@ def run_mock(source: bytes, gt: GTDocument, policy: PolicyProfile, spec: MockSpe
     text, read, token_of = _text_stage(gt, spec_t, rng)
     if "text" in injected:
         text = injected["text"]
+        read = _read_from_text(gt, text)  # an upstream tool's misreadings propagate
     spec_d = _clean(spec_t, drop_types=(), drop_conditions=(), drop_fraction=0.0, boundary="none", type_swap=(),
                     redact_protected=False) if "mentions" in injected else spec_t
     dets = _detect_stage(gt, policy, spec_d, read, rng)
     if "mentions" in injected:
-        wanted = {m.id for m in injected["mentions"].mentions}
-        dets = [d for d in dets if d.gt_mention in wanted]
-    spec_r = _clean(spec_d, merge_same_given=False, split_aliases=False) if "entities" in injected else spec_d
+        dets = _dets_from_injected(gt, dets, injected["mentions"])
+    if "entities" in injected:
+        spec_r = _clean(spec_d, merge_same_given=False, split_aliases=False, split_conditions=())
+    else:
+        spec_r = spec_d
     entities, cluster_of = _resolve_stage(gt, dets, spec_r)
     plan, replacements = _plan_stage(gt, dets, cluster_of, spec_r, rng)
     if "regions" in injected:

@@ -89,7 +89,7 @@ redacted when < 50% of its characters remain visible.
 | Resolution | MUC, B³, CEAF-e, LEA, pairwise links, explicit false merges and false splits. Response clusters come from `entities.json`, or are inferred from shared pseudonym values (mentions carrying a given name or surname only) |
 | Localization | Ink coverage of each required mention by planned regions; full-coverage rate; spill area outside the tolerance zone (2 pt); collateral words; median signed edge offsets; per-page **transform diagnosis** by per-region vote among: aligned, oversized, DPI scale (72/96/150/200/300 ratios), y-flip, x-flip, unrotated frame, MediaBox origin, page offset ±1, translation |
 | Application | Share of each planned region whose pixels changed in the output (applied ≥ 50%, partial ≥ 10%, else not applied); plan-vs-change IoU per page |
-| Pseudonyms | Replacement read from the output text layer at each GT name component: survived originals, value and entity consistency, collisions, collision with a real name in the document, near-identical replacements, case style, honorific/gender mismatch. Image-only outputs need the measurement OCR |
+| Pseudonyms | Replacement read from the output text layer at each GT name component: survived originals, value and entity consistency, collisions, collision with a real name in the document, near-identical replacements, case style, honorific/gender mismatch. Replaced contact details and identifiers: Australian phone formats (mobile, landline, 13/1300/1800, +61), email syntax, email local part derived from the new name and not the old one, postcode inside the state's Australia Post ranges, Medicare check digit. Image-only outputs need the measurement OCR |
 | Determinism | D0 bytes; D1 canonical artifacts (mentions as GT-word sets, clusters as partitions, plan as rasterised masks, pseudonym map, tokens); D2 rendered pages exact / tolerant and change-mask IoU; D3 per-mention verdicts, flip rate and unstable mentions |
 
 ## Attribution
@@ -98,7 +98,17 @@ For each failing required mention, the first failing stage in causal order:
 `TEXT_MISSING`/`TEXT_CORRUPTED` → `DETECTION_MISS`/`DETECTION_ALIAS_PROPAGATION`/
 `DETECTION_BOUNDARY`/`DETECTION_TYPE` → `LOCALIZATION_SYSTEMATIC`/`WRONG_PAGE`/
 `LOCALIZATION_LOCAL` → `APPLICATION_NOT_APPLIED`/`APPLICATION_OFFSET` →
-`REMOVAL_INCOMPLETE`. Tags: `PSEUDONYM_*`, `NONDETERMINISTIC`.
+`REMOVAL_INCOMPLETE`. A failed run gives `CANDIDATE_ERROR` for every required mention.
+
+`INTERACTION` (confirmed): every exposed stage looks correct for the mention, but the
+mention is safe when perfect upstream input is injected (an oracle run), or the tool's own
+plan covers it and GT regions are applied correctly while its own regions are not.
+
+Tags on otherwise safe mentions: `PSEUDONYM_INCONSISTENT`, `PSEUDONYM_COLLISION`,
+`PSEUDONYM_INVALID`, `PSEUDONYM_ATTRIBUTE`, `PSEUDONYM_COMPONENT_SURVIVED`,
+`NONDETERMINISTIC`. An inconsistency becomes `RESOLUTION_SPLIT`, and a collision
+`RESOLUTION_MERGE`, when the tool's own entity clusters split or merged that entity
+(clusters inferred from pseudonyms are not used for this, which would be circular).
 
 `confirmed` attributions rest on exposed artifacts or oracle runs; `inferred` ones on
 black-box heuristics (an orphan redaction next to a missed mention, the same entity

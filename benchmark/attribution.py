@@ -17,6 +17,7 @@ from .gt.policy import Effective, Resolution, resolve_fact
 from .metrics.detection import DetectionResult
 from .metrics.localization import FidelityResult, LocalizationResult
 from .metrics.pseudonyms import PseudonymResult
+from .metrics.resolution import ResolutionResult
 from .metrics.text_acq import TextAcqResult
 from .schemas import GTDocument, PiiType, PolicyProfile, Requirement
 
@@ -65,6 +66,7 @@ def attribute(
     loc: LocalizationResult | None = None,
     fid: FidelityResult | None = None,
     pseud: PseudonymResult | None = None,
+    resolution: ResolutionResult | None = None,
     oracle: dict[str, dict[str, str]] | None = None,
     unstable: set[str] | None = None,
     plan_regions_by_mention: dict[str, list[str]] | None = None,
@@ -99,6 +101,25 @@ def attribute(
         for m in gt.mentions:
             if m.entity in inconsistent_entities and m.type is PiiType.PERSON_NAME:
                 pseud_tags.setdefault(m.id, []).append("PSEUDONYM_INCONSISTENT")
+        colliding = {tuple(k.split(":", 1)) for k in pseud.issues.get("collisions", {})}
+        for r in pseud.replacements:
+            if r.replacement and (r.component, r.replacement.strip(".,;:()").casefold()) in colliding:
+                if "PSEUDONYM_COLLISION" not in pseud_tags.get(r.mention_id, []):
+                    pseud_tags.setdefault(r.mention_id, []).append("PSEUDONYM_COLLISION")
+        for mid in pseud.issues.get("invalid", {}):
+            pseud_tags.setdefault(mid, []).append("PSEUDONYM_INVALID")
+    # A pseudonym inconsistency or collision is a resolution failure when the tool's own
+    # clusters (not ones inferred from its pseudonyms, which would be circular) split or
+    # merged the entity.
+    if resolution is not None and resolution.source == "entities_artifact":
+        split = {x["entity"] for x in resolution.false_splits}
+        merged = {e for x in resolution.false_merges for e in x["entities"]}
+        for m in gt.mentions:
+            tags = pseud_tags.get(m.id, [])
+            if m.entity in split and "PSEUDONYM_INCONSISTENT" in tags:
+                tags[tags.index("PSEUDONYM_INCONSISTENT")] = "RESOLUTION_SPLIT"
+            if m.entity in merged and "PSEUDONYM_COLLISION" in tags:
+                tags[tags.index("PSEUDONYM_COLLISION")] = "RESOLUTION_MERGE"
 
     out: list[Attribution] = []
     for mo in ev.mentions:
@@ -121,12 +142,12 @@ def attribute(
             done("UNKNOWN", "NOT_EVALUATED", "integrity or geometry problem")
             continue
         # counterfactual confirmation from oracle runs (if provided)
-        cf = None
+        cf = cf_mode = None
         for mode, stage in (("oracle_text", "TEXT"), ("oracle_mentions", "DETECTION"),
                             ("oracle_regions", "LOCALIZATION")):
             st = oracle_status.get(mode, {}).get(mo.mention_id)
             if st is not None and st in safe_values:
-                cf = stage
+                cf, cf_mode = stage, mode
                 break
         # [T] text acquisition
         if text is not None and mo.mention_id in unrecognisable:
@@ -181,7 +202,11 @@ def attribute(
                 done("APPLICATION", "APPLICATION_NOT_APPLIED", "planned region left unchanged in output")
                 continue
             if regs and mo.status in (MentionStatus.LEAK_VISIBLE, MentionStatus.PARTIAL):
-                done("APPLICATION", "APPLICATION_OFFSET", "plan covers the mention but the output does not")
+                if oracle_status.get("oracle_regions", {}).get(mo.mention_id) in safe_values:
+                    done("APPLICATION", "INTERACTION", "own plan covers the mention and GT regions are applied "
+                                                       "correctly, but the tool's own regions are not")
+                else:
+                    done("APPLICATION", "APPLICATION_OFFSET", "plan covers the mention but the output does not")
                 continue
         # removal (file-level survival)
         if mo.status is MentionStatus.LEAK_RECOVERABLE:
@@ -189,6 +214,11 @@ def attribute(
             continue
         if mo.status is MentionStatus.LEAK_LATENT:
             done("REMOVAL", "REMOVAL_INCOMPLETE", "latent (recoverable by enhancement)")
+            continue
+        # every exposed stage looks right for this mention, yet a perfect upstream input fixes it
+        if cf and (text is not None or det is not None or loc is not None):
+            done(cf, "INTERACTION", f"each exposed stage looks correct on its own output, but the mention is "
+                                    f"safe when {cf_mode} input is injected")
             continue
         # black-box inference
         mb = bbox(as_poly([pt for seg in m.segments for wid in seg.words for pt in words[wid][1].poly]
@@ -247,5 +277,6 @@ def attribute(
     counts = {"by_category": dict(Counter(a.category for a in out if a.category != "SAFE")),
               "by_stage": dict(Counter(a.stage for a in out if a.category != "SAFE")),
               "by_confidence": dict(Counter(a.confidence for a in out if a.category != "SAFE")),
-              "over_redaction": dict(Counter(w.category for w in word_attr))}
+              "over_redaction": dict(Counter(w.category for w in word_attr)),
+              "tags": dict(Counter(t for a in out for t in a.tags))}
     return AttributionResult(out, word_attr, funnel, counts)

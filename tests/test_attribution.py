@@ -86,3 +86,41 @@ def test_missing_stages_are_not_applicable_not_zero():
     assert s.text is None and s.detection is None and s.localization is None
     d = s.to_dict()
     assert d["text"] is None and d["detection"] is None
+
+
+def test_invalid_replacements_are_tagged():
+    s = scored(MockSpec("inv", pseudonyms="consistent", replace_other="invalid"))
+    tagged = {a.mention_id for a in s.attribution.mentions if "PSEUDONYM_INVALID" in a.tags}
+    assert {"ph1", "em1", "gov1", "addr1"} <= tagged
+    assert s.attribution.counts["tags"]["PSEUDONYM_INVALID"] >= 4
+
+
+def test_collision_with_merged_clusters_is_a_resolution_merge():
+    # The collision mock gives every person the same pseudonym values; with clusters exposed and
+    # correct the root cause stays a pseudonym collision, with merged clusters it is resolution.
+    plain = scored(MockSpec("col", pseudonyms="collision"))
+    assert "PSEUDONYM_COLLISION" in plain.attribution.counts["tags"]
+    assert "RESOLUTION_MERGE" not in plain.attribution.counts["tags"]
+
+
+def test_split_clusters_with_inconsistent_pseudonyms_is_a_resolution_split():
+    # Running headers resolved as a separate person get different pseudonyms from the body text.
+    s = scored(MockSpec("split", pseudonyms="consistent", split_conditions=("running_header",)))
+    tags = s.attribution.counts["tags"]
+    assert s.resolution.false_splits and tags.get("RESOLUTION_SPLIT", 0) > 0
+    assert "PSEUDONYM_INCONSISTENT" not in tags
+    # Without the clusters artifact the same symptom stays a pseudonym inconsistency.
+    blind = scored(MockSpec("split", pseudonyms="consistent", split_conditions=("running_header",)), expose=False)
+    assert blind.attribution.counts["tags"].get("PSEUDONYM_INCONSISTENT", 0) > 0
+
+
+def test_interaction_when_own_plan_is_right_and_gt_regions_work():
+    fx = digital()
+    out = run_mock(fx.pdf, fx.gt, POLICY, MockSpec("annot", method="annotation"))
+    plain = score_document(fx.pdf, out.pdf, fx.gt, POLICY, out.artifacts(), config=CFG)
+    assert set(categories(plain)) == {"APPLICATION_OFFSET"}
+    # With an oracle_regions run in which GT regions were applied safely, the tool's own correct
+    # plan failing in its own engine is an interaction between localization and application.
+    oracle = {"oracle_regions": {m.id: "SAFE_REMOVED" for m in fx.gt.mentions}}
+    s = score_document(fx.pdf, out.pdf, fx.gt, POLICY, out.artifacts(), config=CFG, oracle=oracle)
+    assert set(categories(s)) == {"INTERACTION"}
