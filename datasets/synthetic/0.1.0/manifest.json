@@ -1,0 +1,553 @@
+{
+ "schema": "rb.dataset/0.1",
+ "name": "synthetic",
+ "version": "0.1.0",
+ "created": "2026-10-04",
+ "measured_with": {
+  "redaction_benchmark": "0.1.0.dev0",
+  "pymupdf": "1.28.2"
+ },
+ "documents": [
+  {
+   "doc_id": "syn-cropbox",
+   "sha256": "2cd9a38e7843a583835f3489c7542305a01f2ac55a578e439715e5a3b9a4355d",
+   "size_bytes": 2174,
+   "page_count": 2,
+   "split": "synthetic",
+   "matter": "MX",
+   "gt_version": null,
+   "pdf_version": "1.7",
+   "producer": "redaction_benchmark synth",
+   "metadata_keys": [
+    "creationDate",
+    "modDate",
+    "producer"
+   ],
+   "has_xmp": false,
+   "encrypted": false,
+   "revisions": 1,
+   "page_conditions": [
+    {
+     "index": 0,
+     "display_w": 595.0,
+     "display_h": 842.0,
+     "rotation_attr": 0,
+     "cropbox_offset": true,
+     "encoding": "digital_text",
+     "text_chars": 472,
+     "invisible_text_chars": 0,
+     "image_count": 0,
+     "bilevel_image_count": 0,
+     "image_coverage": 0.0,
+     "full_page_image_dpi": null,
+     "vector_paths": 1,
+     "skew_deg": null,
+     "text_axis": null,
+     "tags": []
+    },
+    {
+     "index": 1,
+     "display_w": 595.0,
+     "display_h": 842.0,
+     "rotation_attr": 0,
+     "cropbox_offset": true,
+     "encoding": "digital_text",
+     "text_chars": 255,
+     "invisible_text_chars": 0,
+     "image_count": 0,
+     "bilevel_image_count": 0,
+     "image_coverage": 0.0,
+     "full_page_image_dpi": null,
+     "vector_paths": 0,
+     "skew_deg": null,
+     "text_axis": null,
+     "tags": []
+    }
+   ],
+   "datasheet": {
+    "document_type": "synthetic medico-legal (cropbox)",
+    "provenance": "benchmark.synth (fictional)",
+    "authorisation": "not required",
+    "notes": null
+   }
+  },
+  {
+   "doc_id": "syn-digital",
+   "sha256": "b498916d06d6ca13578b099b58b5ee6ac7e18289aa85a6fcf864f0405bc49c5b",
+   "size_bytes": 4963,
+   "page_count": 2,
+   "split": "synthetic",
+   "matter": "MX",
+   "gt_version": null,
+   "pdf_version": "1.7",
+   "producer": "redaction_benchmark synth",
+   "metadata_keys": [
+    "creationDate",
+    "modDate",
+    "producer"
+   ],
+   "has_xmp": false,
+   "encrypted": false,
+   "revisions": 1,
+   "page_conditions": [
+    {
+     "index": 0,
+     "display_w": 595.0,
+     "display_h": 842.0,
+     "rotation_attr": 0,
+     "cropbox_offset": false,
+     "encoding": "digital_text",
+     "text_chars": 472,
+     "invisible_text_chars": 0,
+     "image_count": 0,
+     "bilevel_image_count": 0,
+     "image_coverage": 0.0,
+     "full_page_image_dpi": null,
+     "vector_paths": 1,
+     "skew_deg": null,
+     "text_axis": null,
+     "tags": []
+    },
+    {
+     "index": 1,
+     "display_w": 595.0,
+     "display_h": 842.0,
+     "rotation_attr": 0,
+     "cropbox_offset": false,
+     "encoding": "digital_text",
+     "text_chars": 255,
+     "invisible_text_chars": 0,
+     "image_count": 0,
+     "bilevel_image_count": 0,
+     "image_coverage": 0.0,
+     "full_page_image_dpi": null,
+     "vector_paths": 0,
+     "skew_deg": null,
+     "text_axis": null,
+     "tags": []
+    }
+   ],
+   "datasheet": {
+    "document_type": "synthetic medico-legal (digital)",
+    "provenance": "benchmark.synth (fictional)",
+    "authorisation": "not required",
+    "notes": null
+   }
+  },
+  {
+   "doc_id": "syn-mrc",
+   "sha256": "3829a1bf215ca0e1555f6dd4176d63000ae229edfe32993616a6138bcbbbda3f",
+   "size_bytes": 75044,
+   "page_count": 2,
+   "split": "synthetic",
+   "matter": "MX",
+   "gt_version": null,
+   "pdf_version": "1.3",
+   "producer": null,
+   "metadata_keys": [],
+   "has_xmp": false,
+   "encrypted": false,
+   "revisions": 1,
+   "page_conditions": [
+    {
+     "index": 0,
+     "display_w": 595.0,
+     "display_h": 842.0,
+     "rotation_attr": 0,
+     "cropbox_offset": false,
+     "encoding": "raster_mrc",
+     "text_chars": 0,
+     "invisible_text_chars": 0,
+     "image_count": 13,
+     "bilevel_image_count": 12,
+     "image_coverage": 1.0,
+     "full_page_image_dpi": 150.1,
+     "vector_paths": 0,
+     "skew_deg": -0.05,
+     "text_axis": "horizontal",
+     "tags": []
+    },
+    {
+     "index": 1,
+     "display_w": 595.0,
+     "display_h": 842.0,
+     "rotation_attr": 0,
+     "cropbox_offset": false,
+     "encoding": "raster_mrc",
+     "text_chars": 0,
+     "invisible_text_chars": 0,
+     "image_count": 7,
+     "bilevel_image_count": 6,
+     "image_coverage": 1.0,
+     "full_page_image_dpi": 150.1,
+     "vector_paths": 0,
+     "skew_deg": -0.05,
+     "text_axis": "horizontal",
+     "tags": []
+    }
+   ],
+   "datasheet": {
+    "document_type": "synthetic medico-legal (mrc)",
+    "provenance": "benchmark.synth (fictional)",
+    "authorisation": "not required",
+    "notes": null
+   }
+  },
+  {
+   "doc_id": "syn-raster",
+   "sha256": "08e1e323ffc8b4fcfc2311cda07f7c6002eb6fd57a2b9062871d5ac1eb9950eb",
+   "size_bytes": 223398,
+   "page_count": 2,
+   "split": "synthetic",
+   "matter": "MX",
+   "gt_version": null,
+   "pdf_version": "1.7",
+   "producer": "redaction_benchmark synth",
+   "metadata_keys": [
+    "creationDate",
+    "modDate",
+    "producer"
+   ],
+   "has_xmp": false,
+   "encrypted": false,
+   "revisions": 1,
+   "page_conditions": [
+    {
+     "index": 0,
+     "display_w": 595.0,
+     "display_h": 842.0,
+     "rotation_attr": 0,
+     "cropbox_offset": false,
+     "encoding": "raster_single",
+     "text_chars": 0,
+     "invisible_text_chars": 0,
+     "image_count": 1,
+     "bilevel_image_count": 0,
+     "image_coverage": 0.9999,
+     "full_page_image_dpi": 200.0,
+     "vector_paths": 0,
+     "skew_deg": -0.05,
+     "text_axis": "horizontal",
+     "tags": []
+    },
+    {
+     "index": 1,
+     "display_w": 595.0,
+     "display_h": 842.0,
+     "rotation_attr": 0,
+     "cropbox_offset": false,
+     "encoding": "raster_single",
+     "text_chars": 0,
+     "invisible_text_chars": 0,
+     "image_count": 1,
+     "bilevel_image_count": 0,
+     "image_coverage": 0.9999,
+     "full_page_image_dpi": 200.0,
+     "vector_paths": 0,
+     "skew_deg": -0.05,
+     "text_axis": "horizontal",
+     "tags": []
+    }
+   ],
+   "datasheet": {
+    "document_type": "synthetic medico-legal (raster)",
+    "provenance": "benchmark.synth (fictional)",
+    "authorisation": "not required",
+    "notes": null
+   }
+  },
+  {
+   "doc_id": "syn-raster-hidden-text",
+   "sha256": "f3122f2156d0fc244ce4760196686a6dafda27f0c26a31760bdcad9916ac20dd",
+   "size_bytes": 244761,
+   "page_count": 2,
+   "split": "synthetic",
+   "matter": "MX",
+   "gt_version": null,
+   "pdf_version": "1.7",
+   "producer": "redaction_benchmark synth",
+   "metadata_keys": [
+    "creationDate",
+    "modDate",
+    "producer"
+   ],
+   "has_xmp": false,
+   "encrypted": false,
+   "revisions": 1,
+   "page_conditions": [
+    {
+     "index": 0,
+     "display_w": 595.0,
+     "display_h": 842.0,
+     "rotation_attr": 0,
+     "cropbox_offset": false,
+     "encoding": "raster_hidden_text",
+     "text_chars": 0,
+     "invisible_text_chars": 410,
+     "image_count": 1,
+     "bilevel_image_count": 0,
+     "image_coverage": 0.9999,
+     "full_page_image_dpi": 200.0,
+     "vector_paths": 0,
+     "skew_deg": -0.05,
+     "text_axis": "horizontal",
+     "tags": []
+    },
+    {
+     "index": 1,
+     "display_w": 595.0,
+     "display_h": 842.0,
+     "rotation_attr": 0,
+     "cropbox_offset": false,
+     "encoding": "raster_hidden_text",
+     "text_chars": 0,
+     "invisible_text_chars": 217,
+     "image_count": 1,
+     "bilevel_image_count": 0,
+     "image_coverage": 0.9999,
+     "full_page_image_dpi": 200.0,
+     "vector_paths": 0,
+     "skew_deg": -0.05,
+     "text_axis": "horizontal",
+     "tags": []
+    }
+   ],
+   "datasheet": {
+    "document_type": "synthetic medico-legal (raster_hidden_text)",
+    "provenance": "benchmark.synth (fictional)",
+    "authorisation": "not required",
+    "notes": null
+   }
+  },
+  {
+   "doc_id": "syn-raster-skew",
+   "sha256": "a328fc2003705588a663699050378b22d23db7c9161e6b20b14787d8c57ff724",
+   "size_bytes": 207426,
+   "page_count": 2,
+   "split": "synthetic",
+   "matter": "MX",
+   "gt_version": null,
+   "pdf_version": "1.7",
+   "producer": "redaction_benchmark synth",
+   "metadata_keys": [
+    "creationDate",
+    "modDate",
+    "producer"
+   ],
+   "has_xmp": false,
+   "encrypted": false,
+   "revisions": 1,
+   "page_conditions": [
+    {
+     "index": 0,
+     "display_w": 595.0,
+     "display_h": 842.0,
+     "rotation_attr": 0,
+     "cropbox_offset": false,
+     "encoding": "raster_single",
+     "text_chars": 0,
+     "invisible_text_chars": 0,
+     "image_count": 1,
+     "bilevel_image_count": 0,
+     "image_coverage": 0.9999,
+     "full_page_image_dpi": 200.0,
+     "vector_paths": 0,
+     "skew_deg": 1.2,
+     "text_axis": "horizontal",
+     "tags": []
+    },
+    {
+     "index": 1,
+     "display_w": 595.0,
+     "display_h": 842.0,
+     "rotation_attr": 0,
+     "cropbox_offset": false,
+     "encoding": "raster_single",
+     "text_chars": 0,
+     "invisible_text_chars": 0,
+     "image_count": 1,
+     "bilevel_image_count": 0,
+     "image_coverage": 0.9999,
+     "full_page_image_dpi": 200.0,
+     "vector_paths": 0,
+     "skew_deg": 1.25,
+     "text_axis": "horizontal",
+     "tags": []
+    }
+   ],
+   "datasheet": {
+    "document_type": "synthetic medico-legal (raster_skew)",
+    "provenance": "benchmark.synth (fictional)",
+    "authorisation": "not required",
+    "notes": null
+   }
+  },
+  {
+   "doc_id": "syn-rotate-attr",
+   "sha256": "ddd8be94e814bbd3b65fa47e5ad4364db97fed89200ac1c70f351214cadc4fef",
+   "size_bytes": 5133,
+   "page_count": 2,
+   "split": "synthetic",
+   "matter": "MX",
+   "gt_version": null,
+   "pdf_version": "1.7",
+   "producer": "redaction_benchmark synth",
+   "metadata_keys": [
+    "creationDate",
+    "modDate",
+    "producer"
+   ],
+   "has_xmp": false,
+   "encrypted": false,
+   "revisions": 1,
+   "page_conditions": [
+    {
+     "index": 0,
+     "display_w": 842.0,
+     "display_h": 595.0,
+     "rotation_attr": 90,
+     "cropbox_offset": false,
+     "encoding": "digital_text",
+     "text_chars": 472,
+     "invisible_text_chars": 0,
+     "image_count": 0,
+     "bilevel_image_count": 0,
+     "image_coverage": 0.0,
+     "full_page_image_dpi": null,
+     "vector_paths": 1,
+     "skew_deg": null,
+     "text_axis": null,
+     "tags": []
+    },
+    {
+     "index": 1,
+     "display_w": 842.0,
+     "display_h": 595.0,
+     "rotation_attr": 90,
+     "cropbox_offset": false,
+     "encoding": "digital_text",
+     "text_chars": 255,
+     "invisible_text_chars": 0,
+     "image_count": 0,
+     "bilevel_image_count": 0,
+     "image_coverage": 0.0,
+     "full_page_image_dpi": null,
+     "vector_paths": 0,
+     "skew_deg": null,
+     "text_axis": null,
+     "tags": []
+    }
+   ],
+   "datasheet": {
+    "document_type": "synthetic medico-legal (rotate_attr)",
+    "provenance": "benchmark.synth (fictional)",
+    "authorisation": "not required",
+    "notes": null
+   }
+  },
+  {
+   "doc_id": "syn-rotated-content",
+   "sha256": "b488018732ca94d1e1737ed0c5c9fc3f0d5c6b3b0b36333db4949bc1e10e64bd",
+   "size_bytes": 82018,
+   "page_count": 1,
+   "split": "synthetic",
+   "matter": "MX",
+   "gt_version": null,
+   "pdf_version": "1.7",
+   "producer": "redaction_benchmark synth",
+   "metadata_keys": [
+    "creationDate",
+    "modDate",
+    "producer"
+   ],
+   "has_xmp": false,
+   "encrypted": false,
+   "revisions": 1,
+   "page_conditions": [
+    {
+     "index": 0,
+     "display_w": 595.0,
+     "display_h": 842.0,
+     "rotation_attr": 0,
+     "cropbox_offset": false,
+     "encoding": "raster_single",
+     "text_chars": 0,
+     "invisible_text_chars": 0,
+     "image_count": 1,
+     "bilevel_image_count": 0,
+     "image_coverage": 0.9999,
+     "full_page_image_dpi": 200.0,
+     "vector_paths": 0,
+     "skew_deg": -0.05,
+     "text_axis": "vertical",
+     "tags": []
+    }
+   ],
+   "datasheet": {
+    "document_type": "synthetic medico-legal (rotated_content)",
+    "provenance": "benchmark.synth (fictional)",
+    "authorisation": "not required",
+    "notes": null
+   }
+  },
+  {
+   "doc_id": "syn-vector",
+   "sha256": "000cf7e0aae0b1cc056b9bcb2148b859dee2f6b7ad084d4ae4954c204841fe9a",
+   "size_bytes": 87132,
+   "page_count": 2,
+   "split": "synthetic",
+   "matter": "MX",
+   "gt_version": null,
+   "pdf_version": "1.3",
+   "producer": null,
+   "metadata_keys": [],
+   "has_xmp": false,
+   "encrypted": false,
+   "revisions": 1,
+   "page_conditions": [
+    {
+     "index": 0,
+     "display_w": 595.0,
+     "display_h": 842.0,
+     "rotation_attr": 0,
+     "cropbox_offset": false,
+     "encoding": "vector_outline",
+     "text_chars": 0,
+     "invisible_text_chars": 0,
+     "image_count": 0,
+     "bilevel_image_count": 0,
+     "image_coverage": 0.0,
+     "full_page_image_dpi": null,
+     "vector_paths": 439,
+     "skew_deg": null,
+     "text_axis": null,
+     "tags": []
+    },
+    {
+     "index": 1,
+     "display_w": 595.0,
+     "display_h": 842.0,
+     "rotation_attr": 0,
+     "cropbox_offset": false,
+     "encoding": "vector_outline",
+     "text_chars": 0,
+     "invisible_text_chars": 0,
+     "image_count": 0,
+     "bilevel_image_count": 0,
+     "image_coverage": 0.0,
+     "full_page_image_dpi": null,
+     "vector_paths": 226,
+     "skew_deg": null,
+     "text_axis": null,
+     "tags": []
+    }
+   ],
+   "datasheet": {
+    "document_type": "synthetic medico-legal (vector)",
+    "provenance": "benchmark.synth (fictional)",
+    "authorisation": "not required",
+    "notes": null
+   }
+  }
+ ]
+}
