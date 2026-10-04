@@ -53,6 +53,13 @@ class Datasheet(StrictModel):
     notes: str | None = None
 
 
+class DerivedFrom(StrictModel):
+    doc_id: str
+    dataset: str
+    factor: str = Field(description='e.g. "dpi", "skew", "jpeg", "noise", "blur", "twin"')
+    value: float | None = None
+
+
 class DocumentEntry(StrictModel):
     doc_id: str = Field(min_length=1)
     sha256: Sha256
@@ -69,6 +76,7 @@ class DocumentEntry(StrictModel):
     revisions: int = Field(1, ge=1, description="Number of %%EOF-terminated revisions")
     page_conditions: list[PageConditions]
     datasheet: Datasheet = Datasheet()
+    derived_from: DerivedFrom | None = Field(None, description="Set for controlled variants (ladders, twins)")
 
 
 class DatasetManifest(StrictModel):

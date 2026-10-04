@@ -115,6 +115,22 @@ Tags on otherwise safe mentions: `PSEUDONYM_INCONSISTENT`, `PSEUDONYM_COLLISION`
 black-box heuristics (an orphan redaction next to a missed mention, the same entity
 protected elsewhere). They are reported separately and never pooled.
 
+## Failure decomposition
+
+For a candidate with an end-to-end run and oracle runs on the same dataset, on the
+required mentions common to all of them:
+
+| Stage | Share of the leak rate (points) |
+|---|---|
+| Text acquisition | e2e − oracle_text |
+| Detection | oracle_text − oracle_mentions |
+| Resolution + localization | oracle_mentions − oracle_regions |
+| Application | oracle_regions |
+
+Missing modes merge the neighbouring stages. The parts sum to the end-to-end leak rate. A
+negative part means a stage does better on its own upstream output than on perfect input
+(an interaction).
+
 ## Statistics
 
 Rates pool required mentions; 95% intervals are document-cluster bootstraps (mentions

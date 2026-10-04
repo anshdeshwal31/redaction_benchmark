@@ -30,7 +30,7 @@ from .common import (
     Role,
     WordSource,
 )
-from .dataset import DatasetManifest, Datasheet, DocumentEntry, PageConditions, PageEncoding
+from .dataset import DatasetManifest, Datasheet, DerivedFrom, DocumentEntry, PageConditions, PageEncoding
 from .gt import (
     AttributeValue,
     GTClassified,

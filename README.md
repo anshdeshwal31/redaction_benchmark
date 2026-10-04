@@ -33,6 +33,8 @@ rb report <run_id> [--shareable]                 # static HTML: scorecard, compo
 rb query <run_id> "SELECT type, status, count(*) FROM mentions WHERE requirement='MUST' GROUP BY ALL"
 rb compare <run_a> <run_b>                       # mention-level fixed / regressed / category changed
 rb regress promote <run_id> <doc_id> <mention_id> ; rb regress check <run_id>
+rb synth ladder --factor dpi --version 0.1.0 --source synthetic@0.1.0   # controlled degradation ladder
+rb board <run_id> <run_id> ...                   # comparison board: scorecard, heatmaps, decomposition, ladders
 ```
 
 Isolating stages: run the same candidate with `experiments/oracle-text.yaml`,

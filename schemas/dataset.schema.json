@@ -55,6 +55,43 @@
    "title": "Datasheet",
    "type": "object"
   },
+  "DerivedFrom": {
+   "additionalProperties": false,
+   "properties": {
+    "doc_id": {
+     "title": "Doc Id",
+     "type": "string"
+    },
+    "dataset": {
+     "title": "Dataset",
+     "type": "string"
+    },
+    "factor": {
+     "description": "e.g. \"dpi\", \"skew\", \"jpeg\", \"noise\", \"blur\", \"twin\"",
+     "title": "Factor",
+     "type": "string"
+    },
+    "value": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Value"
+    }
+   },
+   "required": [
+    "doc_id",
+    "dataset",
+    "factor"
+   ],
+   "title": "DerivedFrom",
+   "type": "object"
+  },
   "DocumentEntry": {
    "additionalProperties": false,
    "properties": {
@@ -176,6 +213,18 @@
       "authorisation": null,
       "notes": null
      }
+    },
+    "derived_from": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/DerivedFrom"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Set for controlled variants (ladders, twins)"
     }
    },
    "required": [

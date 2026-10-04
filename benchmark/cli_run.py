@@ -146,6 +146,24 @@ def _cmd_query(args) -> int:
     return 0
 
 
+def _cmd_synth_ladder(args) -> int:
+    from .synth.register import register_ladder
+
+    m = register_ladder(args.factor, args.version, args.source, args.docs)
+    print(f"dataset {m.name}@{m.version}: {len(m.documents)} documents "
+          + ", ".join(f"{d.doc_id}" for d in m.documents))
+    return 0
+
+
+def _cmd_board(args) -> int:
+    from .report.board import build_board
+    from .runner.scoring import results_root
+
+    out = Path(args.out) if args.out else results_root() / f"board-{args.name}.html"
+    print(f"board -> {build_board(args.run_ids, out, title=args.title)}")
+    return 0
+
+
 def register(sub) -> None:
     gt = sub.choices["gt"]._subparsers._group_actions[0]
     dr = gt.add_parser("draft", help="machine pre-annotation drafts (text layer / measurement OCR / regex)")
@@ -158,12 +176,24 @@ def register(sub) -> None:
     rv.add_argument("--pdf", required=True)
     rv.add_argument("--out", required=True)
     rv.set_defaults(func=_cmd_gt_review)
+    bd = sub.add_parser("board", help="comparison board over several scored runs")
+    bd.add_argument("run_ids", nargs="+")
+    bd.add_argument("--name", default="latest")
+    bd.add_argument("--title", default="Candidate comparison")
+    bd.add_argument("--out")
+    bd.set_defaults(func=_cmd_board)
 
     sy = sub.choices["synth"]._subparsers._group_actions[0]
     ds = sy.add_parser("dataset", help="register the synthetic fixtures as a dataset with GT")
     ds.add_argument("--version", required=True)
     ds.add_argument("--variants", nargs="*")
     ds.set_defaults(func=_cmd_synth_dataset)
+    ld = sy.add_parser("ladder", help="register a single-factor degradation ladder of documents with GT")
+    ld.add_argument("--factor", required=True, choices=["dpi", "skew", "jpeg", "noise", "blur"])
+    ld.add_argument("--version", required=True)
+    ld.add_argument("--source", required=True, help="source dataset name@version")
+    ld.add_argument("--docs", nargs="*")
+    ld.set_defaults(func=_cmd_synth_ladder)
 
     r = sub.add_parser("run", help="run a candidate over a dataset")
     r.add_argument("--candidate", required=True)

@@ -82,12 +82,15 @@ def ingest(
     split: str = "dev",
     matters: dict[str, str] | None = None,
     datasheets: dict[str, Datasheet] | None = None,
+    derived: dict | None = None,
 ) -> DatasetManifest:
     entries = []
     for doc_id, src in sources.items():
         store_pdf(src)
-        entries.append(describe_document(src, doc_id, split, (matters or {}).get(doc_id),
-                                         (datasheets or {}).get(doc_id)))
+        entry = describe_document(src, doc_id, split, (matters or {}).get(doc_id), (datasheets or {}).get(doc_id))
+        if derived and doc_id in derived:
+            entry = entry.model_copy(update={"derived_from": derived[doc_id]})
+        entries.append(entry)
     manifest = DatasetManifest(
         name=name,
         version=version,

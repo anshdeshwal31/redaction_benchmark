@@ -162,3 +162,28 @@ def test_failed_runs_count_in_the_strict_view(env, tmp_path):
     assert "leaking, completed runs only" in html and "from failed runs" in html
 
 
+def test_board_scorecard_heatmaps_and_decomposition(env, tmp_path):
+    from benchmark.report.board import build_board, decomposition, RunData
+
+    out = build_board(["ref", "overlay", "dpi-oracle", "dpi-e2e"], tmp_path / "board.html")
+    page = out.read_text(encoding="utf-8")
+    assert "Scorecard" in page and "By PII type" in page and "Failure root causes" in page
+    dec = decomposition([RunData("dpi-oracle"), RunData("dpi-e2e")])
+    assert len(dec) == 1
+    parts = dict(dec[0]["parts"])
+    assert parts["application"] == 0.0 and abs(sum(parts.values()) - 1.0) < 1e-9
+
+
+def test_ladder_dataset_and_curves(env, tmp_path):
+    from benchmark.report.board import build_board, ladders, RunData
+    from benchmark.synth.register import register_ladder
+
+    m = register_ladder("dpi", "0.0.1", "synthetic@0.0.1")
+    assert [d.derived_from.value for d in m.documents] == [300.0, 200.0, 150.0, 100.0]
+    cand = candidate(env, "reference-raster")
+    run_candidate(cand, "ladder-dpi@0.0.1", ROOT / "experiments" / "e2e.yaml", POLICY, run_id="lad")
+    score_run("lad", POLICY, CFG)
+    lad = ladders([RunData("lad")])
+    assert sorted(v for v, _, _ in lad["dpi"]["mock-reference-raster"]) == [100.0, 150.0, 200.0, 300.0]
+    page = build_board(["lad"], tmp_path / "b.html").read_text(encoding="utf-8")
+    assert "Leak rate vs dpi" in page
