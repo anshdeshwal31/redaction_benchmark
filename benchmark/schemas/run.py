@@ -29,6 +29,8 @@ class ExperimentSpec(StrictModel):
     mode: Mode = "e2e"
     repeats: int = Field(1, ge=1, le=50)
     vary_seed: bool = Field(False, description="Pass a different seed to each repeat (seed sensitivity)")
+    inject_from: str = Field("gt", description='Source of injected stage inputs: "gt", or "run:<run_id>" to '
+                                               "inject another candidate's artifacts (stage swapping)")
     description: str = ""
 
 

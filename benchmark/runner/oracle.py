@@ -98,3 +98,76 @@ def materialise(kinds: list[InjectionKind], gt: GTDocument, policy: PolicyProfil
         write_model(makers[k](), path)
         paths[k.value] = path
     return paths
+
+
+# -- stage swapping: inject another candidate's artifacts --------------------------------------
+
+_SOURCE_FILES = {InjectionKind.TEXT: ("text", "text.json"), InjectionKind.MENTIONS: ("mentions", "mentions.json"),
+                 InjectionKind.ENTITIES: ("entities", "entities.json"), InjectionKind.REGIONS: ("plan", "plan.json")}
+
+
+def _to_display(model, geoms):
+    """Return a copy of a framed artifact with every polygon in display_pt."""
+    from ..geometry import Frame
+
+    frame = getattr(model, "frame", None)
+    if frame is None or frame is Frame.DISPLAY_PT:
+        return model
+    dpi = model.dpi
+
+    def conv(page, poly):
+        return [tuple(pt) for pt in geoms[page].transform(as_poly(poly), frame, Frame.DISPLAY_PT, dpi).tolist()]
+
+    data = model.model_dump(mode="python", by_alias=True)
+    if "pages" in data:  # text
+        for pg in data["pages"]:
+            for tok in pg["tokens"]:
+                tok["poly"] = conv(pg["index"], tok["poly"])
+    if "mentions" in data:
+        for m in data["mentions"]:
+            for r in m.get("regions") or []:
+                r["poly"] = conv(r["page"], r["poly"])
+    if "regions" in data:  # plan
+        for r in data["regions"]:
+            r["poly"] = conv(r["page"], r["poly"])
+    data["frame"] = Frame.DISPLAY_PT
+    data["dpi"] = None
+    return type(model).model_validate(data)
+
+
+def materialise_from_run(kinds: list[InjectionKind], source_run_dir: Path, doc_id: str, input_pdf: Path,
+                         out_dir: Path) -> dict[str, Path]:
+    """Copy another run's stage artifacts for the same document (repeat 0) into the inject
+    directory, normalised to display_pt and with labels mapped to benchmark types."""
+    import json
+
+    from ..geometry import load_page_geometries
+    from ..schemas import CandidateManifest, PiiType
+    from .artifacts import MODELS
+
+    run = json.loads((source_run_dir / "run.json").read_text(encoding="utf-8"))
+    src_manifest = CandidateManifest.model_validate(run["candidate"]["manifest"])
+    item = next((i for i in run["items"] if i["doc_id"] == doc_id and i["repeat"] == 0), None)
+    if item is None:
+        raise FileNotFoundError(f"source run has no output for {doc_id}")
+    workdir = source_run_dir / item["workdir"] / "out"
+    geoms = load_page_geometries(input_pdf)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths = {}
+    for k in kinds:
+        kind_name, fname = _SOURCE_FILES[k]
+        src = workdir / fname
+        if not src.exists():
+            raise FileNotFoundError(f"source run did not produce {fname} for {doc_id}")
+        from ..schemas import ArtifactKind
+
+        model = MODELS[ArtifactKind(kind_name)].model_validate(json.loads(src.read_text(encoding="utf-8")))
+        model = _to_display(model, geoms)
+        if k is InjectionKind.MENTIONS and src_manifest.label_map:
+            for m in model.mentions:
+                mapped = src_manifest.label_map.get(m.label)
+                m.label = (mapped.value if isinstance(mapped, PiiType) else mapped) or m.label
+        path = out_dir / FILENAMES[k]
+        write_model(model, path)
+        paths[k.value] = path
+    return paths

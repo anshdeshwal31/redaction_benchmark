@@ -157,9 +157,14 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
     red = lambda w: w["visible_fraction"] is not None and w["visible_fraction"] < 0.5  # noqa: E731
     tp = sum(1 for w in must_w if red(w))
     fp = sum(1 for w in ordinary + protected if red(w))
+    no_output = [m for m in must if m["status"] == "NO_OUTPUT"]
+    completed = [m for m in leaking if m["status"] != "NO_OUTPUT"]
     cards = [
-        {"label": "required mentions leaking (L1-L3)", "value": _fmt(leak_rate, True), "cls": "bad" if leaking else "ok",
-         "note": f"{len(leaking)}/{evaluated}" + (f" · 95% CI {ci[0]*100:.1f}-{ci[1]*100:.1f}%" if ci else "")},
+        {"label": "required mentions leaking (strict)", "value": _fmt(leak_rate, True), "cls": "bad" if leaking else "ok",
+         "note": f"{len(leaking)}/{evaluated}" + (f" · 95% CI {ci[0]*100:.1f}-{ci[1]*100:.1f}%" if ci else "")
+                 + (f" · {len(no_output)} from failed runs" if no_output else "")},
+        {"label": "leaking, completed runs only", "value": _fmt(_rate(len(completed), evaluated - len(no_output)), True),
+         "cls": "bad" if completed else "ok", "note": f"{len(completed)}/{evaluated - len(no_output)}"},
         {"label": "visible or recoverable (L1+L2)", "value": _fmt(_rate(len(l12), evaluated), True),
          "cls": "bad" if l12 else "ok", "note": f"partial {by_status['PARTIAL']} · visible {by_status['LEAK_VISIBLE']} · recoverable {by_status['LEAK_RECOVERABLE']}"},
         {"label": "latent only (L3)", "value": str(by_status["LEAK_LATENT"]), "cls": "bad" if by_status["LEAK_LATENT"] else "ok", "note": "recoverable by enhancement"},
@@ -208,8 +213,8 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
         return [(k, n, l, _fmt(_rate(l, n), True)) for k, (n, l) in sorted(groups.items(), key=lambda kv: -kv[1][1])]
 
     breakdowns = [("By PII type", breakdown(lambda m: [m["type"]])),
-                  ("By condition", breakdown(lambda m: [c for c in (m["conditions"] or "").split(",") if c] or ["(none)"])),
-                  ("By page encoding", breakdown(lambda m: (m["encodings"] or "?").split(",")))]
+                  ("By condition", breakdown(lambda m: [c for c in (m.get("conditions") or "").split(",") if c] or ["(none)"])),
+                  ("By page encoding", breakdown(lambda m: (m.get("encodings") or "?").split(",")))]
     funnel = {}
     for d in doc0:
         for k, v in d.items():
@@ -237,7 +242,7 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
     gallery = []
     ds = load_manifest(run.dataset["name"], run.dataset["version"])
     gts = {}
-    for m in leaking[:gallery_limit]:
+    for m in [x for x in leaking if x["status"] != "NO_OUTPUT"][:gallery_limit]:
         doc_id = m["doc_id"]
         entry = ds.document(doc_id)
         if doc_id not in gts:

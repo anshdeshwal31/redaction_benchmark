@@ -132,3 +132,33 @@ def test_experiment_not_applicable_when_injection_unsupported(env):
     cand.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match="not applicable"):
         run_candidate(cand, "synthetic@0.0.1", ROOT / "experiments" / "oracle-text.yaml", POLICY, run_id="na")
+
+
+def test_stage_swap_injects_another_candidates_text(env, tmp_path):
+    # Tool A cannot read names; tool B reads perfectly. B fed with A's text inherits A's misses.
+    run_and_score(env, "ocr-misses-names", "ocr-a")
+    exp = tmp_path / "swap.yaml"
+    exp.write_text('schema: rb.experiment/0.1\nname: swap-text\nmode: oracle_text\ninject_from: "run:ocr-a"\n',
+                   encoding="utf-8")
+    cand = candidate(env, "reference")
+    run = run_candidate(cand, "synthetic@0.0.1", exp, POLICY, run_id="swap")
+    assert all(not i.error for i in run.items) and run.items[0].injected
+    res = score_run("swap", POLICY, CFG)
+    leaks = [r for r in must_rows(res) if r[0] not in ("SAFE_REMOVED", "SAFE_REPLACED")]
+    assert len(leaks) == 9  # the names A could not read
+
+
+def test_failed_runs_count_in_the_strict_view(env, tmp_path):
+    cand = candidate(env, "reference")
+    text = cand.read_text(encoding="utf-8").replace("--spec reference", "--spec no-such-spec")
+    broken = tmp_path / "broken.yaml"
+    broken.write_text(text.replace("name: mock-reference", "name: mock-broken"), encoding="utf-8")
+    run = run_candidate(broken, "synthetic@0.0.1", ROOT / "experiments" / "e2e.yaml", POLICY, run_id="broken")
+    assert run.items[0].error
+    res = score_run("broken", POLICY, CFG)
+    rows = must_rows(res)
+    assert rows and {r[0] for r in rows} == {"NO_OUTPUT"} and {r[1] for r in rows} == {"CANDIDATE_ERROR"}
+    html = build_report("broken", res).read_text(encoding="utf-8")
+    assert "leaking, completed runs only" in html and "from failed runs" in html
+
+

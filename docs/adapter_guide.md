@@ -86,6 +86,12 @@ then isolate your stages by giving them perfect upstream input from ground truth
 Injected files use the same schemas, in `display_pt`. Only mentions required by the
 current policy are injected.
 
+Injected inputs do not always come from ground truth. An experiment with
+`inject_from: "run:<run_id>"` feeds you another candidate's artifacts instead (stage
+swapping: for example tool A's OCR into your detector). They arrive in the same format
+(`display_pt`, benchmark labels), but they may be wrong: use them as you would your own
+upstream output, without second-guessing them from the page.
+
 ## 5. Rules
 
 - Ground truth is never placed in your working directory, and you must not try to obtain it.

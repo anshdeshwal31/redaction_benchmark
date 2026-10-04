@@ -56,6 +56,7 @@ Each required mention then gets exactly one status, checked in this order:
 |---|---|
 | `LEAK_VISIBLE` | ≥ 90% of units visible in any render configuration (MuPDF, PDFium; with and without annotations if the output has any) |
 | `PARTIAL` | > 2% of units visible |
+| `NO_OUTPUT` | the candidate produced no output for the document (failed run); counted as unprotected in the strict view, excluded from the completed-only view |
 | `LEAK_RECOVERABLE` | not visible, but the original survives in the file: text layer at the location (any render mode), an image layer on its own, glyph vector paths, or an earlier incremental revision |
 | `LEAK_LATENT` | > 2% of units latent (e.g. translucent box, MRC ghost) |
 | `SAFE_REPLACED` | none of the above, and the region carries new text-like ink or new text |

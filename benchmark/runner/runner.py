@@ -26,7 +26,7 @@ from ..gt.io import find_gt, load_policy, read_model, write_model
 from ..schemas import CandidateManifest, InjectionKind
 from ..schemas.run import MODE_INJECTS, ExperimentSpec, RunItem, RunManifest
 from .artifacts import load_artifacts, sha256_file
-from .oracle import materialise
+from .oracle import materialise, materialise_from_run
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -150,7 +150,17 @@ def run_candidate(
             item = RunItem(doc_id=doc.doc_id, repeat=rep, workdir=str(work.relative_to(root)),
                            input_sha256=sha256_file(input_pdf), seed=seed)
             inject_dir = None
-            if needed:
+            if needed and exp.inject_from.startswith("run:"):
+                inject_dir = work / "inject"
+                try:
+                    paths = materialise_from_run(needed, runs_root() / exp.inject_from[4:], doc.doc_id, input_pdf,
+                                                 inject_dir)
+                except FileNotFoundError as exc:
+                    item.error = f"stage swap: {exc}"
+                    run.items.append(item)
+                    continue
+                item.injected = {k: sha256_file(p) for k, p in paths.items()}
+            elif needed:
                 gt = find_gt(doc.doc_id, doc.sha256)
                 if gt is None:
                     item.error = "no GT available for oracle injection"

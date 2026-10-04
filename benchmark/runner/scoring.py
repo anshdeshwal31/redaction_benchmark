@@ -31,6 +31,26 @@ def _oracle_status(run_id: str) -> dict[str, dict[str, str]]:
     return out
 
 
+def _no_output_rows(ident: dict, doc_id: str, repeat: int, gt, policy, reason: str) -> dict[str, list[dict]]:
+    """A failed run leaves every required mention unprotected (strict view); reports also
+    show the completed-only view, which excludes these rows."""
+    from ..gt.policy import resolve
+
+    res = resolve(gt, policy)
+    entities = {e.id: e for e in gt.entities}
+    must = [m for m in gt.mentions if res.mentions[m.id].requirement.value == "MUST"]
+    mentions = [dict(ident, doc_id=doc_id, repeat=repeat, mention_id=m.id, type=m.type.value, subtype=m.subtype,
+                     entity=m.entity, role=entities[m.entity].role.value if m.entity in entities else None,
+                     requirement="MUST", pending=None, status="NO_OUTPUT", conditions=",".join(m.conditions),
+                     pages=",".join(str(sg.page) for sg in m.segments), attr_stage="RUN",
+                     attr_category="CANDIDATE_ERROR", attr_confidence="confirmed", attr_detail=reason, attr_tags="")
+                for m in must]
+    doc = dict(ident, doc_id=doc_id, repeat=repeat, candidate_error=reason, must_mentions=len(must),
+               must_evaluated=0, clean_document=False, integrity_ok=False,
+               entities_with_must_mentions=len({m.entity for m in must if m.entity}))
+    return {"documents": [doc], "mentions": mentions}
+
+
 def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = None,
               oracle_runs: dict[str, str] | None = None) -> Path:
     cfg = config or EvalConfig()
@@ -61,9 +81,11 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
         for item in sorted(items, key=lambda i: i.repeat):
             workdir = runs_root() / run_id / item.workdir / "out"
             out_pdf = workdir / "output.pdf"
-            if item.error and not out_pdf.exists():
-                skipped.append({"doc_id": doc_id, "repeat": item.repeat, "reason": item.error})
-                tables["documents"].append(dict(ident, doc_id=doc_id, repeat=item.repeat, candidate_error=item.error))
+            if not out_pdf.exists():
+                reason = item.error or "no output.pdf"
+                skipped.append({"doc_id": doc_id, "repeat": item.repeat, "reason": reason})
+                for name, rows in _no_output_rows(ident, doc_id, item.repeat, gt, policy, reason).items():
+                    tables[name].extend(rows)
                 continue
             artifacts, _, errors = load_artifacts(workdir, manifest)
             artifacts.pop("output_pdf", None)
@@ -89,7 +111,10 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
             d["invalid_artifacts"] = errors
             (out_root / "scores" / f"{doc_id}-r{item.repeat}.json").write_text(
                 json.dumps(d, indent=1, default=str), encoding="utf-8")
-            for name, rows in rows_for_score(ident, {"doc_id": doc_id, "repeat": item.repeat}, score, entry).items():
+            rows_by_table = rows_for_score(ident, {"doc_id": doc_id, "repeat": item.repeat}, score, entry)
+            if item.error:
+                rows_by_table["documents"][0]["candidate_error"] = item.error
+            for name, rows in rows_by_table.items():
                 tables[name].extend(rows)
     write_tables(out_root / "tables", tables)
     (out_root / "scoring.json").write_text(json.dumps({

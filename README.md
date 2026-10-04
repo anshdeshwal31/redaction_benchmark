@@ -35,6 +35,13 @@ rb compare <run_a> <run_b>                       # mention-level fixed / regress
 rb regress promote <run_id> <doc_id> <mention_id> ; rb regress check <run_id>
 ```
 
+Isolating stages: run the same candidate with `experiments/oracle-text.yaml`,
+`oracle-mentions.yaml` and `oracle-regions.yaml` (perfect upstream input from GT), score
+the end-to-end run with `--oracle oracle_text=<run>` etc., and put all of them on one
+board to see what share of the leak rate each stage causes. Set
+`inject_from: "run:<run_id>"` in an experiment to feed one candidate's artifacts into
+another (stage swapping).
+
 Real documents:
 
 ```bash

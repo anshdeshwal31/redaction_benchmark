@@ -37,6 +37,12 @@
    "title": "Vary Seed",
    "type": "boolean"
   },
+  "inject_from": {
+   "default": "gt",
+   "description": "Source of injected stage inputs: \"gt\", or \"run:<run_id>\" to inject another candidate's artifacts (stage swapping)",
+   "title": "Inject From",
+   "type": "string"
+  },
   "description": {
    "default": "",
    "title": "Description",
