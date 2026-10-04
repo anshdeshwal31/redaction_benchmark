@@ -1,0 +1,108 @@
+# Draft redaction policy for Australian medico-legal documents.
+#
+# STATUS: DRAFT — pending the decisions listed in PLAN.md §16.
+# Rules marked `pending: Qn` use MAY, so undecided categories neither reward nor
+# penalise a tool; reports list them separately. Rules are evaluated top to bottom
+# and the first match wins.
+schema: rb.policy/0.1
+name: au-medicolegal
+version: 0.1.0-draft
+description: >
+  Facts-to-requirements mapping for the seed dataset. Private persons' identities and
+  direct identifiers are required; dates are kept (current product requirement);
+  everything tied to an open question is MAY until decided.
+consistency_scope: pending        # Q8: document, matter or global
+
+rules:
+  # --- person names ---------------------------------------------------------
+  - id: names-private-persons
+    when:
+      type: [PERSON_NAME]
+      role: [claimant, family_member, witness, alleged_perpetrator, employer_staff, other_private, unknown]
+    requirement: MUST
+    action: either                # Q7: replace vs remove per type
+    note: Unknown roles are treated as private; annotators should assign roles.
+
+  - id: names-professionals
+    when:
+      type: [PERSON_NAME]
+      role: [treating_clinician, examining_expert, legal_representative, insurer_staff, admin_staff, official]
+    requirement: MAY
+    pending: Q1
+
+  # --- non-text personal marks ----------------------------------------------
+  - id: signatures-and-marks
+    when:
+      type: [SIGNATURE, HANDWRITTEN_MARK, IMAGE_PII]
+    requirement: MAY
+    action: remove
+    pending: Q6
+
+  # --- contact details --------------------------------------------------------
+  - id: contact-private-persons
+    when:
+      type: [ADDRESS, PHONE, EMAIL, URL]
+      role: [claimant, family_member, witness, alleged_perpetrator, employer_staff, other_private, unknown]
+    requirement: MUST
+
+  - id: contact-professionals-and-organisations
+    when:
+      type: [ADDRESS, PHONE, EMAIL, URL]
+    requirement: MAY
+    pending: Q2
+
+  # --- dates and ages ---------------------------------------------------------
+  - id: date-of-birth
+    when:
+      type: [DATE]
+      subtype: [dob]
+    requirement: MAY
+    pending: Q3
+
+  - id: dates-kept
+    when:
+      type: [DATE]
+    requirement: MUST_NOT
+    note: Current product requirement — dates are not redacted.
+
+  - id: ages
+    when:
+      type: [AGE]
+    requirement: MAY
+    pending: Q3
+
+  # --- identifiers -------------------------------------------------------------
+  - id: government-and-financial-ids
+    when:
+      type: [ID_GOVERNMENT, ID_FINANCIAL]
+    requirement: MUST
+
+  - id: claim-legal-provider-business-ids
+    when:
+      type: [ID_CLAIM, ID_LEGAL_REF, ID_PROVIDER, ID_BUSINESS, ID_OTHER, FILE_PATH]
+    requirement: MAY
+    pending: Q5
+
+  # --- organisations and quasi-identifiers -------------------------------------
+  - id: organisations
+    when:
+      type: [ORGANISATION]
+    requirement: MAY
+    pending: Q2
+
+  - id: locations-and-quasi-identifiers
+    when:
+      type: [LOCATION, QUASI_IDENTIFIER]
+    requirement: MAY
+    pending: Q4
+
+  # --- protected non-PII content ---------------------------------------------
+  - id: protected-content
+    when:
+      target: classified
+    requirement: MUST_NOT
+    note: Clinical terms, medications, eponyms, citations, homographs, boilerplate, placeholders.
+
+default_mention: MAY
+default_classified: MUST_NOT
+optional_words: MAY
