@@ -51,6 +51,8 @@ rb dataset ingest --name seed --version 0.1.0 --doc DPI=path.pdf ... --matter DP
 rb inspect path.pdf                              # every content surface: text, layers, paths, metadata, revisions
 rb gt draft --dataset seed@0.1.0                 # machine draft for annotators (written to data/, git-ignored)
 rb gt validate data/gt/DPI.gt.json --source path.pdf --policy policies/au-medicolegal-v0.yaml
+rb gt agree annotator_a.gt.json annotator_b.gt.json   # inter-annotator agreement and release gates
+rb selfcheck --dataset seed@0.1.0 --docs DPI     # does the evaluator reach the right verdicts on this document?
 ```
 
 ## Layout

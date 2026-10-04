@@ -77,9 +77,16 @@ Keywords), XMP, outline titles, and the source filename.
    `homograph-unclassified`, `no-components`).
 4. `rb gt review` renders overlay sheets; a second annotator checks them.
 5. At least 20% of pages are annotated twice independently (always including the hardest
-   pages, e.g. narrative annexures), then adjudicated. Release gates: tolerant mention F1
-   ≥ 0.95 and entity-link B³ F1 ≥ 0.95 between annotators.
-6. Disputes raised by benchmark results are adjudicated by the benchmark owner; fixes
+   pages, e.g. narrative annexures), then adjudicated. Measure agreement with
+   `rb gt agree a.gt.json b.gt.json` (words are matched geometrically, so the two
+   annotators may box and number words differently). Release gates: tolerant mention F1
+   ≥ 0.95 and entity-link B³ F1 ≥ 0.95. The command lists mentions only one annotator
+   found and mentions typed differently, which is the adjudication agenda.
+6. Run `rb selfcheck --dataset <name>@<version> --docs <doc>` on every newly annotated
+   document. It runs the fault-injecting mocks on the real document and checks that the
+   evaluator reaches the expected verdicts; a failure means a calibration problem to
+   investigate before the document's results are trusted.
+7. Disputes raised by benchmark results are adjudicated by the benchmark owner; fixes
    create a new GT version with the reason recorded.
 
 Real-document GT contains PII. Keep it under `$RB_DATA_DIR/gt` (git-ignored) until the

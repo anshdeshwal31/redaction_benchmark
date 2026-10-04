@@ -146,6 +146,54 @@ def _cmd_query(args) -> int:
     return 0
 
 
+def _cmd_gt_agree(args) -> int:
+    from .gt.agreement import agreement
+    from .gt.io import load_gt
+
+    r = agreement(load_gt(args.a), load_gt(args.b))
+    if args.json:
+        Path(args.json).write_text(json.dumps(r.to_dict(), indent=1), encoding="utf-8")
+    print(f"words: {r.words_matched} matched of {r.words_a} / {r.words_b} (median IoU {r.word_iou_median}, "
+          f"same text {r.word_text_agreement})")
+    print(f"mentions: {r.mentions_a} / {r.mentions_b}; strict F1 {r.strict_f1}; tolerant F1 {r.tolerant_f1}")
+    print(f"token kappa {r.token_kappa}; classified kappa {r.classified_kappa}; entity-link B3 {r.entity_link_b3}")
+    for k, v in r.disagreements.items():
+        print(f"  {k}: {v if not isinstance(v, list) else v[:20]}")
+    for gate, ok in r.gates.items():
+        print(f"  gate {gate}: {'PASS' if ok else 'FAIL'}")
+    return 0 if r.passed else 1
+
+
+def _cmd_selfcheck(args) -> int:
+    from .dataset import document_pdf, load_manifest
+    from .evaluate import EvalConfig
+    from .gt.io import find_gt, load_gt, load_policy
+    from .selfcheck import selfcheck
+
+    name, version = args.dataset.split("@")
+    m = load_manifest(name, version)
+    failed = 0
+    report = {}
+    for d in m.documents:
+        if args.docs and d.doc_id not in args.docs:
+            continue
+        gt = load_gt(Path(args.gt_dir) / f"{d.doc_id}{args.gt_suffix}") if args.gt_dir else find_gt(d.doc_id, d.sha256)
+        if gt is None:
+            print(f"{d.doc_id}: no GT, skipped")
+            continue
+        res = selfcheck(document_pdf(d).read_bytes(), gt, load_policy(args.policy), EvalConfig(dpi=args.dpi),
+                        only=args.only)
+        report[d.doc_id] = [r.to_dict() for r in res]
+        for r in res:
+            mark = {True: "PASS", False: "FAIL", None: "N/A "}[r.passed]
+            failed += r.passed is False
+            print(f"{d.doc_id:12s} {r.name:17s} {mark} {r.seconds:6.1f}s  {r.observed}")
+    if args.json:
+        Path(args.json).write_text(json.dumps(report, indent=1), encoding="utf-8")
+    print(f"{failed} failing check(s)")
+    return 1 if failed else 0
+
+
 def _cmd_synth_ladder(args) -> int:
     from .synth.register import register_ladder
 
@@ -176,6 +224,23 @@ def register(sub) -> None:
     rv.add_argument("--pdf", required=True)
     rv.add_argument("--out", required=True)
     rv.set_defaults(func=_cmd_gt_review)
+    ag = gt.add_parser("agree", help="inter-annotator agreement between two GT files of one document")
+    ag.add_argument("a")
+    ag.add_argument("b")
+    ag.add_argument("--json")
+    ag.set_defaults(func=_cmd_gt_agree)
+
+    sc = sub.add_parser("selfcheck", help="run the fault mocks on documents with GT and check the evaluator's verdicts")
+    sc.add_argument("--dataset", required=True, help="name@version")
+    sc.add_argument("--docs", nargs="*")
+    sc.add_argument("--gt-dir", help="read GT from <dir>/<doc_id><suffix> instead of the GT search path")
+    sc.add_argument("--gt-suffix", default=".gt.json")
+    sc.add_argument("--only", nargs="*")
+    sc.add_argument("--dpi", type=float, default=150)
+    sc.add_argument("--policy", default=DEFAULT_POLICY)
+    sc.add_argument("--json")
+    sc.set_defaults(func=_cmd_selfcheck)
+
     bd = sub.add_parser("board", help="comparison board over several scored runs")
     bd.add_argument("run_ids", nargs="+")
     bd.add_argument("--name", default="latest")

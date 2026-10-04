@@ -131,6 +131,14 @@ Missing modes merge the neighbouring stages. The parts sum to the end-to-end lea
 negative part means a stage does better on its own upstream output than on perfect input
 (an interaction).
 
+## Inter-annotator agreement
+
+`rb gt agree` matches the two annotators' words one-to-one by polygon IoU ≥ 0.5, then:
+strict mention F1 (same words and type), tolerant mention F1 (same words up to optional
+words, any type), Cohen's κ over word labels (PII type or O) and over protected classes,
+B³ over entity links of matched mentions, and word-box IoU. Release gates: tolerant F1 ≥
+0.95 and link B³ F1 ≥ 0.95.
+
 ## Statistics
 
 Rates pool required mentions; 95% intervals are document-cluster bootstraps (mentions
