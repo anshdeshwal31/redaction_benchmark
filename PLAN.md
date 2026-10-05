@@ -848,6 +848,7 @@ These change the *policy profile*, not the architecture: GT records facts, so no
     - Who may see GT and reports?
     - Should the test set be sealed from tool developers (are they different people)?
     - May any cloud service (e.g. OCR for pre-annotation) ever see documents?
+    - **Answer so far (2026-10-05, from the project owner):** the client has clearly allowed the five representative PDFs to be sent to any third party and to be published publicly (the form of the permission is not recorded here). So the PDFs may be sent to external services, including cloud OCR and language models, and may live in a public remote. Still open: which artefacts are published (the PDFs, the machine drafts, the ground truth), who may see reports, and whether the test set is sealed from tool developers. Until those are decided the ignore rules in `.gitignore` stay as they are.
 13. **Annotation resources:** who annotates and who adjudicates? Is double annotation feasible?
 14. **More data:** which additional real documents can be obtained, how many, and under what authorisation?
 15. **Integration:** may we require each tool to provide a CLI adapter, and ideally to accept injected text, mentions or regions?
