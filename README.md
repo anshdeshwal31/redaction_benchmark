@@ -17,7 +17,7 @@ traced to the stage that caused them.
 ```bash
 py -3.11 -m venv .venv
 .venv/Scripts/python -m pip install -e ".[dev]"
-.venv/Scripts/python -m pytest          # 213 tests, about 8 minutes
+.venv/Scripts/python -m pytest          # 271 tests, about 18 minutes
 ```
 
 Optional: the measurement OCR, used to draft GT words on pages without a text layer. The
