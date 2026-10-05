@@ -30,14 +30,14 @@ def test_engine_not_installed_means_not_evaluable():
 
 def test_ppocr_words_split_tokens_with_embedded_spaces():
     s = 300 / 72
-    toks = ["Read", " & ", "note", " (", "ABC", ") ", "quiz"]
+    toks = ["Ask", " & ", "clarify", " (", "NSSI", ") ", "quiz"]
     boxes = [[100 + 50 * k, 100, 140 + 50 * k, 140] for k in range(len(toks))]
-    res = {"angle": 0, "lines": [_line("Read & note (ABC) quiz", [[100, 100], [440, 100], [440, 140], [100, 140]],
+    res = {"angle": 0, "lines": [_line("Ask & clarify (NSSI) quiz", [[100, 100], [440, 100], [440, 140], [100, 140]],
                                        toks, boxes)]}
     words = ocr.ppocr_words(res, 2480, 3508, s, 595, 842)
-    assert [w.text for w in words] == ["Read", "&", "note", "(ABC)", "quiz"]
-    abc = words[3]
-    assert abc.bbox[0] == pytest.approx(250 / s) and abc.bbox[2] == pytest.approx(390 / s)
+    assert [w.text for w in words] == ["Ask", "&", "clarify", "(NSSI)", "quiz"]
+    nssi = words[3]
+    assert nssi.bbox[0] == pytest.approx(250 / s) and nssi.bbox[2] == pytest.approx(390 / s)
     assert all(w.angle == 0 for w in words) and all(w.conf == 99.0 for w in words)
 
 

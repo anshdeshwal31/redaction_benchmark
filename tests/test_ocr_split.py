@@ -32,7 +32,7 @@ def _word(text, quad, angle):
 
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
 @pytest.mark.parametrize("glued,expected", [
-    ("JaneCitizen", ["Jane", "Citizen"]),
+    ("ElianaGood", ["Eliana", "Good"]),
     ("Suite14", ["Suite", "14"]),
     ("withintherecordsof", ["within", "the", "records", "of"]),
 ])
@@ -50,16 +50,16 @@ def test_glued_words_are_split_at_the_ink_gap(glued, expected, rotation):
 
 
 def test_words_with_no_gap_are_left_whole():
-    for text in ("JaneCitizen", "Jane", "inthe", "bookings@example.com.au", "01/02/1990", "2018"):
+    for text in ("ElianaGood", "Eliana", "inthe", "bookings@limeml.com.au", "08/04/1976", "2018"):
         gray, quad, angle = _render(text, 0)
         (w,) = ocr_split.split_glued_words([_word(text, quad, angle)], gray, S)
         assert w.text == text
 
 
 def test_numbers_and_dates_are_never_split_even_with_gaps():
-    gray, quad, angle = _render("15 / 03 / 2020", 0)
-    (w,) = ocr_split.split_glued_words([_word("15/03/2020", quad, angle)], gray, S)
-    assert w.text == "15/03/2020"
+    gray, quad, angle = _render("25 / 08 / 2021", 0)
+    (w,) = ocr_split.split_glued_words([_word("25/08/2021", quad, angle)], gray, S)
+    assert w.text == "25/08/2021"
 
 
 def test_punctuation_stays_attached_to_its_word():
@@ -69,15 +69,15 @@ def test_punctuation_stays_attached_to_its_word():
 
 
 def test_skewed_words_are_left_alone():
-    gray, quad, _ = _render("Jane Citizen", 0)
-    (w,) = ocr_split.split_glued_words([_word("JaneCitizen", quad, 3.5)], gray, S)
-    assert w.text == "JaneCitizen"
+    gray, quad, _ = _render("Eliana Good", 0)
+    (w,) = ocr_split.split_glued_words([_word("ElianaGood", quad, 3.5)], gray, S)
+    assert w.text == "ElianaGood"
 
 
 def test_underline_does_not_hide_the_gap_and_does_not_invent_one():
-    gray, quad, angle = _render("Jane Citizen", 0)
+    gray, quad, angle = _render("Eliana Good", 0)
     h, w_ = gray.shape
     ys = int(max(p[1] for p in quad) * S) - 2
     cv2.line(gray, (int(min(p[0] for p in quad) * S), ys), (int(max(p[0] for p in quad) * S), ys), 0, 3)
-    parts = ocr_split.split_glued_words([_word("JaneCitizen", quad, angle)], gray, S)
-    assert [p.text for p in parts] == ["Jane", "Citizen"]
+    parts = ocr_split.split_glued_words([_word("ElianaGood", quad, angle)], gray, S)
+    assert [p.text for p in parts] == ["Eliana", "Good"]

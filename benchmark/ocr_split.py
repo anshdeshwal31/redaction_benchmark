@@ -1,4 +1,4 @@
-"""Split words that PP-OCRv6 glued together ("JaneCitizen", "Suite14", "inthe").
+"""Split words that PP-OCRv6 glued together ("ElianaGood", "Suite14", "inthe").
 
 The recogniser sometimes drops the space between neighbouring words on tight scans, which
 costs the benchmark: a glued given name and surname is one GT word to annotate and one
