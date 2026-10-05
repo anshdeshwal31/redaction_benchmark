@@ -20,8 +20,19 @@ py -3.11 -m venv .venv
 .venv/Scripts/python -m pytest          # 213 tests, about 8 minutes
 ```
 
-Optional: install Tesseract (and set `RB_TESSERACT` if not on PATH) to enable OCR-based GT
-drafting for scanned pages and pseudonym checks on image-only outputs.
+Optional: the measurement OCR, used to draft GT words on pages without a text layer. The
+default engine is PP-OCRv6 (PaddleOCR on ONNX Runtime, CPU). PaddleOCR pins numpy, PyYAML
+and OpenCV to versions that conflict with this package's pins, so it gets its own venv:
+
+```bash
+py -3.11 -m venv .venv-ocr
+.venv-ocr/Scripts/python -m pip install -r requirements-ocr.txt   # model weights download on first use
+```
+
+Set `RB_PPOCR_PYTHON` if that interpreter lives elsewhere. `RB_OCR_ENGINE=tesseract` selects
+Tesseract instead (set `RB_TESSERACT` if it is not on PATH). On the five seed documents
+PP-OCRv6 read text that Tesseract lost (light-coloured running headers, scan artefacts,
+pages rotated inside the image) at about a tenth of the speed (~30 s per page).
 
 ## Workflow
 
@@ -84,5 +95,5 @@ the PII spans before circulating one.
 
 Built: the full evaluation pipeline, validated against fault-injecting mocks on synthetic
 documents in every encoding seen in the seed set. **Not yet done**: ground truth for the
-five seed documents (needs human annotation, see the guidelines), a measurement OCR
-install, decisions on the open policy questions (PLAN.md §16), and real candidate tools.
+five seed documents (needs human annotation, see the guidelines), decisions on the open
+policy questions (PLAN.md §16), and real candidate tools.

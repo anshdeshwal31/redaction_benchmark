@@ -777,7 +777,7 @@ Re-scoring is exactly reproducible, because the evaluator's own determinism is t
 - Results: DuckDB + Parquet.
 - Reports: Jinja2 + Vega-Lite/Plotly (static HTML).
 - Tests: pytest + hypothesis.
-- One pinned **local** measurement OCR (Tesseract or docTR). Everything runs locally, and no document leaves the machine unless you approve otherwise (Q12).
+- One pinned **local** measurement OCR: PP-OCRv6 (PaddleOCR on ONNX Runtime, own venv locked by `requirements-ocr.txt`), chosen over Tesseract after a comparison on the seed documents; Tesseract stays selectable (`RB_OCR_ENGINE=tesseract`). Everything runs locally, and no document leaves the machine unless you approve otherwise (Q12).
 - PyMuPDF is AGPL. That is fine for internal use, but needs review if the benchmark is ever distributed.
 
 ### 14.5 Alternatives considered

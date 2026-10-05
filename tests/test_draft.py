@@ -17,7 +17,6 @@ def test_draft_from_text_layer_prelabels_contact_details_and_titled_names(tmp_pa
 
 
 def test_draft_without_text_or_ocr_says_so(monkeypatch):
-    monkeypatch.setenv("RB_TESSERACT", "")
-    monkeypatch.setattr("benchmark.ocr.tesseract_path", lambda: None)
+    monkeypatch.setattr("benchmark.ocr.available", lambda: False)
     gt, notes = draft_gt(raster().pdf, "r")
     assert all(not p.words for p in gt.pages) and len(notes) == len(gt.pages)

@@ -1,5 +1,6 @@
 # Environments and caches
 .venv/
+.venv-ocr/
 __pycache__/
 *.py[cod]
 *.egg-info/

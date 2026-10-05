@@ -56,26 +56,29 @@ def draft_gt(pdf: bytes, doc_id: str, matter: str | None = None) -> tuple[GTDocu
         geoms = [geometry_from_pikepdf_page(p) for p in pk.pages]
     pages: list[GTPage] = []
     mentions: list[GTMention] = []
+    ocr_used = False
     for i, page in enumerate(doc):
         g = geoms[i]
         w, h = g.display_size
-        words = _words_from_text_layer(page, g)
+        words = [(t, poly, ln, 0.0) for t, poly, ln in _words_from_text_layer(page, g)]
         source = WordSource.TEXT_LAYER
         if not words:
             got = ocr.ocr_page(pdf, i)
             if got is None:
                 notes.append(f"page {i}: no text layer and no measurement OCR installed; words must be annotated")
             else:
-                source = WordSource.RASTER
-                words = [(o.text, rect_poly(*o.bbox), o.line) for o in got]
+                source, ocr_used = WordSource.RASTER, True
+                words = [(o.text, as_poly(o.poly) if o.poly else rect_poly(*o.bbox), o.line, o.angle) for o in got]
         gt_words = [GTWord(id=f"p{i}w{n}", text=t, poly=[tuple(pt) for pt in poly.tolist()], order=n, line=f"p{i}{ln}",
-                           source=source, legibility="clear") for n, (t, poly, ln) in enumerate(words)]
+                           angle=a, source=source, legibility="clear") for n, (t, poly, ln, a) in enumerate(words)]
         pages.append(GTPage(index=i, width_pt=round(w, 3), height_pt=round(h, 3), rotation=g.rotation,
                             words=gt_words, conditions=["draft"]))
         mentions.extend(_prelabel(gt_words, i, len(mentions)))
+    note = "Machine pre-annotation. Not ground truth until reviewed and adjudicated."
+    if ocr_used:
+        note += f" Words on pages without a text layer: measurement OCR {ocr.version()}."
     gt = GTDocument(doc_id=doc_id, source_sha256=hashlib.sha256(pdf).hexdigest(), gt_version="draft-0",
-                    matter=matter, pages=pages, mentions=mentions, annotators=["prelabel"],
-                    notes="Machine pre-annotation. Not ground truth until reviewed and adjudicated.")
+                    matter=matter, pages=pages, mentions=mentions, annotators=["prelabel"], notes=note)
     return gt, notes
 
 
