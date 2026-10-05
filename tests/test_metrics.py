@@ -314,3 +314,47 @@ def test_postcode_state(text, ok):
     assert postcode_state_valid(text) is ok
 
 
+# -- image-only outputs read with the measurement OCR -------------------------------------------
+
+
+def _image_only(pdf: bytes, dpi: int = 100) -> bytes:
+    import pymupdf
+
+    src, out = pymupdf.open("pdf", pdf), pymupdf.open()
+    for page in src:
+        new = out.new_page(width=page.rect.width, height=page.rect.height)
+        new.insert_image(new.rect, pixmap=page.get_pixmap(dpi=dpi))
+    return out.tobytes()
+
+
+def _fake_ocr(text_layer_pdf: bytes):
+    """Stand-in engine: words of the original text layer, in display_pt, as OcrWords."""
+    import pymupdf
+
+    from benchmark import ocr
+
+    doc = pymupdf.open("pdf", text_layer_pdf)
+
+    def ocr_page(pdf, page_index, dpi=300, lang="eng"):
+        page, words = doc[page_index], []
+        for x0, y0, x1, y1, w, *_ in page.get_text("words"):
+            r = pymupdf.Rect(x0, y0, x1, y1) * page.rotation_matrix
+            words.append(ocr.OcrWord(w, (r.x0, r.y0, r.x1, r.y1), 99.0, "l0"))
+        return words
+
+    return ocr_page
+
+
+def test_pseudonyms_of_an_image_only_output_are_read_with_the_ocr(monkeypatch):
+    fx, res, _ = setup("digital")
+    text_pdf = mock("digital", MockSpec("c", pseudonyms="consistent")).pdf
+    raster_pdf = _image_only(text_pdf)
+    # Without an OCR engine the check says so instead of guessing.
+    r = evaluate_pseudonyms(fx.gt, res, raster_pdf)
+    assert not r.evaluable and "no measurement OCR installed" in r.reason
+    monkeypatch.setattr("benchmark.ocr.ocr_page", _fake_ocr(text_pdf))
+    monkeypatch.setattr("benchmark.ocr.available", lambda: True)
+    via_ocr = evaluate_pseudonyms(fx.gt, res, raster_pdf)
+    direct = evaluate_pseudonyms(fx.gt, res, text_pdf)
+    assert via_ocr.evaluable and via_ocr.checks == direct.checks
+    assert [x.replacement for x in via_ocr.replacements] == [x.replacement for x in direct.replacements]

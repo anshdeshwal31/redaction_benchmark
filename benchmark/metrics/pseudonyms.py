@@ -1,8 +1,9 @@
 """Pseudonymisation / synthetic replacement checks (PLAN.md §3.8).
 
-Replacement text is read from the *output* at each GT name word (text layer; image-only
-outputs need the measurement OCR, which is reported as not evaluable until installed),
-then compared component by component using the GT name structure.
+Replacement text is read from the *output* at each GT name word: from the text layer, or,
+on a page with no text layer, from the measurement OCR (benchmark.ocr). With no OCR
+installed such a page is reported as not evaluable. The replacements are then compared
+component by component using the GT name structure.
 """
 
 from __future__ import annotations
@@ -12,9 +13,11 @@ import string
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 
+import numpy as np
 import pymupdf
 from rapidfuzz import fuzz
 
+from .. import ocr
 from ..evaluate.layers import page_chars, text_in_words
 from ..geometry import load_page_geometries
 from ..gt.policy import Resolution
@@ -117,8 +120,36 @@ class OtherReplacement:
     replacement: str | None
 
 
+def _ocr_chars(output: bytes, page_index: int, notes: list[str]) -> tuple[np.ndarray, list[str]]:
+    """Character centres (display_pt) of an image-only output page, read by the measurement OCR.
+
+    OCR returns words, not characters: each word's characters are spread evenly along its
+    reading direction, which is enough to assign them to the GT word they fall in.
+    """
+    try:
+        words = ocr.ocr_page(output, page_index)
+    except RuntimeError as e:
+        notes.append(f"page {page_index}: measurement OCR failed: {e}")
+        return np.zeros((0, 2)), []
+    if words is None:
+        notes.append(f"page {page_index}: no text layer and no measurement OCR installed")
+        return np.zeros((0, 2)), []
+    pts, chars = [], []
+    for w in words:
+        x0, y0, x1, y1 = w.bbox
+        quad = np.asarray(w.poly, float) if w.poly else np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
+        n = len(w.text)
+        for k, ch in enumerate(w.text):
+            t = (k + 0.5) / n
+            a = quad[0] + (quad[1] - quad[0]) * t
+            b = quad[3] + (quad[2] - quad[3]) * t
+            pts.append((a + b) / 2)
+            chars.append(ch)
+    return (np.array(pts) if pts else np.zeros((0, 2))), chars
+
+
 def _read_replacements(gt: GTDocument, res: Resolution, output: bytes) -> tuple[list[ComponentReplacement], bool]:
-    reps, _, any_text = _read_all(gt, res, output)
+    reps, _, any_text, _ = _read_all(gt, res, output)
     return reps, any_text
 
 
@@ -144,10 +175,13 @@ def _read_all(gt: GTDocument, res: Resolution, output: bytes):
                 wanted[words[wid][0]].add(wid)
     texts: dict[str, str] = {}
     any_text = False
+    notes: list[str] = []
     for pg, wids in wanted.items():
         if pg >= doc.page_count:
             continue
         centres, chars = page_chars(doc[pg], geoms[pg])
+        if not chars:  # image-only page: read the replacement text with the measurement OCR
+            centres, chars = _ocr_chars(output, pg, notes)
         any_text |= bool(chars)
         page = gt.page(pg)
         texts.update(text_in_words(page, centres, chars, wids))
@@ -171,15 +205,15 @@ def _read_all(gt: GTDocument, res: Resolution, output: bytes):
         got = [texts.get(wid) for seg in m.segments for wid in seg.words]
         other.append(OtherReplacement(m.id, m.entity, m.type.value, m.subtype, m.text,
                                       " ".join(t for t in got if t) or None))
-    return out, other, any_text
+    return out, other, any_text, notes
 
 
 def evaluate_pseudonyms(gt: GTDocument, res: Resolution, output: bytes) -> PseudonymResult:
-    reps, other, any_text = _read_all(gt, res, output)
+    reps, other, any_text, notes = _read_all(gt, res, output)
     names = [r for r in reps if r.component != "title"]
     if not any_text:
-        return PseudonymResult(False, "output has no text layer; replacement text needs the measurement OCR",
-                               reps, {})
+        why = "; ".join(notes) or "output has no text layer and the measurement OCR found no text"
+        return PseudonymResult(False, f"{why}; replacement text cannot be read", reps, {})
     entities = {e.id: e for e in gt.entities}
     real_values = {_core(r.original).casefold() for r in names}
     survived, missing, similar, style_lost = [], [], [], []
