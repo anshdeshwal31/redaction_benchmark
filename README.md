@@ -94,6 +94,26 @@ the PII spans before circulating one.
 ## Status
 
 Built: the full evaluation pipeline, validated against fault-injecting mocks on synthetic
-documents in every encoding seen in the seed set. **Not yet done**: ground truth for the
-five seed documents (needs human annotation, see the guidelines), decisions on the open
-policy questions (PLAN.md §16), and real candidate tools.
+documents in every encoding seen in the seed set.
+
+Ground truth for the five seed documents exists as `gt_version 0.1-ai`: an AI annotator
+(claude-opus-5-5) corrected the machine drafts. All five validate with 0 errors and each has
+a review sheet in `data/gt/<DOC>.review.md`. It is **not yet human-reviewed**, so it is not a
+release. It lives in the git-ignored `data/` folder. The evaluator self-check has been run on
+all five (details in [docs/metrics.md](docs/metrics.md)):
+
+| Doc | Required mentions | Self-check |
+|---|---|---|
+| TRN | 4 | 10 pass, 1 fail (partial-half) |
+| DPI | 33 | 10 pass |
+| IME | 59 | 10 pass |
+| PSY | 113 | 11 pass |
+| NOC | 303 | 8 pass, 2 fail (reference-true, reference-raster) |
+
+The three failures are evaluator calibration issues on real scans and are open.
+
+**Not yet done**: human review and double annotation of the seed GT, the three calibration
+fixes (the first two change the evaluator, so they need a new evaluation version, eval-0.3,
+and a rescore), decisions on the open policy questions (PLAN.md §16; the client
+questionnaire for them is [docs/client_policy_decisions.docx](docs/client_policy_decisions.docx)),
+and real candidate tools.

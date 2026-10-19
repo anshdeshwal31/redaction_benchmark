@@ -42,11 +42,34 @@ correlation stays below the threshold), and four bands with the old run rule fla
 correct replacements of an all-capitals surname (adjacent capitals with similar strokes).
 Both were found by running the evaluator self-check on more layouts.
 
-Real documents (machine-drafted GT, so names without titles were not annotated): every
-self-check passes on the two born-digital seed documents (TRN 4 pages, PSY 23 pages, 118
-required mentions). Under eval-0.1, blur on 9-pt bold running headers was judged `PARTIAL`;
-under eval-0.2 all 118 blurred mentions are `LEAK_VISIBLE`. The scanned seed documents need GT
-first.
+Real documents. The self-check has been run on all five seed documents against the AI
+annotated GT (`gt_version 0.1-ai`, not yet human-reviewed). The earlier run on machine-drafted
+GT for the two born-digital documents is superseded. Under eval-0.1, blur on 9-pt bold running
+headers was judged `PARTIAL`; under eval-0.2 all blurred mentions are `LEAK_VISIBLE`.
+
+| Document | Encoding | Required mentions | Result |
+|---|---|---|---|
+| TRN | born-digital, text layer | 4 | 10 pass, 1 fail |
+| PSY | born-digital, text layer | 113 | 11 pass, 0 fail |
+| DPI | vector outlines, no text layer | 33 | 10 pass, 0 fail |
+| IME | 200-DPI colour scan | 59 | 10 pass, 0 fail |
+| NOC | MRC scan with forms and rotated pages | 303 | 8 pass, 2 fail |
+
+Open calibration issues found by these runs. The GT was not changed to make any of them pass.
+
+- **NOC `reference-true` and `reference-raster`, protected damage.** Three words of grey
+  `DD / MM / YYYY` form placeholders (ink at about 241–247 of 255) are counted as damaged
+  because the reference mock re-encodes the page image, which washes out near-white ink. The
+  damage measure needs a minimum-contrast floor.
+- **NOC `reference-raster`, latent leak.** The mentions "Helen" and "Joanne" on a rotated
+  statement page are judged `LEAK_LATENT`. The latent check picks up the unredacted ruled-table
+  border 1–2 pt above the line. It needs a margin or rule suppression.
+- **TRN `partial-half`.** 3 of 4 required mentions are not safe, below the 80% gate. The one
+  safe mention is a name nested in an email address, and the partial mock happens to black out
+  exactly that half of the word. The verdict is correct; the check should be measured per word,
+  or skip mentions whose character range is about half the word.
+
+Changing the first two will need a new evaluation version (eval-0.3) and a rescore.
 
 The evaluator is valid between 150 and 300 DPI (`EvalConfig.dpi` enforces ≥ 150).
 

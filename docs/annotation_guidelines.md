@@ -89,5 +89,10 @@ Keywords), XMP, outline titles, and the source filename.
 7. Disputes raised by benchmark results are adjudicated by the benchmark owner; fixes
    create a new GT version with the reason recorded.
 
-Real-document GT contains PII. Keep it under `$RB_DATA_DIR/gt` (git-ignored) until the
-data-governance decision (PLAN.md §16 Q12) is made.
+The ground truth for the five seed documents (`gt_version 0.1-ai`) was made by an AI
+annotator (claude-opus-5-5) that corrected the machine drafts under these guidelines. Steps 4
+and 5 have not happened yet, so it is not a release.
+
+Real-document GT contains PII. Keep it under `$RB_DATA_DIR/gt` (git-ignored). The client has
+allowed the five representative PDFs to be shared and published, but whether their GT and
+drafts may be published is still open (PLAN.md §16 Q12), so the ignore rules stay.
