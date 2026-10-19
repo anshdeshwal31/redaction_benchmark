@@ -1,12 +1,16 @@
-# Redaction Benchmark — Technical Plan (v0, awaiting approval)
+# Redaction Benchmark — Technical Plan (v0)
+
+> **Status (2026-10-18).** This is the original design, kept as the roadmap. Phases 1 and 3–7
+> of §15 are built. Phase 2 has AI-annotated ground truth (`gt_version 0.1-ai`) that no human
+> has reviewed. The §16 decisions are still open, apart from part of Q12. Phases 8–9 have not
+> started: no real candidate tool has been run. [ARCHITECTURE.md](ARCHITECTURE.md) describes
+> the code as built and lists where it differs from this plan.
 
 ## Context
 
-You are building several independent PII-redaction tools for Australian medico-legal documents (mostly scans), each in its own codebase and not yet ready to integrate. `redaction_benchmark` must be a **neutral, independent evaluation framework**. It must answer which tool is better, where it is better, which stage a failure starts in, and whether the tool's behaviour can be reproduced. The repo currently has only a README and 5 representative PDFs; nothing is implemented. This plan is grounded in:
+You are building several independent PII-redaction tools for Australian medico-legal documents (mostly scans), each in its own codebase and not yet ready to integrate. `redaction_benchmark` must be a **neutral, independent evaluation framework**. It must answer which tool is better, where it is better, which stage a failure starts in, and whether the tool's behaviour can be reproduced. When this plan was written the repo held only a README and 5 representative PDFs. The plan is grounded in:
 - a visual, page-by-page review of all 88 pages;
 - structural analysis of the PDFs: text layers, image layers and their resolution and compression, vector content, metadata/XMP, annotations, measured skew, and what each image layer contains on its own.
-
-**Nothing will be implemented until you approve.**
 
 To avoid repeating names that are themselves PII, documents are referred to by short IDs. Examples below describe roles, not people.
 

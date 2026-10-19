@@ -3,7 +3,8 @@
 A neutral evaluation framework for PII redaction tools working on Australian medico-legal
 PDFs (mostly scans). It answers which tool is better, where it is better, which stage a
 failure started in, and whether the tool behaves reproducibly. The design is in
-[PLAN.md](PLAN.md).
+[PLAN.md](PLAN.md); how the code is put together, and where it differs from the plan, is in
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 The benchmark judges the **actual output document**, never a tool's claims. A required
 mention is only safe if its original content cannot be seen in any viewer, recovered from
@@ -76,7 +77,9 @@ rb selfcheck --dataset seed@0.1.0 --docs DPI     # does the evaluator reach the 
 | `benchmark/gt` | GT IO, policy resolution, validators, drafts and review sheets |
 | `benchmark/evaluate` | Output evaluation: visible / recoverable / latent leakage, over-redaction, integrity |
 | `benchmark/metrics` | Text acquisition, detection, resolution, localization, fidelity, pseudonyms, determinism |
+| `benchmark/ocr.py`, `benchmark/ocr_split.py`, `benchmark/_ppocr_worker.py` | Measurement OCR: engine selection, glued-word splitting, the PP-OCRv6 worker that runs in `.venv-ocr` |
 | `benchmark/attribution.py`, `benchmark/score.py` | Root-cause attribution; per-document scoring |
+| `benchmark/selfcheck.py` | Evaluator self-check: fault mocks run on a document with GT |
 | `benchmark/runner`, `benchmark/report` | Running adapters, oracle inputs, scoring runs; Parquet store, HTML report, compare, regression |
 | `benchmark/mocks`, `benchmark/synth` | Fault-injecting mock candidates; synthetic documents, clean twins, degradation ladders |
 | `policies/` | Redaction policy profiles (draft; open questions are scored as MAY) |
