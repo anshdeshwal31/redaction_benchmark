@@ -49,7 +49,7 @@ label_map:                       # your labels -> benchmark types (published wit
   PER: PERSON_NAME
   ADDR: ADDRESS
   PHONE_NUMBER: PHONE
-frame: display_pt                # or pdf_user, or image_px (then also: dpi: 300)
+frame: display_pt                # or unrotated_pt, pdf_user, or image_px (then also: dpi: 300)
 seed_flag: --seed
 timeout_s: 900
 ```
@@ -61,8 +61,10 @@ Artifacts not listed in `provides` are ignored, even if present.
 
 All polygons are lists of `[x, y]` points. The canonical frame `display_pt` is PDF points
 of the page **as displayed**: the CropBox after applying `/Rotate`, origin top-left, y
-downwards. You may instead declare `pdf_user` (raw PDF user space, y upwards) or
-`image_px` with a `dpi` (pixels of a rendering of the displayed page). Declare the frame
+downwards. You may instead declare `unrotated_pt` (the CropBox before `/Rotate`, origin
+top-left, y downwards; the frame PyMuPDF reports words and drawings in), `pdf_user` (raw PDF
+user space, y upwards) or `image_px` with a `dpi` (pixels of a rendering of the displayed
+page). Declare the frame
 honestly: the benchmark converts it, and also checks whether a known coordinate bug
 (DPI scale, y-flip, unrotated frame, MediaBox origin, page offset) explains misplaced
 regions.
