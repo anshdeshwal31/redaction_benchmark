@@ -16,6 +16,9 @@ runs/
 results/
 *.pdf
 
+# The client's filled-in policy questionnaire.
+docs/client_policy_decisions_filled_by_joel.docx
+
 # Packaging artefacts
 *.egg-info/
 
