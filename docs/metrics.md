@@ -50,18 +50,20 @@ first.
 
 The evaluator is valid between 150 and 300 DPI (`EvalConfig.dpi` enforces ≥ 150).
 
-Each required mention then gets exactly one status, checked in this order:
+Each required mention then gets exactly one status. `NO_OUTPUT` is assigned when scoring, to
+every required mention of a document whose run produced no output; the evaluator never sees
+it. For the other documents the evaluator checks in this order:
 
 | Status | Rule |
 |---|---|
+| `NOT_EVALUATED` | output unreadable, the page's displayed aspect ratio changed, or nothing in the mention can be measured |
 | `LEAK_VISIBLE` | ≥ 90% of units visible in any render configuration (MuPDF, PDFium; with and without annotations if the output has any) |
 | `PARTIAL` | > 2% of units visible |
-| `NO_OUTPUT` | the candidate produced no output for the document (failed run); counted as unprotected in the strict view, excluded from the completed-only view |
 | `LEAK_RECOVERABLE` | not visible, but the original survives in the file: text layer at the location (any render mode), an image layer on its own, glyph vector paths, or an earlier incremental revision |
 | `LEAK_LATENT` | > 2% of units latent (e.g. translucent box, MRC ghost) |
 | `SAFE_REPLACED` | none of the above, and the region carries new text-like ink or new text |
 | `SAFE_REMOVED` | none of the above |
-| `NOT_EVALUATED` | output unreadable, or the page's displayed aspect ratio changed |
+| `NO_OUTPUT` | (assigned by scoring) the candidate produced no output for the document (failed run); counted as unprotected in the strict view, excluded from the completed-only view |
 
 Document-level findings (separate from mentions): distinctive terms of required mentions
 found in metadata, XMP, outlines, annotation contents, form values, attachment names,
