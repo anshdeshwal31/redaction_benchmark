@@ -29,6 +29,7 @@ import pikepdf
 import pymupdf
 
 from ..geometry import Frame, PageGeometry, bbox, rect_poly
+from ..gt.address_split import split_addresses
 from ..schemas import (
     ClassifiedClass,
     GTClassified,
@@ -45,7 +46,8 @@ from ..schemas import (
 from .spec import DocSpec, Line, medico_legal_spec, narrative_spec
 
 FONT = "helv"
-GT_VERSION = "synthetic-0.1"
+# 0.2: addresses split into street line + locality (benchmark.gt.address_split).
+GT_VERSION = "synthetic-0.2"
 
 
 @dataclass
@@ -194,7 +196,7 @@ def _assemble_gt(spec: DocSpec, pages: list[GTPage], toks_per_page: list[list], 
                      text=" ".join(words[w].text for _, w in parts))
         for cid, parts in classified_parts.items()
     ]
-    return GTDocument(
+    gt = GTDocument(
         doc_id=spec.name,
         source_sha256=hashlib.sha256(pdf).hexdigest(),
         gt_version=GT_VERSION,
@@ -206,6 +208,7 @@ def _assemble_gt(spec: DocSpec, pages: list[GTPage], toks_per_page: list[list], 
         classified=classified,
         annotators=["synthetic"],
     )
+    return split_addresses(gt)[0]
 
 
 def _digital_pages(doc: pymupdf.Document, spec: DocSpec) -> tuple[list[GTPage], list[list], list[_WordLayout]]:

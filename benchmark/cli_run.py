@@ -31,6 +31,43 @@ def _cmd_gt_draft(args) -> int:
     return 0
 
 
+def _cmd_gt_split_addresses(args) -> int:
+    """Split ADDRESS mentions into street line + locality (GT 0.2). Prints counts only: the
+    review list with the actual text goes next to the GT, in the git-ignored data directory."""
+    import shutil
+    from collections import Counter
+
+    from .gt.address_split import split_addresses
+    from .gt.io import load_gt, write_model
+    from .gt.validate import validate_gt
+
+    failed = 0
+    for path in map(Path, args.gt):
+        gt = load_gt(path)
+        new, notes = split_addresses(gt, version=args.version)
+        errors = [i for i in validate_gt(new) if i.severity == "error"]
+        counts = Counter(f"{n.outcome}{'' if n.confident else ' (uncertain)'}" for n in notes)
+        print(f"{gt.doc_id}: {gt.gt_version} -> {new.gt_version}; {dict(counts) or 'no addresses'}; "
+              f"{len(errors)} validation error(s)")
+        if errors:
+            failed += 1
+            continue
+        if args.dry_run:
+            continue
+        if args.archive:
+            dst = Path(args.archive) / gt.gt_version / path.name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, dst)
+        write_model(new, path)
+        mentions = {m.id: m for m in new.mentions}
+        review = [dict(n.to_dict(), street=mentions[n.mention_id].text if n.outcome == "split" else None,
+                       locality=(mentions.get(f"{n.mention_id}-loc") or mentions[n.mention_id]).text
+                       if n.outcome != "unsplit" else None) for n in notes]
+        path.with_name(path.name.replace(".gt.json", ".address-split.json")).write_text(
+            json.dumps(review, indent=1, ensure_ascii=False), encoding="utf-8")
+    return 1 if failed else 0
+
+
 def _cmd_gt_review(args) -> int:
     from .gt.draft import review_sheets
     from .gt.io import load_gt
@@ -224,6 +261,13 @@ def register(sub) -> None:
     rv.add_argument("--pdf", required=True)
     rv.add_argument("--out", required=True)
     rv.set_defaults(func=_cmd_gt_review)
+    sa = gt.add_parser("split-addresses", help="split ADDRESS mentions into street line and locality (GT 0.2)")
+    sa.add_argument("gt", nargs="+", help="GT files, rewritten in place")
+    sa.add_argument("--version", required=True, help="new gt_version, e.g. 0.2-ai")
+    sa.add_argument("--archive", help="copy each original to <archive>/<old gt_version>/ first; keep it off "
+                                      "the GT search path so a document never has two GT files")
+    sa.add_argument("--dry-run", action="store_true")
+    sa.set_defaults(func=_cmd_gt_split_addresses)
     ag = gt.add_parser("agree", help="inter-annotator agreement between two GT files of one document")
     ag.add_argument("a")
     ag.add_argument("b")

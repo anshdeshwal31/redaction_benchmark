@@ -2,7 +2,7 @@
  "schema": "rb.gt/0.1",
  "doc_id": "syn-raster-hidden-text",
  "source_sha256": "f3122f2156d0fc244ce4760196686a6dafda27f0c26a31760bdcad9916ac20dd",
- "gt_version": "synthetic-0.1",
+ "gt_version": "synthetic-0.2",
  "matter": "MX",
  "pages": [
   {
@@ -15453,14 +15453,38 @@
    "type": "ADDRESS",
    "subtype": "residential",
    "entity": "E1",
-   "text": "14 Example Street, Faketown QLD 4000",
+   "text": "14 Example Street,",
    "segments": [
     {
      "page": 0,
      "words": [
       "p0w18",
       "p0w19",
-      "p0w20",
+      "p0w20"
+     ],
+     "regions": [],
+     "char_start": null,
+     "char_end": null
+    }
+   ],
+   "optional_words": [],
+   "components": {},
+   "form": null,
+   "parent": null,
+   "conditions": [
+    "address_street_line"
+   ]
+  },
+  {
+   "id": "addr1-loc",
+   "type": "LOCATION",
+   "subtype": "locality",
+   "entity": "E1",
+   "text": "Faketown QLD 4000",
+   "segments": [
+    {
+     "page": 0,
+     "words": [
       "p0w21",
       "p0w22",
       "p0w23"
@@ -15474,7 +15498,9 @@
    "components": {},
    "form": null,
    "parent": null,
-   "conditions": []
+   "conditions": [
+    "address_locality"
+   ]
   },
   {
    "id": "ph1",

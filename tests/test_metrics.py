@@ -286,15 +286,18 @@ def test_valid_contact_replacements_pass_format_checks():
     c = r.checks
     assert c["other_replaced"] == 4 and c["invalid_replacements"] == 0
     assert c["phone_valid_rate"] == c["email_valid_rate"] == c["email_from_new_name_rate"] == 1.0
-    assert c["postcode_state_valid_rate"] == c["medicare_checksum_valid_rate"] == 1.0
+    assert c["medicare_checksum_valid_rate"] == 1.0
+    # GT 0.2 addresses are street lines (suburb, state and postcode are kept), so there is no
+    # replaced postcode to check against its state.
+    assert c["postcode_state_valid_rate"] is None
 
 
 def test_invalid_contact_replacements_are_flagged():
     fx, res, _ = setup("digital")
     r = evaluate_pseudonyms(fx.gt, res, mock("digital", MockSpec("i", pseudonyms="consistent",
                                                                   replace_other="invalid")).pdf)
-    assert set(r.issues["invalid"]) == {"ph1", "em1", "addr1", "gov1"}
-    assert r.checks["postcode_state_valid_rate"] == 0.0
+    assert set(r.issues["invalid"]) == {"ph1", "em1", "gov1"}
+    assert r.checks["postcode_state_valid_rate"] is None  # street line only since GT 0.2
 
 
 @pytest.mark.parametrize("text,ok", [("0400 123 456", True), ("(07) 5575 2444", True), ("+61 2 5550 1234", True),

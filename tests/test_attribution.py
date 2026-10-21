@@ -91,8 +91,9 @@ def test_missing_stages_are_not_applicable_not_zero():
 def test_invalid_replacements_are_tagged():
     s = scored(MockSpec("inv", pseudonyms="consistent", replace_other="invalid"))
     tagged = {a.mention_id for a in s.attribution.mentions if "PSEUDONYM_INVALID" in a.tags}
-    assert {"ph1", "em1", "gov1", "addr1"} <= tagged
-    assert s.attribution.counts["tags"]["PSEUDONYM_INVALID"] >= 4
+    # addr1 is a street line since GT 0.2 (the locality is kept), so it has no postcode to check.
+    assert {"ph1", "em1", "gov1"} <= tagged
+    assert s.attribution.counts["tags"]["PSEUDONYM_INVALID"] >= 3
 
 
 def test_collision_with_merged_clusters_is_a_resolution_merge():
