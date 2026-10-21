@@ -12,6 +12,7 @@ from ..geometry import as_poly, rect_poly
 from ..gt.io import write_model
 from ..gt.policy import resolve
 from ..schemas import (
+    Action,
     Cluster,
     EntitiesArtifact,
     GTDocument,
@@ -75,10 +76,14 @@ def oracle_entities(gt: GTDocument, policy: PolicyProfile) -> EntitiesArtifact:
 
 
 def oracle_regions(gt: GTDocument, policy: PolicyProfile) -> PlanArtifact:
+    """GT regions with the policy's action: ``replace`` where a fake is required, else ``remove``.
+    Each region names its mention, which the injected mentions.json describes."""
+    res = resolve(gt, policy)
     regions = []
     for m in oracle_mentions(gt, policy).mentions:
+        action = "replace" if res.mentions[m.id].action is Action.REPLACE else "remove"
         for k, r in enumerate(m.regions or []):
-            regions.append(PlanRegion(id=f"{m.id}-{k}", page=r.page, poly=r.poly, action="remove", mentions=[m.id]))
+            regions.append(PlanRegion(id=f"{m.id}-{k}", page=r.page, poly=r.poly, action=action, mentions=[m.id]))
     return PlanArtifact(regions=regions)
 
 

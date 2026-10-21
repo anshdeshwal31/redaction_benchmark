@@ -17,6 +17,7 @@ from benchmark.evaluate import HIDDEN, SAFE, EvalConfig, MentionStatus, check_in
 from benchmark.gt import load_policy
 from benchmark.gt.policy import resolve
 from benchmark.mocks import MockSpec, run_mock
+from benchmark.runner.oracle import oracle_regions
 from benchmark.runner.scoring import matter_consistency, self_check_verdict
 from benchmark.schemas import Action, PiiType, Requirement
 from benchmark.synth import ALL_VARIANTS
@@ -75,6 +76,12 @@ def test_v1_requires_replacement_and_keeps_places_and_dates():
     assert by_type[(PiiType.DATE, "dob")].requirement is Requirement.MUST_NOT
     assert by_type[(PiiType.ORGANISATION, None)].requirement is Requirement.MUST
     assert all(r.action is Action.REPLACE for r in res.mentions.values() if r.requirement is Requirement.MUST)
+
+
+def test_oracle_regions_carry_the_policy_action():
+    gt = fixture("digital").gt
+    assert {r.action for r in oracle_regions(gt, V1).regions} == {"replace"}
+    assert {r.action for r in oracle_regions(gt, DRAFT).regions} == {"remove"}
 
 
 # -- Q7: removed but not replaced ---------------------------------------------------------------

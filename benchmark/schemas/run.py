@@ -19,7 +19,9 @@ MODE_INJECTS: dict[str, list[InjectionKind]] = {
     "oracle_text": [InjectionKind.TEXT],
     "oracle_mentions": [InjectionKind.TEXT, InjectionKind.MENTIONS],
     "oracle_entities": [InjectionKind.TEXT, InjectionKind.MENTIONS, InjectionKind.ENTITIES],
-    "oracle_regions": [InjectionKind.REGIONS],
+    # Everything upstream is perfect, so only application (and replacement) is tested: the
+    # mentions tell the tool what kind of fake each region needs.
+    "oracle_regions": [InjectionKind.TEXT, InjectionKind.MENTIONS, InjectionKind.ENTITIES, InjectionKind.REGIONS],
 }
 
 

@@ -2,4 +2,4 @@ schema: rb.experiment/0.1
 name: oracle-regions
 mode: oracle_regions
 repeats: 1
-description: "GT regions injected: does the engine redact correctly given correct coordinates?"
+description: "Everything upstream perfect (GT text, mentions, groups and regions with the policy action): does the engine apply and replace correctly?"

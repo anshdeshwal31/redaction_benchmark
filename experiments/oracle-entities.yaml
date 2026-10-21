@@ -1,0 +1,5 @@
+schema: rb.experiment/0.1
+name: oracle-entities
+mode: oracle_entities
+repeats: 1
+description: "GT text, mentions and same-person groups injected: localization, replacement and application."

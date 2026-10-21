@@ -31,10 +31,11 @@ from ..runner.scoring import results_root
 # Leak = original content still there; failure = leak or hidden without the required replacement.
 HIDDEN = HIDDEN_VALUES
 PASS = SAFE_VALUES
-MODE_ORDER = ["e2e", "oracle_text", "oracle_mentions", "oracle_regions"]
+MODE_ORDER = ["e2e", "oracle_text", "oracle_mentions", "oracle_entities", "oracle_regions"]
 STAGE_BETWEEN = {("e2e", "oracle_text"): "text acquisition", ("oracle_text", "oracle_mentions"): "detection",
-                 ("oracle_mentions", "oracle_regions"): "resolution + localization"}
-STAGES = ["text acquisition", "detection", "resolution + localization", "application"]
+                 ("oracle_mentions", "oracle_entities"): "resolution",
+                 ("oracle_entities", "oracle_regions"): "localization"}
+STAGES = ["text acquisition", "detection", "resolution", "localization", "application"]
 # Categorical slots 1-4 (validated light and dark, adjacent pairs), fixed order by stage/candidate.
 SERIES_LIGHT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
 SERIES_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
@@ -157,7 +158,10 @@ def heat(runs: list[RunData], key) -> tuple[list[str], list[str], dict]:
 
 
 def decomposition(runs: list[RunData]) -> list[dict]:
-    """Telescoping leak-rate decomposition per (candidate, dataset), on mentions common to all modes."""
+    """Telescoping failure-rate decomposition per (candidate, dataset), on mentions common to all modes.
+
+    The failure rate counts leaks and required replacements that were not made, so a tool that
+    hides everything but replaces nothing shows its failures in the stage that should replace."""
     groups = defaultdict(dict)
     for r in runs:
         groups[(r.candidate, r.dataset)].setdefault(r.mode, r)
@@ -172,7 +176,7 @@ def decomposition(runs: list[RunData]) -> list[dict]:
         rates = {}
         for md in modes:
             ms = [m for m in by_mode[md].mentions if (m["doc_id"], m["mention_id"]) in keys]
-            rates[md] = by_mode[md].leak(ms)
+            rates[md] = by_mode[md].fail(ms)
         parts = []
         for a, b in zip(modes, modes[1:]):
             i, j = MODE_ORDER.index(a), MODE_ORDER.index(b)
@@ -392,12 +396,14 @@ def build_board(run_ids: list[str], out: Path, title: str = "Candidate compariso
     else:
         legend = "".join(f'<span><i class="k{i}"></i>{_esc(s)}</span>' for i, s in enumerate(STAGES))
         parts.append(f"<p class=mut>Telescoping differences between runs with perfect upstream input injected: "
-                     f"text = e2e − oracle_text, detection = oracle_text − oracle_mentions, resolution + "
-                     f"localization = oracle_mentions − oracle_regions, application = oracle_regions. Points of "
-                     f"leak rate; a negative part means the stages interact.</p><div class=legend>{legend}</div>")
+                     f"text = e2e − oracle_text, detection = oracle_text − oracle_mentions, resolution = "
+                     f"oracle_mentions − oracle_entities, localization = oracle_entities − oracle_regions, "
+                     f"application (incl. replacement) = oracle_regions. Points of failure rate (leaks plus "
+                     f"required replacements not made); a missing oracle run merges its neighbours; a negative "
+                     f"part means the stages interact.</p><div class=legend>{legend}</div>")
         for d in dec:
             parts.append(f"<div class=card><b>{_esc(d['candidate'])}</b> <span class=mut>{_esc(d['dataset'])} · "
-                         f"{d['n']} required mentions · end-to-end leak {_pct(d['rates']['e2e'])}</span>"
+                         f"{d['n']} required mentions · end-to-end failure {_pct(d['rates']['e2e'])}</span>"
                          f"{_decomp_svg(d)}<table><tr>" + "".join(f"<th>{_esc(k)}</th>" for k, _ in d["parts"])
                          + "</tr><tr>" + "".join(f"<td>{v*100:+.1f} pts</td>" for _, v in d["parts"]) + "</tr></table>"
                          + ("<p class=mut>Negative part: a stage does better with its own upstream output than with "
