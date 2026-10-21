@@ -34,11 +34,12 @@ repeats in running headers and footers, tables and annexures.
 | Name inside a reference code (`Name:abc:123`) | Nested mention (`parent` = the reference) with a character range. |
 | Name inside an email address | Nested PERSON_NAME mention on the local part, parent = the EMAIL. |
 | Name inside an organisation name | Nested PERSON_NAME mention, parent = the ORGANISATION. |
-| Multi-box form address (unit / street / suburb / state / postcode) | One ADDRESS mention with several segments; field labels are not part of it. |
+| Address (GT 0.2) | Two mentions of the same entity: the street line (unit, number, street, PO box) as ADDRESS, and the suburb, state, postcode and country as LOCATION with subtype `locality`. The client replaces street lines and keeps localities. `rb gt split-addresses` splits older GT and lists each split in `<DOC>.address-split.json` for review; check every split, including the ones it marked confident. |
+| Multi-box form address (unit / street / suburb / state / postcode) | Several segments per part; field labels are not part of either. |
 | Name split across lines, table cells or form rows | One mention, several segments. |
 | Signature, handwritten initials, photo or avatar | Region (`signature`, `initials`, `avatar`, ...) plus a region-only mention (SIGNATURE / HANDWRITTEN_MARK / IMAGE_PII) linked to the entity. |
 | Handwritten name or place in block capitals | Words with `source: handwriting`, annotated like typed text. |
-| Dates | Annotate with subtype `dob`, `event` or `document` (the policy keeps dates for now, but DOB is an open question). |
+| Dates | Annotate with subtype `dob`, `event` or `document`. The client keeps every date, dates of birth included. |
 
 ## 3. Entities
 

@@ -1,4 +1,4 @@
-# Metric definitions (evaluation version eval-0.2)
+# Metric definitions (evaluation version eval-0.3)
 
 All thresholds live in `benchmark/evaluate/config.py` (`EvalConfig`). Every result
 records the configuration digest; changing a threshold creates a new evaluation version.
@@ -84,16 +84,42 @@ it. For the other documents the evaluator checks in this order:
 | `PARTIAL` | > 2% of units visible |
 | `LEAK_RECOVERABLE` | not visible, but the original survives in the file: text layer at the location (any render mode), an image layer on its own, glyph vector paths, or an earlier incremental revision |
 | `LEAK_LATENT` | > 2% of units latent (e.g. translucent box, MRC ghost) |
-| `SAFE_REPLACED` | none of the above, and the region carries new text-like ink or new text |
-| `SAFE_REMOVED` | none of the above |
+| `SAFE_REPLACED` | none of the above, and the region carries new text-like ink or new text; for a region-only mention (signature, mark, avatar, photo), the region holds new picture content: grey-level spread ≥ 12 inside it, eroded by 2 px, where a box or blank paper is near-uniform |
+| `NOT_REPLACED` | none of the above, and the policy requires a replacement (`action: replace`): hidden, so not a leak, but not a pass either (client Q7) |
+| `SAFE_REMOVED` | none of the above, and the policy allows removal |
 | `NO_OUTPUT` | (assigned by scoring) the candidate produced no output for the document (failed run); counted as unprotected in the strict view, excluded from the completed-only view |
 
 Document-level findings (separate from mentions): distinctive terms of required mentions
 found in metadata, XMP, outlines, annotation contents, form values, attachment names,
 structure-tree alternate text or unreferenced streams.
 
+**Leak rate** counts required mentions that are not hidden (`NOT_REPLACED` is hidden).
+**Failure rate** also counts `NOT_REPLACED`: it is the rate the client's bar is measured by.
+
 **Clean document**: integrity ok, no `PARTIAL`/`LEAK_VISIBLE`/`LEAK_RECOVERABLE`, no
-document finding, no protected word damaged, every required mention evaluated.
+`NOT_REPLACED`, no document finding, no protected word damaged, every required mention
+evaluated, and both pass marks below met.
+
+- **Collateral pass mark** (client Q16): at most 1% of the document's ordinary words with
+  two or more letters or digits damaged or removed. Punctuation-only words are reported but
+  never fail a document.
+- **Searchable text** (client Q11): at least 95% of the kept words (preserved ordinary and
+  protected words with a letter or digit) are found in the output's text layer at their place
+  on the page (substring or fuzzy ratio ≥ 90). An image-only output fails, and so does a
+  scanned source returned without an OCR text layer.
+
+A changed page size is a warning, not an integrity problem (client Q11); the page is rescaled,
+and a changed aspect ratio still makes its pixel evidence unreliable. A changed page count
+remains an integrity problem, because pages could no longer be matched.
+
+**The tool's own safety check.** A tool reports in `run_info.json` whether it would have
+released the document. Scoring compares that with the clean-document verdict: correct
+release, correct hold, false alarm (held back but clean) or unsafe release (released but not
+clean).
+
+**Same fake across the matter** (client Q8): for every person replaced in two or more
+documents of one matter, each name component must get one replacement value in all of them
+(`matters` table, repeat 0).
 
 ## Over-redaction
 
@@ -115,7 +141,7 @@ redacted when < 50% of its characters remain visible.
 | Resolution | MUC, B³, CEAF-e, LEA, pairwise links, explicit false merges and false splits. Response clusters come from `entities.json`, or are inferred from shared pseudonym values (mentions carrying a given name or surname only) |
 | Localization | Ink coverage of each required mention by planned regions; full-coverage rate; spill area outside the tolerance zone (2 pt); collateral words; median signed edge offsets; per-page **transform diagnosis** by per-region vote among: aligned, oversized, DPI scale (72/96/150/200/300 ratios), y-flip, x-flip, unrotated frame, MediaBox origin, page offset ±1, translation |
 | Application | Share of each planned region whose pixels changed in the output (applied ≥ 50%, partial ≥ 10%, else not applied); plan-vs-change IoU per page |
-| Pseudonyms | Replacement read from the output text layer at each GT name component: survived originals, value and entity consistency, collisions, collision with a real name in the document, near-identical replacements, case style, honorific/gender mismatch. Replaced contact details and identifiers: Australian phone formats (mobile, landline, 13/1300/1800, +61), email syntax, email local part derived from the new name and not the old one, postcode inside the state's Australia Post ranges, Medicare check digit. Image-only outputs need the measurement OCR |
+| Pseudonyms | Replacement read from the output text layer at each GT name component: survived originals, value and entity consistency, collisions, collision with a real name in the document, near-identical replacements, case style, honorific/gender mismatch. Replaced contact details and identifiers: Australian phone formats (mobile, landline, 13/1300/1800, +61), email syntax, email local part derived from the new name and not the old one, postcode inside the state's Australia Post ranges (only when a replaced address carries its state and postcode; GT 0.2 street lines do not, because the client keeps the locality), Medicare check digit. Image-only outputs need the measurement OCR |
 | Determinism | D0 bytes; D1 canonical artifacts (mentions as GT-word sets, clusters as partitions, plan as rasterised masks, pseudonym map, tokens); D2 rendered pages exact / tolerant and change-mask IoU; D3 per-mention verdicts, flip rate and unstable mentions |
 
 ## Attribution
@@ -124,7 +150,8 @@ For each failing required mention, the first failing stage in causal order:
 `TEXT_MISSING`/`TEXT_CORRUPTED` → `DETECTION_MISS`/`DETECTION_ALIAS_PROPAGATION`/
 `DETECTION_BOUNDARY`/`DETECTION_TYPE` → `LOCALIZATION_SYSTEMATIC`/`WRONG_PAGE`/
 `LOCALIZATION_LOCAL` → `APPLICATION_NOT_APPLIED`/`APPLICATION_OFFSET` →
-`REMOVAL_INCOMPLETE`. A failed run gives `CANDIDATE_ERROR` for every required mention.
+`REMOVAL_INCOMPLETE`. A hidden mention without its required replacement is `NOT_REPLACED`
+at the `REPLACEMENT` stage. A failed run gives `CANDIDATE_ERROR` for every required mention.
 
 `INTERACTION` (confirmed): every exposed stage looks correct for the mention, but the
 mention is safe when perfect upstream input is injected (an oracle run), or the tool's own
@@ -145,14 +172,16 @@ protected elsewhere). They are reported separately and never pooled.
 For a candidate with an end-to-end run and oracle runs on the same dataset, on the
 required mentions common to all of them:
 
-| Stage | Share of the leak rate (points) |
+| Stage | Share of the failure rate (points) |
 |---|---|
 | Text acquisition | e2e − oracle_text |
 | Detection | oracle_text − oracle_mentions |
-| Resolution + localization | oracle_mentions − oracle_regions |
-| Application | oracle_regions |
+| Resolution | oracle_mentions − oracle_entities |
+| Localization | oracle_entities − oracle_regions |
+| Application (incl. replacement) | oracle_regions |
 
-Missing modes merge the neighbouring stages. The parts sum to the end-to-end leak rate. A
+The failure rate counts leaks and required replacements that were not made. Missing modes
+merge the neighbouring stages. The parts sum to the end-to-end failure rate. A
 negative part means a stage does better on its own upstream output than on perfect input
 (an interaction).
 

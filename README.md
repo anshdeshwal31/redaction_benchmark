@@ -99,8 +99,16 @@ the PII spans before circulating one.
 Built: the full evaluation pipeline, validated against fault-injecting mocks on synthetic
 documents in every encoding seen in the seed set.
 
-Ground truth for the five seed documents exists as `gt_version 0.1-ai`: an AI annotator
-(claude-opus-5-5) corrected the machine drafts. All five validate with 0 errors and each has
+**Policy.** The default policy is the client's decisions, `policies/au-medicolegal-v1.yaml`:
+every person, organisation, contact detail, identifier, signature and image of a person is
+replaced with a fake; dates, ages, suburbs, postcodes, occupation and clinical or legal content
+are kept. Hiding a required item without replacing it is its own verdict (`NOT_REPLACED`); a
+document also has to stay searchable and keep 99% of its ordinary words. The draft
+(`au-medicolegal-v0.yaml`) stays for re-scoring old runs. Definitions: [docs/metrics.md](docs/metrics.md).
+
+Ground truth for the five seed documents exists as `gt_version 0.2-ai`: an AI annotator
+(claude-opus-5-5) corrected the machine drafts (0.1-ai), then addresses were split into street
+line and locality (`rb gt split-addresses`; 0.1-ai is archived under `data/gt-archive/`). All five validate with 0 errors and each has
 a review sheet in `data/gt/<DOC>.review.md`. It is **not yet human-reviewed**, so it is not a
 release. It lives in the git-ignored `data/` folder. The evaluator self-check has been run on
 all five (details in [docs/metrics.md](docs/metrics.md)):

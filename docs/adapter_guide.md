@@ -17,8 +17,11 @@ The benchmark calls your adapter with:
 | `{seed}` | Expands to `<seed_flag> <n>` if your manifest declares a `seed_flag`, otherwise empty. |
 | `{python}`, `{repo}` | The benchmark's Python interpreter and repository root (convenience for Python adapters). |
 
-Your adapter must write **`output.pdf`** (the redacted document). Everything else is
-optional. Write only what your tool really produces:
+Your adapter must write **`output.pdf`** (the redacted document) **every time**, even when your
+tool's own safety check would hold the document back: the benchmark grades every output, bad ones
+included, and grades the safety check separately (see `release` below). Everything else is
+optional, but each stage file you leave out is a stage the benchmark cannot grade, so a bottleneck
+there stays invisible. Write only what your tool really produces:
 
 | File | Schema | Stage it lets the benchmark score |
 |---|---|---|
@@ -28,7 +31,11 @@ optional. Write only what your tool really produces:
 | `entities.json` | `schemas/entities.schema.json` | Entity / alias resolution |
 | `plan.json` | `schemas/plan.schema.json` | Spatial accuracy, coordinate-bug diagnosis, plan-vs-output fidelity |
 | `pseudonyms.json` | `schemas/pseudonyms.schema.json` | Replacement mapping (consistency is checked on the output itself) |
-| `run_info.json` | `schemas/run_info.schema.json` | Version, configuration, model ids, seed (recorded for reproducibility) |
+| `run_info.json` | `schemas/run_info.schema.json` | Version, configuration, model ids, seed (recorded for reproducibility), and `release`: your own safety verdict |
+
+`run_info.json` → `release` is `{"released": true|false, "checks_failed": ["<your reason codes>"]}`. The
+benchmark compares it with its own verdict on the output: correct release, correct hold, false
+alarm (held back but clean) or unsafe release (released but not clean).
 
 Stages you do not expose are reported as **N/A**, never as zero. A tool that only writes
 `output.pdf` still gets the full end-to-end evaluation, effective detection measured from
@@ -83,7 +90,11 @@ then isolate your stages by giving them perfect upstream input from ground truth
 | `oracle_text` | `text.json` | skip OCR and use these tokens |
 | `oracle_mentions` | `text.json`, `mentions.json` | skip detection and redact exactly these mentions |
 | `oracle_entities` | + `entities.json` | also use these clusters for pseudonyms |
-| `oracle_regions` | `plan.json` | apply exactly these regions |
+| `oracle_regions` | + `plan.json` | apply exactly these regions; each names its mention, so you know what kind of fake to draw |
+
+In `plan.json` each region's `action` is the policy's: `replace` where a fake is required (the
+client's rules require it for every redacted item), `remove` where removal is allowed. Covering a
+`replace` region with a box or blank paper is scored as `NOT_REPLACED`.
 
 Injected files use the same schemas, in `display_pt`. Only mentions required by the
 current policy are injected.
