@@ -11,6 +11,7 @@ from .artifacts import (
     PseudonymEntry,
     PseudonymsArtifact,
     RegionAnchor,
+    ReleaseInfo,
     RunInfo,
     TextArtifact,
     TextPage,

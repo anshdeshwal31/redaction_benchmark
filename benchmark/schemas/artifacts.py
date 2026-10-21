@@ -154,6 +154,15 @@ class ModelInfo(StrictModel):
     extra: dict[str, str] = {}
 
 
+class ReleaseInfo(StrictModel):
+    """The tool's own safety verdict. Tools always hand over their output; this records whether
+    they would have released it, so the benchmark can grade the safety check itself (false
+    alarms, unsafe releases)."""
+
+    released: bool
+    checks_failed: list[str] = Field([], description="The tool's own reason codes for holding the document back")
+
+
 class RunInfo(StrictModel):
     schema_id: Literal["rb.runinfo/0.1"] = Field(RUNINFO_SCHEMA, alias="schema")
     candidate: str
@@ -164,3 +173,4 @@ class RunInfo(StrictModel):
     started_at: str | None = None
     finished_at: str | None = None
     notes: str | None = None
+    release: ReleaseInfo | None = None

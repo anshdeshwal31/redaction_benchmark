@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections import defaultdict
@@ -29,6 +30,45 @@ def _oracle_status(run_id: str) -> dict[str, dict[str, str]]:
         d = json.loads(p.read_text(encoding="utf-8"))
         out[d["doc_id"]] = {m["mention_id"]: m["status"] for m in d["evaluation"]["mentions"]}
     return out
+
+
+def _release(workdir: Path):
+    """The tool's own release verdict from run_info.json, if it reported one."""
+    from ..schemas import RunInfo
+
+    path = workdir / "run_info.json"
+    if not path.exists():
+        return None
+    try:
+        return RunInfo.model_validate(json.loads(path.read_text(encoding="utf-8"))).release
+    except ValueError:
+        return None  # an invalid run_info is already reported by load_artifacts
+
+
+def self_check_verdict(released: bool, clean: bool) -> str:
+    """Grade the tool's safety check against what the evaluator found in the output."""
+    if released:
+        return "correct_release" if clean else "unsafe_release"
+    return "false_alarm" if clean else "correct_hold"
+
+
+def matter_consistency(reps: dict[tuple[str, str, str], dict[str, set[str]]], ident: dict) -> list[dict]:
+    """Client Q8: a person keeps one fake across all documents of a matter. One row per
+    (matter, entity, name component) replaced in at least two documents."""
+    rows = []
+    for (matter, entity, component), by_doc in sorted(reps.items()):
+        if len(by_doc) < 2:
+            continue
+        values = set().union(*by_doc.values())
+        rows.append(dict(ident, matter=matter, entity=entity, component=component, documents=",".join(sorted(by_doc)),
+                         distinct_replacements=len(values), consistent=len(values) == 1))
+    return rows
+
+
+def _gt_info(gt) -> dict:
+    from ..gt.io import dump_json
+
+    return {"gt_version": gt.gt_version, "gt_sha256": hashlib.sha256(dump_json(gt).encode("utf-8")).hexdigest()}
 
 
 def _no_output_rows(ident: dict, doc_id: str, repeat: int, gt, policy, reason: str) -> dict[str, list[dict]]:
@@ -67,6 +107,9 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
              "dataset": f"{run.dataset['name']}@{run.dataset['version']}"}
     tables: dict[str, list[dict]] = defaultdict(list)
     skipped = []
+    gt_used: dict[str, dict] = {}
+    # (matter, entity, component) -> doc id -> replacement values, from repeat 0
+    matter_reps: dict[tuple[str, str, str], dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     by_doc: dict[str, list] = defaultdict(list)
     for item in run.items:
         by_doc[item.doc_id].append(item)
@@ -76,6 +119,7 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
         if gt is None:
             skipped.append({"doc_id": doc_id, "reason": "no GT"})
             continue
+        gt_used[doc_id] = _gt_info(gt)
         source = (runs_root() / run_id / items[0].workdir / "input.pdf").read_bytes()
         per_rep = []
         for item in sorted(items, key=lambda i: i.repeat):
@@ -84,7 +128,9 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
             if not out_pdf.exists():
                 reason = item.error or "no output.pdf"
                 skipped.append({"doc_id": doc_id, "repeat": item.repeat, "reason": reason})
-                for name, rows in _no_output_rows(ident, doc_id, item.repeat, gt, policy, reason).items():
+                no_out = _no_output_rows(ident, doc_id, item.repeat, gt, policy, reason)
+                no_out["documents"][0].update(gt_used[doc_id])
+                for name, rows in no_out.items():
                     tables[name].extend(rows)
                 continue
             artifacts, _, errors = load_artifacts(workdir, manifest)
@@ -107,17 +153,35 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
             score = score_document(source, out, gt, policy, artifacts, label_map=label_map, config=cfg,
                                    oracle={m: o.get(doc_id, {}) for m, o in oracle.items()} or None,
                                    unstable=unstable)
+            if item.repeat == 0 and gt.matter and score.pseudonyms is not None and score.pseudonyms.evaluable:
+                for r in score.pseudonyms.replacements:
+                    if r.entity and r.replacement and r.component != "title":
+                        matter_reps[(gt.matter, r.entity, r.component)][doc_id].add(
+                            r.replacement.strip(".,;:()").casefold())
             d = score.to_dict()
             d["invalid_artifacts"] = errors
             (out_root / "scores" / f"{doc_id}-r{item.repeat}.json").write_text(
                 json.dumps(d, indent=1, default=str), encoding="utf-8")
             rows_by_table = rows_for_score(ident, {"doc_id": doc_id, "repeat": item.repeat}, score, entry)
+            doc_row = rows_by_table["documents"][0]
+            doc_row.update(gt_used[doc_id])
             if item.error:
-                rows_by_table["documents"][0]["candidate_error"] = item.error
+                doc_row["candidate_error"] = item.error
+            release = _release(runs_root() / run_id / item.workdir / "out")
+            if release is not None:
+                doc_row["self_check.released"] = release.released
+                doc_row["self_check.checks_failed"] = ",".join(release.checks_failed)
+                doc_row["self_check.verdict"] = self_check_verdict(release.released,
+                                                                   bool(doc_row.get("clean_document")))
             for name, rows in rows_by_table.items():
                 tables[name].extend(rows)
+    tables["matters"] = matter_consistency(matter_reps, ident)
     write_tables(out_root / "tables", tables)
+    consistent = sum(1 for r in tables["matters"] if r["consistent"])
     (out_root / "scoring.json").write_text(json.dumps({
         "run_id": run_id, "eval_config": cfg.model_dump(mode="json"), "eval_digest": cfg.digest(),
-        "policy": str(policy_path), "oracle_runs": oracle_runs or {}, "skipped": skipped}, indent=1), encoding="utf-8")
+        "policy": str(policy_path), "oracle_runs": oracle_runs or {}, "gt": gt_used,
+        "matter_consistency": {"compared": len(tables["matters"]), "consistent": consistent},
+        "skipped": skipped}, indent=1),
+        encoding="utf-8")
     return out_root

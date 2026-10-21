@@ -12,7 +12,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-TABLES = ("documents", "mentions", "words", "components", "determinism", "findings")
+TABLES = ("documents", "mentions", "words", "components", "determinism", "findings", "matters")
 
 
 def _flat(prefix: str, d: dict | None, out: dict) -> None:

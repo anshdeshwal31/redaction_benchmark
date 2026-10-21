@@ -4,6 +4,7 @@
 - Q6: signatures and other marks count as replaced only when a stand-in is drawn in their place.
 - Q11: kept words must stay searchable; a changed page size is accepted.
 - Q16: damaging more than 1% of a document's ordinary words fails it.
+- The tool's own safety check is graded against the evaluator's verdict.
 """
 
 from functools import lru_cache
@@ -16,6 +17,7 @@ from benchmark.evaluate import HIDDEN, SAFE, EvalConfig, MentionStatus, check_in
 from benchmark.gt import load_policy
 from benchmark.gt.policy import resolve
 from benchmark.mocks import MockSpec, run_mock
+from benchmark.runner.scoring import matter_consistency, self_check_verdict
 from benchmark.schemas import Action, PiiType, Requirement
 from benchmark.synth import ALL_VARIANTS
 
@@ -174,3 +176,27 @@ def test_heavy_over_redaction_fails_the_collateral_rule():
     out = run_mock(fx.pdf, fx.gt, DRAFT, MockSpec("dilate", dilate_pt=8)).pdf
     s = evaluate("digital", out, DRAFT).summary
     assert s["collateral_real_rate"] > 0.01 and not s["collateral_ok"] and not s["clean_document"]
+
+
+# -- the tool's own safety check ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("released, clean, verdict", [
+    (True, True, "correct_release"), (True, False, "unsafe_release"),
+    (False, True, "false_alarm"), (False, False, "correct_hold"),
+])
+def test_self_check_verdicts(released, clean, verdict):
+    assert self_check_verdict(released, clean) == verdict
+
+
+# -- Q8: one fake per person across the matter -------------------------------------------------------
+
+
+def test_matter_consistency_compares_documents_of_a_matter():
+    reps = {("M1", "E1", "surname"): {"DPI": {"jones"}, "IME": {"jones"}},
+            ("M1", "E1", "given"): {"DPI": {"amy"}, "IME": {"beth"}},
+            ("M1", "E2", "surname"): {"DPI": {"lee"}}}  # only one document: not compared
+    rows = matter_consistency(reps, {"run_id": "r"})
+    assert [(r["entity"], r["component"], r["consistent"]) for r in rows] == [
+        ("E1", "given", False), ("E1", "surname", True)]
+    assert rows[0]["documents"] == "DPI,IME" and rows[0]["distinct_replacements"] == 2

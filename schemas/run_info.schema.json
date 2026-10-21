@@ -33,6 +33,30 @@
    ],
    "title": "ModelInfo",
    "type": "object"
+  },
+  "ReleaseInfo": {
+   "additionalProperties": false,
+   "description": "The tool's own safety verdict. Tools always hand over their output; this records whether\nthey would have released it, so the benchmark can grade the safety check itself (false\nalarms, unsafe releases).",
+   "properties": {
+    "released": {
+     "title": "Released",
+     "type": "boolean"
+    },
+    "checks_failed": {
+     "default": [],
+     "description": "The tool's own reason codes for holding the document back",
+     "items": {
+      "type": "string"
+     },
+     "title": "Checks Failed",
+     "type": "array"
+    }
+   },
+   "required": [
+    "released"
+   ],
+   "title": "ReleaseInfo",
+   "type": "object"
   }
  },
  "additionalProperties": false,
@@ -120,6 +144,17 @@
    ],
    "default": null,
    "title": "Notes"
+  },
+  "release": {
+   "anyOf": [
+    {
+     "$ref": "#/$defs/ReleaseInfo"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null
   }
  },
  "required": [

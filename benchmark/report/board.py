@@ -60,6 +60,7 @@ class RunData:
         self.words = [w for w in _rows(run_id, "words") if w["repeat"] == 0 and w["status"] != "NOT_EVALUATED"]
         self.documents = [d for d in _rows(run_id, "documents") if d.get("repeat") == 0]
         self.determinism = _rows(run_id, "determinism")
+        self.matters = _rows(run_id, "matters")
         self.label = f"{self.candidate} · {self.run.experiment.name}"
 
     def leak(self, mentions=None) -> float | None:
@@ -73,6 +74,15 @@ class RunData:
 
 def _ci(ci) -> str:
     return "" if not ci else f"{ci[0] * 100:.1f}–{ci[1] * 100:.1f}%"
+
+
+def _verdicts(v: dict) -> str:
+    """The tool's own safety check against the evaluator: right calls and wrong ones."""
+    if not v:
+        return "N/A"
+    labels = (("correct_release", "released ok"), ("correct_hold", "held ok"), ("false_alarm", "false alarm"),
+              ("unsafe_release", "unsafe release"))
+    return " · ".join(f"{name} {v.get(k, 0)}" for k, name in labels if v.get(k))
 
 
 def _pct(v) -> str:
@@ -102,6 +112,7 @@ def scorecard(runs: list[RunData]) -> list[dict]:
         done = [m for m in r.mentions if m["status"] != "NO_OUTPUT"]
         not_replaced = [m for m in r.mentions if m["status"] == "NOT_REPLACED"]
         searchable = [d["searchable_rate"] for d in r.documents if isinstance(d.get("searchable_rate"), (int, float))]
+        verdicts = Counter(d["self_check.verdict"] for d in r.documents if d.get("self_check.verdict"))
         l12 = [m for m in r.mentions if m["status"] in ("PARTIAL", "LEAK_VISIBLE", "LEAK_RECOVERABLE")]
         ordinary = [w for w in r.words if w["requirement"] == "ORDINARY"]
         protected = [w for w in r.words if w["requirement"] == "MUST_NOT"]
@@ -118,7 +129,8 @@ def scorecard(runs: list[RunData]) -> list[dict]:
             "n": len(r.mentions), "leak": r.leak(), "ci": _bootstrap([tuple(v) for v in per_doc.values()]),
             "leak_completed": r.leak(done), "l12": len(l12) / len(r.mentions) if r.mentions else None,
             "not_replaced": len(not_replaced) / len(r.mentions) if r.mentions else None, "fail": r.fail(),
-            "searchable": float(np.mean(searchable)) if searchable else None,
+            "searchable": float(np.mean(searchable)) if searchable else None, "self_check": dict(verdicts),
+            "matter": (sum(1 for m in r.matters if m.get("consistent")), len(r.matters)),
             "clean": f"{sum(1 for d in r.documents if d.get('clean_document'))}/{len(r.documents)}",
             "collateral": (sum(w["status"] != "PRESERVED" for w in ordinary) / len(ordinary)) if ordinary else None,
             "protected": sum(w["status"] != "PRESERVED" for w in protected),
@@ -338,14 +350,17 @@ def build_board(run_ids: list[str], out: Path, title: str = "Candidate compariso
                  "<th>docs</th><th>required</th><th>leak (strict)</th><th>95% CI</th><th>leak (completed)</th>"
                  "<th>visible/recoverable</th><th>not replaced</th><th>failure</th><th>clean docs</th>"
                  "<th>collateral</th><th>protected dmg</th><th>searchable</th>"
-                 "<th>token P / R</th><th>flip rate</th></tr>" + "".join(
+                 "<th>token P / R</th><th>flip rate</th><th>same fake across matter</th>"
+                 "<th>tool's own safety check</th></tr>" + "".join(
                      f"<tr><td>{_esc(x['candidate'])} <span class=mut>{_esc(x['version'])}</span></td>"
                      f"<td>{_esc(x['experiment'])}</td><td>{_esc(x['dataset'])}</td><td>{x['docs']}</td><td>{x['n']}</td>"
                      f"<td>{_pct(x['leak'])}</td><td>{_ci(x['ci'])}</td>"
                      f"<td>{_pct(x['leak_completed'])}</td><td>{_pct(x['l12'])}</td>"
                      f"<td>{_pct(x['not_replaced'])}</td><td>{_pct(x['fail'])}</td><td>{x['clean']}</td>"
                      f"<td>{_pct(x['collateral'])}</td><td>{x['protected']}</td><td>{_pct(x['searchable'])}</td>"
-                     f"<td>{_pct(x['precision'])} / {_pct(x['recall'])}</td><td>{_pct(x['flip'])}</td></tr>"
+                     f"<td>{_pct(x['precision'])} / {_pct(x['recall'])}</td><td>{_pct(x['flip'])}</td>"
+                     f"<td>{x['matter'][0]}/{x['matter'][1] if x['matter'][1] else 'N/A'}</td>"
+                     f"<td>{_esc(_verdicts(x['self_check']))}</td></tr>"
                      for x in rows) + "</table></div>")
 
     if e2e:
