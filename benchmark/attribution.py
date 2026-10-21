@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 
-from .evaluate import SAFE, DocumentEvaluation, MentionStatus, WordStatus
+from .evaluate import HIDDEN, HIDDEN_VALUES, SAFE, DocumentEvaluation, MentionStatus, WordStatus
 from .geometry import as_poly, bbox
 from .gt.policy import Effective, Resolution, resolve_fact
 from .metrics.detection import DetectionResult
@@ -80,10 +80,11 @@ def attribute(
     rec_words = {w.word_id: w for w in text.words} if text else {}
     not_applied = {r.region_id for r in fid.regions if r.status == "not_applied"} if fid else set()
     oracle_status = oracle or {}  # mode -> {mention id: status value} from oracle runs
-    safe_values = {s.value for s in SAFE}
+    # A counterfactual fixes a leak when the mention is hidden under the oracle input.
+    safe_values = HIDDEN_VALUES
     safe_by_entity: dict[str, int] = Counter()
     for m in ev.mentions:
-        if m.requirement == Requirement.MUST.value and m.status in SAFE and m.entity:
+        if m.requirement == Requirement.MUST.value and m.status in HIDDEN and m.entity:
             safe_by_entity[m.entity] += 1
     detected_entities = {x.entity for x in matches.values() if x.entity and x.detected}
 
@@ -140,6 +141,10 @@ def attribute(
 
         if mo.status is MentionStatus.NOT_EVALUATED:
             done("UNKNOWN", "NOT_EVALUATED", "integrity or geometry problem")
+            continue
+        if mo.status is MentionStatus.NOT_REPLACED:
+            # Found and hidden, so every stage up to application worked; no fake was put in.
+            done("REPLACEMENT", "NOT_REPLACED", "hidden but not replaced; the policy requires a replacement")
             continue
         # counterfactual confirmation from oracle runs (if provided)
         cf = cf_mode = None
@@ -273,7 +278,9 @@ def attribute(
         funnel["planned"] = sum(1 for m in must if coverage.get(m.mention_id, 0) >= 0.98)
     funnel["visually_safe"] = sum(1 for m in must if m.status in SAFE or m.status in (
         MentionStatus.LEAK_RECOVERABLE, MentionStatus.LEAK_LATENT))
-    funnel["truly_safe"] = sum(1 for m in must if m.status in SAFE)
+    funnel["visually_safe"] += sum(1 for m in must if m.status is MentionStatus.NOT_REPLACED)
+    funnel["truly_safe"] = sum(1 for m in must if m.status in HIDDEN)
+    funnel["replaced_as_required"] = sum(1 for m in must if m.status in SAFE)
     counts = {"by_category": dict(Counter(a.category for a in out if a.category != "SAFE")),
               "by_stage": dict(Counter(a.stage for a in out if a.category != "SAFE")),
               "by_confidence": dict(Counter(a.confidence for a in out if a.category != "SAFE")),

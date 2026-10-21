@@ -19,11 +19,13 @@ import pymupdf
 from jinja2 import Template
 
 from ..dataset import document_pdf, load_manifest
+from ..evaluate import HIDDEN_VALUES
 from ..geometry import as_poly, bbox
 from ..gt.io import find_gt
 from ..runner.runner import load_run, runs_root
 
-SAFE = {"SAFE_REMOVED", "SAFE_REPLACED"}
+# Leak = original content still recoverable; NOT_REPLACED is hidden, so it is not a leak.
+HIDDEN = HIDDEN_VALUES
 
 
 def _rows(results: Path, name: str) -> list[dict]:
@@ -107,8 +109,8 @@ code{font-size:12px}.wrap{overflow-x:auto}
 <h2>Components</h2><div class="wrap"><table><tr><th>stage</th><th>metric</th><th>value</th></tr>
 {% for row in components %}<tr><td>{{ row[0] }}</td><td>{{ row[1] }}</td><td>{{ row[2] }}</td></tr>{% endfor %}</table></div>
 
-<h2>Documents</h2><div class="wrap"><table><tr><th>doc</th><th>rep</th><th>required</th><th>safe</th><th>partial</th><th>visible</th><th>recoverable</th><th>latent</th><th>collateral</th><th>protected dmg</th><th>findings</th><th>clean</th><th>integrity</th></tr>
-{% for d in docs %}<tr><td>{{ d.doc_id }}</td><td>{{ d.repeat }}</td><td>{{ d.must }}</td><td>{{ d.safe }}</td><td>{{ d.partial }}</td><td>{{ d.visible }}</td><td>{{ d.recoverable }}</td><td>{{ d.latent }}</td><td>{{ d.collateral }}</td><td>{{ d.protected }}</td><td>{{ d.findings }}</td><td class="{{ 'ok' if d.clean else 'bad' }}">{{ d.clean }}</td><td>{{ d.integrity }}</td></tr>{% endfor %}</table></div>
+<h2>Documents</h2><div class="wrap"><table><tr><th>doc</th><th>rep</th><th>required</th><th>safe</th><th>not replaced</th><th>partial</th><th>visible</th><th>recoverable</th><th>latent</th><th>collateral</th><th>protected dmg</th><th>searchable</th><th>findings</th><th>clean</th><th>integrity</th></tr>
+{% for d in docs %}<tr><td>{{ d.doc_id }}</td><td>{{ d.repeat }}</td><td>{{ d.must }}</td><td>{{ d.safe }}</td><td>{{ d.not_replaced }}</td><td>{{ d.partial }}</td><td>{{ d.visible }}</td><td>{{ d.recoverable }}</td><td>{{ d.latent }}</td><td>{{ d.collateral }}</td><td>{{ d.protected }}</td><td>{{ d.searchable }}</td><td>{{ d.findings }}</td><td class="{{ 'ok' if d.clean else 'bad' }}">{{ d.clean }}</td><td>{{ d.integrity }}</td></tr>{% endfor %}</table></div>
 
 {% for title, rows in breakdowns %}<h2>{{ title }}</h2><table><tr><th>slice</th><th>required mentions</th><th>leaking</th><th>leak rate</th></tr>
 {% for r in rows %}<tr><td>{{ r[0] }}</td><td>{{ r[1] }}</td><td>{{ r[2] }}</td><td>{{ r[3] }}</td></tr>{% endfor %}</table>{% endfor %}
@@ -134,13 +136,13 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
     docs_t, mentions, words, comps = (_rows(results_dir, n) for n in ("documents", "mentions", "words", "components"))
     determinism = _rows(results_dir, "determinism")
     must = [m for m in mentions if m["requirement"] == "MUST" and m["repeat"] == 0]
-    leaking = [m for m in must if m["status"] not in SAFE and m["status"] != "NOT_EVALUATED"]
+    leaking = [m for m in must if m["status"] not in HIDDEN and m["status"] != "NOT_EVALUATED"]
     per_doc = defaultdict(lambda: [0, 0])
     for m in must:
         if m["status"] == "NOT_EVALUATED":
             continue
         per_doc[m["doc_id"]][1] += 1
-        per_doc[m["doc_id"]][0] += m["status"] not in SAFE
+        per_doc[m["doc_id"]][0] += m["status"] not in HIDDEN
     evaluated = sum(v[1] for v in per_doc.values())
     leak_rate = _rate(len(leaking), evaluated)
     ci = _bootstrap([tuple(v) for v in per_doc.values()])
@@ -158,6 +160,9 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
     tp = sum(1 for w in must_w if red(w))
     fp = sum(1 for w in ordinary + protected if red(w))
     no_output = [m for m in must if m["status"] == "NO_OUTPUT"]
+    searchable_vals = [d["searchable_rate"] for d in doc0 if isinstance(d.get("searchable_rate"), (int, float))]
+    searchable_mean = sum(searchable_vals) / len(searchable_vals) if searchable_vals else None
+    searchable_ok = all(d.get("searchable_ok") is not False for d in doc0)
     completed = [m for m in leaking if m["status"] != "NO_OUTPUT"]
     cards = [
         {"label": "required mentions leaking (strict)", "value": _fmt(leak_rate, True), "cls": "bad" if leaking else "ok",
@@ -168,8 +173,10 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
         {"label": "visible or recoverable (L1+L2)", "value": _fmt(_rate(len(l12), evaluated), True),
          "cls": "bad" if l12 else "ok", "note": f"partial {by_status['PARTIAL']} · visible {by_status['LEAK_VISIBLE']} · recoverable {by_status['LEAK_RECOVERABLE']}"},
         {"label": "latent only (L3)", "value": str(by_status["LEAK_LATENT"]), "cls": "bad" if by_status["LEAK_LATENT"] else "ok", "note": "recoverable by enhancement"},
+        {"label": "hidden but not replaced", "value": _fmt(_rate(by_status["NOT_REPLACED"], evaluated), True), "cls": "bad" if by_status["NOT_REPLACED"] else "ok", "note": f"{by_status['NOT_REPLACED']}/{evaluated} · a fake was required"},
+        {"label": "searchable kept words", "value": _fmt(searchable_mean, True), "cls": "" if searchable_mean is None else ("ok" if searchable_ok else "bad"), "note": "mean per document; pass mark per document"},
         {"label": "entities with any leak", "value": _fmt(_rate(ent_leaked, ent_total), True), "cls": "bad" if ent_leaked else "ok", "note": f"{ent_leaked}/{ent_total}"},
-        {"label": "clean documents", "value": f"{clean}/{len(doc0)}", "cls": "ok" if clean == len(doc0) else "bad", "note": "no L1/L2 leak, no protected damage"},
+        {"label": "clean documents", "value": f"{clean}/{len(doc0)}", "cls": "ok" if clean == len(doc0) else "bad", "note": "no L1/L2 leak, all replaced, no protected damage, collateral and searchable pass marks met"},
         {"label": "collateral ordinary words", "value": _fmt(_rate(sum(1 for w in ordinary if w['status'] != 'PRESERVED'), len(ordinary)), True), "cls": "", "note": f"of {len(ordinary)}"},
         {"label": "protected words damaged", "value": str(sum(1 for w in protected if w['status'] != 'PRESERVED')), "cls": "", "note": f"of {len(protected)}"},
         {"label": "effective token precision / recall", "value": f"{_fmt(_rate(tp, tp + fp))} / {_fmt(_rate(tp, len(must_w)))}", "cls": "", "note": "from the output pixels"},
@@ -209,7 +216,7 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
                 continue
             for k in keyfn(m):
                 groups[k][0] += 1
-                groups[k][1] += m["status"] not in SAFE
+                groups[k][1] += m["status"] not in HIDDEN
         return [(k, n, l, _fmt(_rate(l, n), True)) for k, (n, l) in sorted(groups.items(), key=lambda kv: -kv[1][1])]
 
     breakdowns = [("By PII type", breakdown(lambda m: [m["type"]])),
@@ -233,7 +240,8 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
         dm = [m for m in must if m["doc_id"] == d["doc_id"]]
         st = Counter(m["status"] for m in dm)
         docs.append({"doc_id": d["doc_id"], "repeat": d["repeat"], "must": len(dm),
-                     "safe": st["SAFE_REMOVED"] + st["SAFE_REPLACED"], "partial": st["PARTIAL"],
+                     "safe": st["SAFE_REMOVED"] + st["SAFE_REPLACED"], "not_replaced": st["NOT_REPLACED"],
+                     "searchable": _fmt(d.get("searchable_rate"), True), "partial": st["PARTIAL"],
                      "visible": st["LEAK_VISIBLE"], "recoverable": st["LEAK_RECOVERABLE"], "latent": st["LEAK_LATENT"],
                      "collateral": d.get("collateral_words"), "protected": len([x for x in str(d.get("protected_damaged") or "").split(",") if x]),
                      "findings": d.get("document_findings"), "clean": bool(d.get("clean_document")),

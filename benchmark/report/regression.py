@@ -15,7 +15,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 CASES = ROOT / "datasets" / "regression" / "cases.yaml"
-SAFE = {"SAFE_REMOVED", "SAFE_REPLACED"}
+from ..evaluate import SAFE_VALUES
+
+SAFE = SAFE_VALUES  # a hidden but unreplaced mention is still a failure worth a regression case
 
 
 def load_cases(path: Path = CASES) -> list[dict]:

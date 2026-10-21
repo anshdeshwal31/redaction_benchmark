@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_POLICY = str(ROOT / "policies" / "au-medicolegal-v0.yaml")
+# The client's decisions (Q1-Q16). The draft (au-medicolegal-v0.yaml) stays for re-scoring old runs.
+DEFAULT_POLICY = str(ROOT / "policies" / "au-medicolegal-v1.yaml")
 
 
 def _cmd_gt_draft(args) -> int:

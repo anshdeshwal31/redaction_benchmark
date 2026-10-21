@@ -1,0 +1,103 @@
+# Redaction policy for Australian medico-legal documents: the client's decisions.
+#
+# Source: the client's filled-in questionnaire (docs/client_policy_decisions_filled_by_joel.docx,
+# git-ignored). Every item is either replaced with a realistic fake of the same kind or kept
+# exactly as it is; nothing is blanked out (Q7: covering a required item instead of replacing it
+# is its own failure, NOT_REPLACED, reported separately from leaks).
+#
+# Differences from au-medicolegal@0.1.0-draft:
+# - professionals' names, organisations, their contact details, every identifier and every
+#   signature, mark, avatar and photo are now required (Q1, Q2, Q5, Q6);
+# - dates of birth, ages, suburbs, towns, postcodes, places of birth, occupation, physical
+#   description, family composition and cultural background must be kept (Q3, Q4, Q9);
+# - addresses are split in GT 0.2: the street line is an ADDRESS (required), the suburb, state
+#   and postcode a LOCATION/locality (kept);
+# - handwriting follows the type rules: a handwritten date or suburb is kept like its typed form.
+#
+# Still open: Q10 role words ("the claimant") are not in GT; the client is to clarify. Quasi-
+# identifiers the questionnaire did not ask about (religion, education, qualifications, marital,
+# benefit or employment status, accreditation, courses) stay MAY.
+schema: rb.policy/0.1
+name: au-medicolegal
+version: 1.0.0
+description: >
+  The client's decisions of 2026-10-18: replace every person, organisation, contact detail,
+  identifier, signature and image of a person with a fake; keep every date, age, place below
+  street level, occupation and clinical or legal content.
+consistency_scope: matter          # Q8: same fake for a person across the matter's documents
+
+rules:
+  # --- people and their marks (Q1, Q6) ------------------------------------------
+  - id: names-everyone
+    when:
+      type: [PERSON_NAME]
+    requirement: MUST
+    action: replace
+    note: Private persons and professionals alike (Q1).
+
+  - id: signatures-marks-images
+    when:
+      type: [SIGNATURE, HANDWRITTEN_MARK, IMAGE_PII]
+    requirement: MUST
+    action: replace
+    note: Replaced with a synthetic stand-in (another signature, avatar or silhouette), never a box (Q6).
+
+  # --- contact details (Q2) ----------------------------------------------------------
+  - id: contact-details
+    when:
+      type: [ADDRESS, PHONE, EMAIL, URL]
+    requirement: MUST
+    action: replace
+    note: Persons' and organisations' alike. ADDRESS is the street line only (GT 0.2 split).
+
+  # --- organisations (Q2) ------------------------------------------------------------
+  - id: organisations
+    when:
+      type: [ORGANISATION]
+    requirement: MUST
+    action: replace
+
+  # --- identifiers (Q5) --------------------------------------------------------------
+  - id: identifiers
+    when:
+      type: [ID_GOVERNMENT, ID_FINANCIAL, ID_CLAIM, ID_LEGAL_REF, ID_PROVIDER, ID_BUSINESS, ID_OTHER, FILE_PATH]
+    requirement: MUST
+    action: replace
+
+  # --- kept as they are (Q3, Q4, Q9) -----------------------------------------------
+  - id: dates-kept
+    when:
+      type: [DATE]
+    requirement: MUST_NOT
+    note: Every date, dates of birth included (Q3).
+
+  - id: ages-kept
+    when:
+      type: [AGE]
+    requirement: MUST_NOT
+    note: Including children's ages (Q3, Q4).
+
+  - id: places-kept
+    when:
+      type: [LOCATION]
+      subtype: [locality, suburb, city, region, state, country, postcode, place_of_declaration]
+    requirement: MUST_NOT
+    note: Suburbs, towns and places of birth (Q4); the locality part of a split address.
+
+  - id: quasi-identifiers-kept
+    when:
+      type: [QUASI_IDENTIFIER]
+      subtype: [occupation, physical, family_composition, cultural_background]
+    requirement: MUST_NOT
+    note: Occupation, physical description (Q4); family relationships, cultural background (Q9).
+
+  # --- protected non-PII content (Q16: losing it fails the document) ----------------
+  - id: protected-content
+    when:
+      target: classified
+    requirement: MUST_NOT
+    note: Clinical terms, medications, eponyms, citations, homographs, boilerplate, placeholders.
+
+default_mention: MAY
+default_classified: MUST_NOT
+optional_words: MAY

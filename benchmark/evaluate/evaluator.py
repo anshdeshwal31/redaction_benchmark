@@ -26,12 +26,13 @@ import pymupdf
 from ..forensics.inspect import revision_prefixes
 from ..geometry import as_poly, dilate, geometry_from_pikepdf_page, rasterize
 from ..gt.policy import Effective, resolve
-from ..schemas import GTDocument, PolicyProfile, Requirement
+from ..schemas import Action, GTDocument, PolicyProfile, Requirement
 from .cells import PageCells, Unit, unit_flags
 from .config import EvalConfig
 from .document import document_findings
 from .layers import layer_survival, page_chars, page_layers, text_in_words, text_leaks, vector_survival
 from .outcomes import (
+    HIDDEN,
     L1_L2_LEAKS,
     SAFE,
     DocumentEvaluation,
@@ -71,7 +72,9 @@ def check_integrity(source: bytes, output: bytes) -> tuple[Integrity, list, list
         aw, ah = a.display_size
         bw, bh = b.display_size
         if abs(aw - bw) > 0.5 or abs(ah - bh) > 0.5:
-            problems.append(f"page {i}: display size {bw:.1f}x{bh:.1f} != source {aw:.1f}x{ah:.1f}")
+            # The client accepts a changed page size (Q11); the evaluator rescales the page, and a
+            # changed aspect ratio marks the page's pixel evidence unreliable.
+            warnings.append(f"page {i}: display size {bw:.1f}x{bh:.1f} != source {aw:.1f}x{ah:.1f}")
         elif a.rotation != b.rotation:
             # Rotation flattened into the content: what a reader sees is unchanged.
             warnings.append(f"page {i}: /Rotate {b.rotation} != source {a.rotation} (displayed geometry unchanged)")
@@ -186,6 +189,21 @@ def _text_like_ink(gray: np.ndarray, polys: list[np.ndarray], scale: float) -> b
     return med >= 4
 
 
+def _region_stand_in(gray: np.ndarray, polys: list[np.ndarray], scale: float, min_std: float) -> bool:
+    """Is a hidden region filled with new picture content (a synthetic signature, avatar or
+    silhouette) rather than a uniform box or blank paper? The mask is eroded so the edge of a
+    box drawn exactly over the region does not count as variation."""
+    if not polys:
+        return False
+    mask = rasterize(polys, gray.shape, scale)
+    mask = cv2.erode(mask.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+    return bool(mask.sum() >= 25 and float(gray[mask].std()) >= min_std)
+
+
+def _has_alnum(s: str, n: int = 1) -> bool:
+    return sum(ch.isalnum() for ch in s) >= n
+
+
 def _flags_from(indices: dict[int, int], n: int) -> np.ndarray:
     arr = np.zeros(n, bool)
     if indices:
@@ -208,6 +226,7 @@ def evaluate_output(
     integrity, src_geoms, out_geoms = check_integrity(source, output)
     entities = {e.id: e for e in gt.entities}
     words = gt.word_index()
+    regions_idx = gt.region_index()
     scale = cfg.dpi / 72.0
 
     engines = readable_engines(output, cfg.renderers) if integrity.opens else list(cfg.renderers)
@@ -239,6 +258,7 @@ def evaluate_output(
 
     must_or_may_words = {wid for wid, eff in res.words.items() if eff in (Effective.MUST, Effective.MAY)}
     mention_words = {wid for m in gt.mentions for seg in m.segments for wid in seg.words}
+    kept_words = {wid for wid, eff in res.words.items() if eff in (Effective.ORDINARY, Effective.MUST_NOT)}
     layer_cache: dict[int, np.ndarray] = {}
 
     for page in gt.pages:
@@ -309,7 +329,8 @@ def evaluate_output(
         if exists:
             out_page = out_doc[i]
             centres, chars = page_chars(out_page, out_geom)
-            texts[i] = text_in_words(page, centres, chars, mention_words)
+            # Mention words for leaks; kept words for the searchable-text check.
+            texts[i] = text_in_words(page, centres, chars, mention_words | kept_words)
             mention_cells = [ci for ci, c in enumerate(pc.cells)
                              if (c.word_id in mention_words) or c.region_id is not None]
             layers = page_layers(out_doc, out_page, layer_cache)
@@ -410,6 +431,11 @@ def evaluate_output(
                        for (pg, wid), t in req_text.items())
         replaced = new_text or any(_text_like_ink(primary_out[pg], polys, scale)
                                    for pg, polys in polys_by_page.items() if pg in primary_out)
+        region_polys: dict[int, list[np.ndarray]] = defaultdict(list)
+        for seg in m.segments:
+            region_polys[seg.page].extend(as_poly(regions_idx[rid][1].poly) for rid in seg.regions)
+        replaced = replaced or any(_region_stand_in(primary_out[pg], polys, scale, cfg.region_replaced_min_std)
+                                   for pg, polys in region_polys.items() if pg in primary_out)
 
         l2 = []
         if f_text > cfg.safe_max_residual:
@@ -432,6 +458,8 @@ def evaluate_output(
             status = MentionStatus.LEAK_LATENT
         elif replaced:
             status = MentionStatus.SAFE_REPLACED
+        elif r.action is Action.REPLACE:
+            status = MentionStatus.NOT_REPLACED
         else:
             status = MentionStatus.SAFE_REMOVED
         outcomes.append(MentionOutcome(
@@ -462,7 +490,17 @@ def evaluate_output(
                 ws = WordStatus.DAMAGED
             word_outcomes.append(WordOutcome(w.id, page.index, eff.value, round(frac, 4), ws))
 
-    summary = _summarise(outcomes, word_outcomes, findings, surfaces, integrity, page_outcomes)
+    # -- searchable text (client Q11): kept words findable in the text layer at their place -----
+    word_text = {w.id: w.text for p in gt.pages for w in p.words}
+    searchable: dict[str, bool] = {}
+    for wo in word_outcomes:
+        if (wo.status is WordStatus.PRESERVED and _has_alnum(word_text[wo.word_id])
+                and wo.requirement in (Effective.ORDINARY.value, Effective.MUST_NOT.value)):
+            searchable[wo.word_id] = text_leaks(word_text[wo.word_id].strip(".,;:()"),
+                                                texts.get(wo.page, {}).get(wo.word_id), cfg)
+
+    summary = _summarise(outcomes, word_outcomes, findings, surfaces, integrity, page_outcomes,
+                         word_text=word_text, searchable=searchable, cfg=cfg)
     return DocumentEvaluation(
         doc_id=gt.doc_id, eval_version=cfg.version, eval_digest=cfg.digest(), policy=res.policy,
         source_sha256=hashlib.sha256(source).hexdigest(), output_sha256=hashlib.sha256(output).hexdigest(),
@@ -470,11 +508,16 @@ def evaluate_output(
         pages=page_outcomes, findings=findings, surfaces=surfaces, revisions_checked=len(prefixes), summary=summary)
 
 
-def _summarise(mentions, words, findings, surfaces, integrity, pages) -> dict:
+def _summarise(mentions, words, findings, surfaces, integrity, pages, word_text: dict[str, str] | None = None,
+               searchable: dict[str, bool] | None = None, cfg: EvalConfig | None = None) -> dict:
+    cfg = cfg or EvalConfig()
+    word_text = word_text or {}
+    searchable = searchable or {}
     must = [m for m in mentions if m.requirement == Requirement.MUST.value]
     evaluated = [m for m in must if m.status is not MentionStatus.NOT_EVALUATED]
     by_status = {s.value: sum(1 for m in must if m.status is s) for s in MentionStatus}
-    leaked_entities = {m.entity for m in evaluated if m.entity and m.status not in SAFE}
+    not_replaced = [m for m in evaluated if m.status is MentionStatus.NOT_REPLACED]
+    leaked_entities = {m.entity for m in evaluated if m.entity and m.status not in HIDDEN}
     leaked_entities |= {e for f in findings for e in f.entity_ids}
     must_entities = {m.entity for m in must if m.entity}
     done = [w for w in words if w.status is not WordStatus.NOT_EVALUATED]
@@ -482,6 +525,14 @@ def _summarise(mentions, words, findings, surfaces, integrity, pages) -> dict:
     protected = [w for w in done if w.requirement == Effective.MUST_NOT.value]
     collateral = [w for w in ordinary if w.status is not WordStatus.PRESERVED]
     protected_damage = [w for w in protected if w.status is not WordStatus.PRESERVED]
+    # Only real words count towards the collateral pass mark; stray punctuation is reported.
+    real = [w for w in ordinary if _has_alnum(word_text.get(w.word_id, "x" * cfg.collateral_min_chars),
+                                              cfg.collateral_min_chars)]
+    real_collateral = [w for w in real if w.status is not WordStatus.PRESERVED]
+    collateral_ok = not real or len(real_collateral) / len(real) <= cfg.collateral_fail_rate
+    found = sum(searchable.values())
+    searchable_rate = found / len(searchable) if searchable else None
+    searchable_ok = searchable_rate is None or searchable_rate >= cfg.searchable_min_rate
     must_words = [w for w in done if w.requirement == Effective.MUST.value]
 
     def redacted(w):
@@ -504,8 +555,11 @@ def _summarise(mentions, words, findings, surfaces, integrity, pages) -> dict:
         "must_mentions": len(must),
         "must_evaluated": len(evaluated),
         "must_by_status": by_status,
-        "must_leak_rate": rate(sum(1 for m in evaluated if m.status not in SAFE), len(evaluated)),
+        "must_leak_rate": rate(sum(1 for m in evaluated if m.status not in HIDDEN), len(evaluated)),
         "must_l1_l2_leak_rate": rate(len(l1_l2), len(evaluated)),
+        "must_not_replaced": len(not_replaced),
+        "must_not_replaced_rate": rate(len(not_replaced), len(evaluated)),
+        "must_fail_rate": rate(sum(1 for m in evaluated if m.status not in SAFE), len(evaluated)),
         "entities_with_must_mentions": len(must_entities),
         "entities_leaked": sorted(e for e in leaked_entities if e in must_entities),
         "entity_any_leak_rate": rate(len(leaked_entities & must_entities), len(must_entities)),
@@ -514,6 +568,12 @@ def _summarise(mentions, words, findings, surfaces, integrity, pages) -> dict:
         "ordinary_words": len(ordinary),
         "collateral_words": len(collateral),
         "collateral_rate": rate(len(collateral), len(ordinary)),
+        "collateral_real_words": len(real_collateral),
+        "collateral_real_rate": rate(len(real_collateral), len(real)),
+        "collateral_ok": collateral_ok,
+        "searchable_words": len(searchable),
+        "searchable_rate": round(searchable_rate, 4) if searchable_rate is not None else None,
+        "searchable_ok": searchable_ok,
         "protected_words": len(protected),
         "protected_damaged": [w.word_id for w in protected_damage],
         "effective_token_precision": round(precision, 4) if precision is not None else None,
@@ -525,5 +585,6 @@ def _summarise(mentions, words, findings, surfaces, integrity, pages) -> dict:
         "integrity_ok": integrity.ok,
         "pages_not_evaluated": [p.index for p in pages if not p.evaluated],
         "clean_document": bool(integrity.ok and not l1_l2 and not findings and not must_surface_leaks
-                               and not protected_damage and len(evaluated) == len(must)),
+                               and not protected_damage and len(evaluated) == len(must)
+                               and not not_replaced and collateral_ok and searchable_ok),
     }

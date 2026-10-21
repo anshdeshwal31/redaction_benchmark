@@ -24,10 +24,13 @@ import numpy as np
 import pyarrow.parquet as pq
 
 from ..dataset import load_manifest
+from ..evaluate import HIDDEN_VALUES, SAFE_VALUES
 from ..runner.runner import load_run
 from ..runner.scoring import results_root
 
-SAFE = {"SAFE_REMOVED", "SAFE_REPLACED"}
+# Leak = original content still there; failure = leak or hidden without the required replacement.
+HIDDEN = HIDDEN_VALUES
+PASS = SAFE_VALUES
 MODE_ORDER = ["e2e", "oracle_text", "oracle_mentions", "oracle_regions"]
 STAGE_BETWEEN = {("e2e", "oracle_text"): "text acquisition", ("oracle_text", "oracle_mentions"): "detection",
                  ("oracle_mentions", "oracle_regions"): "resolution + localization"}
@@ -61,7 +64,11 @@ class RunData:
 
     def leak(self, mentions=None) -> float | None:
         ms = self.mentions if mentions is None else mentions
-        return sum(m["status"] not in SAFE for m in ms) / len(ms) if ms else None
+        return sum(m["status"] not in HIDDEN for m in ms) / len(ms) if ms else None
+
+    def fail(self, mentions=None) -> float | None:
+        ms = self.mentions if mentions is None else mentions
+        return sum(m["status"] not in PASS for m in ms) / len(ms) if ms else None
 
 
 def _ci(ci) -> str:
@@ -91,8 +98,10 @@ def scorecard(runs: list[RunData]) -> list[dict]:
         per_doc = defaultdict(lambda: [0, 0])
         for m in r.mentions:
             per_doc[m["doc_id"]][1] += 1
-            per_doc[m["doc_id"]][0] += m["status"] not in SAFE
+            per_doc[m["doc_id"]][0] += m["status"] not in HIDDEN
         done = [m for m in r.mentions if m["status"] != "NO_OUTPUT"]
+        not_replaced = [m for m in r.mentions if m["status"] == "NOT_REPLACED"]
+        searchable = [d["searchable_rate"] for d in r.documents if isinstance(d.get("searchable_rate"), (int, float))]
         l12 = [m for m in r.mentions if m["status"] in ("PARTIAL", "LEAK_VISIBLE", "LEAK_RECOVERABLE")]
         ordinary = [w for w in r.words if w["requirement"] == "ORDINARY"]
         protected = [w for w in r.words if w["requirement"] == "MUST_NOT"]
@@ -108,6 +117,8 @@ def scorecard(runs: list[RunData]) -> list[dict]:
             "mode": r.mode, "dataset": r.dataset, "docs": len({m["doc_id"] for m in r.mentions}),
             "n": len(r.mentions), "leak": r.leak(), "ci": _bootstrap([tuple(v) for v in per_doc.values()]),
             "leak_completed": r.leak(done), "l12": len(l12) / len(r.mentions) if r.mentions else None,
+            "not_replaced": len(not_replaced) / len(r.mentions) if r.mentions else None, "fail": r.fail(),
+            "searchable": float(np.mean(searchable)) if searchable else None,
             "clean": f"{sum(1 for d in r.documents if d.get('clean_document'))}/{len(r.documents)}",
             "collateral": (sum(w["status"] != "PRESERVED" for w in ordinary) / len(ordinary)) if ordinary else None,
             "protected": sum(w["status"] != "PRESERVED" for w in protected),
@@ -126,7 +137,7 @@ def heat(runs: list[RunData], key) -> tuple[list[str], list[str], dict]:
         for m in r.mentions:
             for k in key(m):
                 groups[k][0] += 1
-                groups[k][1] += m["status"] not in SAFE
+                groups[k][1] += m["status"] not in HIDDEN
         for k, (n, bad) in groups.items():
             cells[(r.label, k)] = (bad / n, bad, n)
             cols[k] += n
@@ -191,7 +202,7 @@ def ladders(runs: list[RunData]) -> dict[str, dict[str, list[tuple[float, float,
                 continue
             factor = df.factor
             steps[df.value][0] += 1
-            steps[df.value][1] += mm["status"] not in SAFE
+            steps[df.value][1] += mm["status"] not in HIDDEN
         if factor:
             out[factor][r.candidate] = [(v, bad / n, n) for v, (n, bad) in steps.items()]
     return out
@@ -318,19 +329,22 @@ def build_board(run_ids: list[str], out: Path, title: str = "Candidate compariso
     e2e = [r for r in runs if r.mode == "e2e" and not r.dataset.startswith("ladder-")]
     parts = [f"<h1>{_esc(title)}</h1><p class=mut>{len(runs)} scored run(s) · candidates: "
              f"{', '.join(_esc(c) for c in cands)}. No composite score: each column answers a different question. "
-             f"Leak = required mention not SAFE (visible, partial, recoverable from the file, latent, or no "
-             f"output). Intervals: 95% document-cluster bootstrap.</p>"]
+             f"Leak = required mention still recoverable (visible, partial, recoverable from the file, latent, or "
+             f"no output). Not replaced = hidden although a replacement was required. Failure = either. "
+             f"Intervals: 95% document-cluster bootstrap.</p>"]
 
     rows = scorecard(runs)
     parts.append("<h2>Scorecard</h2><div class=wrap><table><tr><th>candidate</th><th>experiment</th><th>dataset</th>"
                  "<th>docs</th><th>required</th><th>leak (strict)</th><th>95% CI</th><th>leak (completed)</th>"
-                 "<th>visible/recoverable</th><th>clean docs</th><th>collateral</th><th>protected dmg</th>"
+                 "<th>visible/recoverable</th><th>not replaced</th><th>failure</th><th>clean docs</th>"
+                 "<th>collateral</th><th>protected dmg</th><th>searchable</th>"
                  "<th>token P / R</th><th>flip rate</th></tr>" + "".join(
                      f"<tr><td>{_esc(x['candidate'])} <span class=mut>{_esc(x['version'])}</span></td>"
                      f"<td>{_esc(x['experiment'])}</td><td>{_esc(x['dataset'])}</td><td>{x['docs']}</td><td>{x['n']}</td>"
                      f"<td>{_pct(x['leak'])}</td><td>{_ci(x['ci'])}</td>"
-                     f"<td>{_pct(x['leak_completed'])}</td><td>{_pct(x['l12'])}</td><td>{x['clean']}</td>"
-                     f"<td>{_pct(x['collateral'])}</td><td>{x['protected']}</td>"
+                     f"<td>{_pct(x['leak_completed'])}</td><td>{_pct(x['l12'])}</td>"
+                     f"<td>{_pct(x['not_replaced'])}</td><td>{_pct(x['fail'])}</td><td>{x['clean']}</td>"
+                     f"<td>{_pct(x['collateral'])}</td><td>{x['protected']}</td><td>{_pct(x['searchable'])}</td>"
                      f"<td>{_pct(x['precision'])} / {_pct(x['recall'])}</td><td>{_pct(x['flip'])}</td></tr>"
                      for x in rows) + "</table></div>")
 
@@ -344,7 +358,7 @@ def build_board(run_ids: list[str], out: Path, title: str = "Candidate compariso
         parts.append(_heat_table("By page encoding", *heat(e2e, lambda m: (m.get("encodings") or "?").split(","))))
         mix_rows, mix_cols, mix = [], Counter(), {}
         for r in e2e:
-            fails = [m for m in r.mentions if m["status"] not in SAFE]
+            fails = [m for m in r.mentions if m["status"] not in PASS]
             cats = Counter(m.get("attr_category") or "?" for m in fails)
             mix_rows.append(r.label)
             for k, v in cats.items():

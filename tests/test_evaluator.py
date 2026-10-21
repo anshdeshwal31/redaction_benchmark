@@ -46,13 +46,21 @@ OVERLAY_CHANNEL = {"digital": "text_layer", "raster_skew": "image_layer", "raste
                    "rotate_attr": "text_layer", "cropbox": "text_layer"}
 
 
+TEXT_LAYER_SOURCES = {"digital", "raster_hidden_text", "rotate_attr", "cropbox"}
+
+
 @pytest.mark.parametrize("variant", ENCODINGS)
 @pytest.mark.parametrize("method", ["true", "rasterize"])
 def test_reference_redactors_are_clean(variant, method):
     ev = evaluated(variant, MockSpec(f"ref-{method}", method=method))
     assert all(m.status in SAFE for m in must(ev)), [(m.mention_id, m.status) for m in must(ev)]
-    assert ev.summary["clean_document"]
     assert ev.summary["collateral_words"] == 0 and ev.summary["protected_damaged"] == []
+    # Leak-free and undamaged. The one rule left is the client's searchable-text requirement
+    # (Q11): only a true redaction of a source with a text layer keeps the rest searchable;
+    # image-only output, or a scan without an OCR layer, fails it.
+    searchable = method == "true" and variant in TEXT_LAYER_SOURCES
+    assert ev.summary["searchable_ok"] is searchable
+    assert ev.summary["clean_document"] is searchable
 
 
 @pytest.mark.parametrize("variant", ENCODINGS)

@@ -12,6 +12,9 @@ from .document import DocFinding, SurfaceOutcome
 class MentionStatus(str, Enum):
     SAFE_REMOVED = "SAFE_REMOVED"
     SAFE_REPLACED = "SAFE_REPLACED"
+    # Hidden but not replaced although the policy requires replacement (client Q7): not a leak,
+    # not a pass; reported on its own.
+    NOT_REPLACED = "NOT_REPLACED"
     PARTIAL = "PARTIAL"
     LEAK_VISIBLE = "LEAK_VISIBLE"
     LEAK_RECOVERABLE = "LEAK_RECOVERABLE"
@@ -20,7 +23,11 @@ class MentionStatus(str, Enum):
 
 
 SAFE = {MentionStatus.SAFE_REMOVED, MentionStatus.SAFE_REPLACED}
+HIDDEN = SAFE | {MentionStatus.NOT_REPLACED}  # original content gone: not a leak
 L1_L2_LEAKS = {MentionStatus.PARTIAL, MentionStatus.LEAK_VISIBLE, MentionStatus.LEAK_RECOVERABLE}
+# String forms for the results tables (reports read statuses back as text).
+SAFE_VALUES = frozenset(s.value for s in SAFE)
+HIDDEN_VALUES = frozenset(s.value for s in HIDDEN)
 
 
 class WordStatus(str, Enum):

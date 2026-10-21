@@ -16,7 +16,9 @@ from pydantic import BaseModel, ConfigDict, Field
 class EvalConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    version: str = "eval-0.2"
+    # eval-0.3: NOT_REPLACED verdict, stand-in detection for regions, searchable-text and
+    # collateral pass marks, page size changes no longer an integrity problem.
+    version: str = "eval-0.3"
     dpi: float = Field(200, ge=150, le=600, description="Rendering resolution for pixel evidence. Calibrated "
                                                           "for 150-300 DPI; below ~120 DPI the character bands of "
                                                           "8 pt text are too coarse and produce false leaks")
@@ -36,9 +38,24 @@ class EvalConfig(BaseModel):
     safe_max_residual: float = Field(0.02, description="SAFE when at most this fraction of cells survives")
     leak_min_residual: float = Field(0.90, description="LEAK_VISIBLE when at least this fraction survives")
 
+    region_replaced_min_std: float = Field(12.0, description="A hidden region counts as replaced by a stand-in "
+                                                            "(signature, avatar, silhouette) when the output "
+                                                            "inside it varies at least this much (grey levels); "
+                                                            "boxes and blank paper are near-uniform")
+
     # -- words (collateral / protected damage) -------------------------------------
     word_preserved_fraction: float = Field(0.8, description="Word preserved if this fraction of cells is visible")
     word_removed_fraction: float = Field(0.05, description="Word removed if at most this fraction is visible")
+    collateral_fail_rate: float = Field(0.01, description="A document fails when more than this share of its "
+                                                          "ordinary words (2+ letters or digits) is damaged or "
+                                                          "removed (client Q16: only identifying words may change)")
+    collateral_min_chars: int = Field(2, description="Ordinary words with fewer letters/digits (punctuation, "
+                                                    "single characters) are reported but never fail a document")
+
+    # -- searchable text (client Q11) --------------------------------------------------
+    searchable_min_rate: float = Field(0.95, description="Share of kept words (preserved ordinary and protected "
+                                                        "words with letters or digits) that must be findable in "
+                                                        "the output's text layer at their place on the page")
 
     # -- file-level survival (L2) ---------------------------------------------------
     layer_ncc: float = Field(0.6, description="Image-layer cell correlates with the original content")

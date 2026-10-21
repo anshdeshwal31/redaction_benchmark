@@ -13,7 +13,11 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Callable
 
-from .evaluate import SAFE, DocumentEvaluation, EvalConfig, MentionStatus, evaluate_output
+from .evaluate import HIDDEN, DocumentEvaluation, EvalConfig, MentionStatus, evaluate_output
+
+# The self-check tests leak detection, so "safe" here means hidden: a removal under a policy that
+# requires replacement is hidden (NOT_REPLACED), not leaked.
+SAFE = HIDDEN
 from .gt.policy import resolve
 from .metrics import InkIndex, evaluate_plan
 from .mocks import MockSpec, run_mock
