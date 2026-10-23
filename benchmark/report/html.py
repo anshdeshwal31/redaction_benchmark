@@ -23,6 +23,7 @@ from ..evaluate import HIDDEN_VALUES
 from ..geometry import as_poly, bbox
 from ..gt.io import find_gt
 from ..runner.runner import load_run, runs_root
+from . import deviations
 
 # Leak = original content still recoverable; NOT_REPLACED is hidden, so it is not a leak.
 HIDDEN = HIDDEN_VALUES
@@ -84,8 +85,8 @@ TEMPLATE = Template("""<!doctype html><html lang="en"><head><meta charset="utf-8
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Redaction benchmark run</title>
 <style>
-:root{--bg:#fbfbfa;--fg:#1d1d1b;--mut:#6b6b66;--line:#ddddd8;--bad:#b42318;--ok:#067647;--card:#fff}
-@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#ececea;--mut:#a3a39e;--line:#33332f;--bad:#f97066;--ok:#47cd89;--card:#1e1e1c}}
+:root{--bg:#fbfbfa;--fg:#1d1d1b;--mut:#6b6b66;--line:#ddddd8;--bad:#b42318;--ok:#067647;--card:#fff;--warn:#b54708}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#ececea;--mut:#a3a39e;--line:#33332f;--bad:#f97066;--ok:#47cd89;--card:#1e1e1c;--warn:#fdb022}}
 body{background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;margin:0 auto;max-width:1180px;padding:24px 16px}
 h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px;border-bottom:1px solid var(--line);padding-bottom:4px}
 .mut{color:var(--mut)}table{border-collapse:collapse;width:100%;margin:6px 0 12px;font-variant-numeric:tabular-nums}
@@ -96,13 +97,17 @@ th,td{border-bottom:1px solid var(--line);padding:4px 8px;text-align:left;vertic
 .gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(520px,1fr));gap:12px}
 .gal img{max-width:100%;border:1px solid var(--line)}.pair{display:flex;gap:6px}.pair div{flex:1}
 code{font-size:12px}.wrap{overflow-x:auto}
+.dev{background:var(--card);border:1px solid var(--line);border-left:5px solid var(--warn);border-radius:8px;padding:2px 14px 6px;margin:16px 0}
+.dev h2{color:var(--warn);border-bottom:0;margin-top:12px}
 </style></head><body>
 <h1>Run {{ run.run_id }}</h1>
-<div class="mut">candidate <b>{{ run.candidate.name }}</b> {{ run.candidate.version }} · experiment {{ run.experiment.name }} ({{ run.experiment.mode }}, {{ run.experiment.repeats }} repeat(s)) · dataset {{ run.dataset.name }}@{{ run.dataset.version }} · eval {{ scoring.eval_config.version }}/{{ scoring.eval_digest }} · benchmark {{ run.benchmark.version }} {{ (run.benchmark.commit or 'uncommitted')[:10] }}{% if run.benchmark.dirty %} (dirty){% endif %}</div>
+<div class="mut">candidate <b>{{ run.candidate.name }}</b> {{ run.candidate.version }} · experiment {{ run.experiment.name }} ({{ run.experiment.mode }}, {{ run.experiment.repeats }} repeat(s)) · dataset {{ run.dataset.name }}@{{ run.dataset.version }} · eval {{ scoring.eval_config.version }}/{{ scoring.eval_digest }}{% if scoring.policy_id %} · policy {{ scoring.policy_id|e }}{% endif %} · benchmark {{ run.benchmark.version }} {{ (run.benchmark.commit or 'uncommitted')[:10] }}{% if run.benchmark.dirty %} (dirty){% endif %}</div>
 {% if shareable %}<p class="mut">Shareable mode: GT spans are masked in all crops.</p>{% else %}<p class="bad">Sensitive: contains crops of real documents. Do not circulate; use <code>--shareable</code>.</p>{% endif %}
 {% if pending %}<p class="mut">Policy decisions pending (scored as MAY, neither rewarded nor penalised): {% for q, n in pending %}{{ q }} ({{ n }} mentions){% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}
 {% if skipped %}<p class="mut">Not scored: {% for s in skipped %}{{ s.doc_id }}{% if s.repeat is defined %}/r{{ s.repeat }}{% endif %} ({{ s.reason }}){% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
 {% if matter_mismatch %}<p class="mut">Matter ids differ between the dataset and the GT: {% for m in matter_mismatch %}{{ m.doc_id|e }} (dataset {{ (m.dataset or 'none')|e }}, GT {{ (m.gt or 'none')|e }}){% if not loop.last %}, {% endif %}{% endfor %}. The tool was given the dataset's; the same-fake-across-matter check groups documents by the GT's and leaves out a document whose GT has none.</p>{% endif %}
+{{ mismatch }}
+{{ departures }}
 <h2>Scorecard</h2>
 <div class="grid">{% for c in cards %}<div class="card"><span class="mut">{{ c.label }}</span><b class="{{ c.cls }}">{{ c.value }}</b><span class="mut">{{ c.note }}</span></div>{% endfor %}</div>
 
@@ -279,7 +284,9 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
                            attribution=[(*k, v) for k, v in attribution.most_common()],
                            over=sorted(over.items()), determinism=determinism, gallery=gallery,
                            pending=sorted(pending.items()), skipped=scoring.get("skipped", []),
-                           matter_mismatch=scoring.get("matter_mismatch", []))
+                           matter_mismatch=scoring.get("matter_mismatch", []),
+                           mismatch=deviations.mismatch_section([scoring]),
+                           departures=deviations.section(deviations.collect([scoring])))
     out = results_dir / ("report-shareable.html" if shareable else "report.html")
     out.write_text(page, encoding="utf-8")
     return out

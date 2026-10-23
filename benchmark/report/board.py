@@ -2,7 +2,11 @@
 
 One static HTML page over several scored runs:
 
-- scorecard: one row per run, no composite score, n and intervals shown
+- departures from the client's answers: the deviations of the runs' policies, each shown once and,
+  when the runs were scored under different policies, with the runs it applies to
+- a warning for every run scored under another policy than the one its tool was given
+- scorecard: one row per run with the policy it was scored under, no composite score, n and
+  intervals shown
 - heatmaps: leak rate by PII type, document condition and page encoding (candidate × slice),
   and the failure-category mix
 - failure decomposition: for each candidate with oracle runs on the same dataset, the share
@@ -27,6 +31,7 @@ from ..dataset import load_manifest
 from ..evaluate import HIDDEN_VALUES, SAFE_VALUES
 from ..runner.runner import load_run
 from ..runner.scoring import results_root
+from . import deviations
 
 # Leak = original content still there; failure = leak or hidden without the required replacement.
 HIDDEN = HIDDEN_VALUES
@@ -63,6 +68,10 @@ class RunData:
         self.determinism = _rows(run_id, "determinism")
         self.matters = _rows(run_id, "matters")
         self.label = f"{self.candidate} · {self.run.experiment.name}"
+        scoring = results_root() / run_id / "scoring.json"
+        self.scoring = json.loads(scoring.read_text(encoding="utf-8")) if scoring.exists() else {}
+        self.scoring.setdefault("run_id", run_id)
+        self.policy = deviations.policy_label(self.scoring)  # the policy this run was scored under
 
     def leak(self, mentions=None) -> float | None:
         ms = self.mentions if mentions is None else mentions
@@ -100,6 +109,19 @@ def _bootstrap(per_doc: list[tuple[int, int]], n: int = 2000) -> tuple[float, fl
     return (float(np.quantile(vals, 0.025)), float(np.quantile(vals, 0.975))) if vals else None
 
 
+def _given_policy(r: RunData) -> str | None:
+    """The policy a run's tool was given, when scoring warned that the scores use another one; with the
+    file hashes when only the file's content differs (same name and version)."""
+    given = r.scoring.get("run_policy") or {}
+    if not r.scoring.get("policy_warning") or not given:
+        return None
+    label = f"{given['name']}@{given['version']}"
+    if label == r.policy:
+        label += (f" with other content (file {given['sha256'][:8]}; scored with "
+                  f"{(r.scoring.get('policy_sha256') or '')[:8]})")
+    return label
+
+
 # -- sections ------------------------------------------------------------------------------------
 
 
@@ -126,7 +148,10 @@ def scorecard(runs: list[RunData]) -> list[dict]:
         flips = [d["flip_rate"] for d in r.determinism if d.get("flip_rate") is not None]
         rows.append({
             "run": r.run_id, "candidate": r.candidate, "version": r.version, "experiment": r.run.experiment.name,
-            "mode": r.mode, "dataset": r.dataset, "docs": len({m["doc_id"] for m in r.mentions}),
+            "mode": r.mode, "dataset": r.dataset, "policy": r.policy,
+            # Set when the tool was given another policy than the one it is scored under.
+            "given_policy": _given_policy(r),
+            "docs": len({m["doc_id"] for m in r.mentions}),
             "n": len(r.mentions), "leak": r.leak(), "ci": _bootstrap([tuple(v) for v in per_doc.values()]),
             "leak_completed": r.leak(done), "l12": len(l12) / len(r.mentions) if r.mentions else None,
             "not_replaced": len(not_replaced) / len(r.mentions) if r.mentions else None, "fail": r.fail(),
@@ -305,8 +330,9 @@ def _theme_rules(scope: str, dark: bool) -> str:
     """Colour rules for one theme under a selector prefix (empty for the light default)."""
     ramp = list(reversed(RAMP)) if dark else RAMP  # near-zero recedes toward the surface in both themes
     series = SERIES_DARK if dark else SERIES_LIGHT
-    tokens = ("--bg:#0d0d0d;--card:#1a1a19;--fg:#ffffff;--mut:#c3c2b7;--line:#2c2c2a;--axis:#383835" if dark else
-              "--bg:#f9f9f7;--card:#fcfcfb;--fg:#0b0b0b;--mut:#52514e;--line:#e1e0d9;--axis:#c3c2b7")
+    tokens = ("--bg:#0d0d0d;--card:#1a1a19;--fg:#ffffff;--mut:#c3c2b7;--line:#2c2c2a;--axis:#383835;--warn:#fdb022"
+              if dark else
+              "--bg:#f9f9f7;--card:#fcfcfb;--fg:#0b0b0b;--mut:#52514e;--line:#e1e0d9;--axis:#c3c2b7;--warn:#b54708")
     root = scope or ":root"
     out = [f"{root}{{{tokens}}}"]
     pre = f"{scope} " if scope else ""
@@ -335,6 +361,8 @@ align-items:center;gap:6px}.legend i{width:12px;height:12px;border-radius:3px;di
 svg .grid{stroke:var(--line);stroke-width:1}svg .axis{stroke:var(--axis);stroke-width:1}
 svg .tick{fill:var(--mut);font-size:11px}svg .ln{fill:none;stroke-width:2}svg .mk{stroke:var(--card);stroke-width:2}
 svg .dl{fill:var(--fg);font-size:12px}svg .seglabel{fill:#0b0b0b;font-size:11px;font-weight:600}
+.dev{background:var(--card);border:1px solid var(--line);border-left:5px solid var(--warn);border-radius:8px;
+padding:2px 14px 6px;margin:16px 0}.dev h2{color:var(--warn);border-bottom:0;margin-top:12px}.warn{color:var(--warn)}
 """)
 
 
@@ -348,16 +376,28 @@ def build_board(run_ids: list[str], out: Path, title: str = "Candidate compariso
              f"Leak = required mention still recoverable (visible, partial, recoverable from the file, latent, or "
              f"no output). Not replaced = hidden although a replacement was required. Failure = either. "
              f"Intervals: 95% document-cluster bootstrap.</p>"]
+    policies: dict[str, list[str]] = {}
+    for r in runs:
+        policies.setdefault(r.policy, []).append(r.run_id)
+    if len(policies) > 1:
+        parts.append("<p><b>These runs were scored under different policies</b> (the scorecard's policy column), so "
+                     "they were held to different required items: compare rates only between runs of one policy.</p>")
+    parts.append(deviations.mismatch_section([r.scoring for r in runs]))
+    departures = deviations.collect([r.scoring for r in runs])
+    parts.append(deviations.section(departures, policies))
 
     rows = scorecard(runs)
     parts.append("<h2>Scorecard</h2><div class=wrap><table><tr><th>candidate</th><th>experiment</th><th>dataset</th>"
-                 "<th>docs</th><th>required</th><th>leak (strict)</th><th>95% CI</th><th>leak (completed)</th>"
+                 "<th>policy</th><th>docs</th><th>required</th><th>leak (strict)</th><th>95% CI</th>"
+                 "<th>leak (completed)</th>"
                  "<th>visible/recoverable</th><th>not replaced</th><th>failure</th><th>clean docs</th>"
                  "<th>collateral</th><th>protected dmg</th><th>searchable</th>"
                  "<th>token P / R</th><th>flip rate</th><th>same fake across matter</th>"
                  "<th>tool's own safety check</th></tr>" + "".join(
                      f"<tr><td>{_esc(x['candidate'])} <span class=mut>{_esc(x['version'])}</span></td>"
-                     f"<td>{_esc(x['experiment'])}</td><td>{_esc(x['dataset'])}</td><td>{x['docs']}</td><td>{x['n']}</td>"
+                     f"<td>{_esc(x['experiment'])}</td><td>{_esc(x['dataset'])}</td><td>{_esc(x['policy'])}"
+                     + (f"<br><b class=warn>tool given {_esc(x['given_policy'])}</b>" if x["given_policy"] else "")
+                     + f"</td><td>{x['docs']}</td><td>{x['n']}</td>"
                      f"<td>{_pct(x['leak'])}</td><td>{_ci(x['ci'])}</td>"
                      f"<td>{_pct(x['leak_completed'])}</td><td>{_pct(x['l12'])}</td>"
                      f"<td>{_pct(x['not_replaced'])}</td><td>{_pct(x['fail'])}</td><td>{x['clean']}</td>"
@@ -430,5 +470,6 @@ def build_board(run_ids: list[str], out: Path, title: str = "Candidate compariso
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page, encoding="utf-8")
     (out.with_suffix(".json")).write_text(json.dumps({"runs": run_ids, "scorecard": rows, "decomposition": dec,
-                                                      "ladders": lad}, indent=1, default=str), encoding="utf-8")
+                                                      "ladders": lad, "deviations": departures}, indent=1,
+                                                     default=str), encoding="utf-8")
     return out

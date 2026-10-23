@@ -16,11 +16,39 @@ from ..report.store import rows_for_score, write_tables
 from ..schemas import CandidateManifest, PiiType
 from ..score import score_document
 from .artifacts import load_artifacts, sha256_file
-from .runner import ROOT, load_run, runs_root
+from .runner import ROOT, load_run, policy_given, policy_record, runs_root
 
 
 def results_root() -> Path:
     return Path(os.environ.get("RB_RESULTS_DIR", ROOT / "results"))
+
+
+def policy_warning(run_policy: dict | None, scored: dict, reached_tool: bool = True) -> str | None:
+    """A plain warning when a run is scored under another policy than the one its tool was given
+    (``{policy}`` in its command, oracle inputs built under it). None when they match, when the run
+    predates the record, or when the policy never reached the tool: such a tool follows its own rules
+    whatever policy the run was started with."""
+    if not run_policy or not reached_tool:
+        return None
+    given = f"{run_policy['name']}@{run_policy['version']}"
+    used = f"{scored['name']}@{scored['version']}"
+    if given != used:
+        return (f"The tool was given policy {given} when it ran, but these scores use policy {used}: its output "
+                f"is judged against rules it was not given.")
+    if run_policy["sha256"] != scored["sha256"]:
+        return (f"The policy file {used} was changed between the run and scoring (same name and version, other "
+                f"content): the tool was given one set of rules and is scored against another.")
+    return None
+
+
+def policy_was_given(run, manifest: CandidateManifest) -> bool:
+    """Whether the run's policy reached the tool, as recorded by the run or, for runs recorded before
+    that was kept, from the recorded command and experiment."""
+    if run.policy is None:
+        return False
+    if run.policy.given_to_tool is not None:
+        return run.policy.given_to_tool
+    return policy_given(manifest.command, run.experiment.mode, run.experiment.inject_from)
 
 
 def _no_output_reason(item, out_pdf: Path) -> str | None:
@@ -108,6 +136,9 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
     run = load_run(run_id)
     manifest = CandidateManifest.model_validate(run.candidate["manifest"])
     policy = load_policy(policy_path)
+    scored_policy = policy_record(policy_path).model_dump(mode="json")
+    run_policy = run.policy.model_dump(mode="json") if run.policy else None
+    given = policy_was_given(run, manifest)
     ds = load_manifest(run.dataset["name"], run.dataset["version"])
     oracle = {mode: _oracle_status(rid) for mode, rid in (oracle_runs or {}).items()}
     out_root = results_root() / run_id
@@ -198,7 +229,15 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
     consistent = sum(1 for r in tables["matters"] if r["consistent"])
     (out_root / "scoring.json").write_text(json.dumps({
         "run_id": run_id, "eval_config": cfg.model_dump(mode="json"), "eval_digest": cfg.digest(),
-        "policy": str(policy_path), "oracle_runs": oracle_runs or {}, "gt": gt_used,
+        "policy": str(policy_path), "policy_id": f"{policy.name}@{policy.version}",
+        "policy_sha256": scored_policy["sha256"],
+        # The policy the run was started with, whether it reached the tool, and a warning when the tool
+        # was given it and the scores use another one.
+        "run_policy": run_policy, "policy_given_to_tool": given,
+        "policy_warning": policy_warning(run_policy, scored_policy, given),
+        # Deliberate departures from the client's answers, kept with the scores for every report.
+        "deviations": [d.model_dump(mode="json") for d in policy.deviations],
+        "oracle_runs": oracle_runs or {}, "gt": gt_used,
         "matter_consistency": {"compared": len(tables["matters"]), "consistent": consistent},
         "matter_mismatch": matter_mismatch,
         "skipped": skipped}, indent=1),

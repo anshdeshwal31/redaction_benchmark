@@ -162,6 +162,52 @@
    ],
    "title": "RunItem",
    "type": "object"
+  },
+  "RunPolicy": {
+   "additionalProperties": false,
+   "description": "The policy file a run was made with. It reaches the tool only through ``{policy}`` in the\ntool's command or through oracle inputs built under it; when it did, scoring warns if it scores\nby another policy.",
+   "properties": {
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "version": {
+     "title": "Version",
+     "type": "string"
+    },
+    "sha256": {
+     "description": "SHA-256 of the policy file's bytes",
+     "pattern": "^[0-9a-f]{64}$",
+     "title": "Sha256",
+     "type": "string"
+    },
+    "path": {
+     "description": "Absolute path of the policy file when the run was made",
+     "title": "Path",
+     "type": "string"
+    },
+    "given_to_tool": {
+     "anyOf": [
+      {
+       "type": "boolean"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Whether the tool received this policy: its command passes {policy}, or the experiment injected mentions, entities or regions built from GT under it. Absent in runs recorded before it was kept; scoring then works it out from the recorded command and experiment",
+     "title": "Given To Tool"
+    }
+   },
+   "required": [
+    "name",
+    "version",
+    "sha256",
+    "path"
+   ],
+   "title": "RunPolicy",
+   "type": "object"
   }
  },
  "additionalProperties": false,
@@ -202,6 +248,18 @@
    "additionalProperties": true,
    "title": "Environment",
    "type": "object"
+  },
+  "policy": {
+   "anyOf": [
+    {
+     "$ref": "#/$defs/RunPolicy"
+    },
+    {
+     "type": "null"
+    }
+   ],
+   "default": null,
+   "description": "Absent in runs made before the run's policy was recorded"
   },
   "items": {
    "default": [],

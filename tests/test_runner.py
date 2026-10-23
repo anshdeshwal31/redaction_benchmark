@@ -3,6 +3,7 @@ compare, regression and candidate checks (PLAN.md phase 6 exit criterion)."""
 
 import ast
 import hashlib
+import html
 import json
 import os
 import shutil
@@ -16,6 +17,7 @@ from pydantic import ValidationError
 
 from benchmark.dataset import document_pdf, ingest, load_manifest
 from benchmark.evaluate import EvalConfig
+from benchmark.gt import load_policy
 from benchmark.report.compare import compare
 from benchmark.report.html import build_report
 from benchmark.report.regression import check, promote
@@ -26,6 +28,7 @@ from benchmark.runner.runner import (
     CommandValueError,
     build_command,
     load_candidate,
+    load_run,
     resolve_version,
     run_candidate,
 )
@@ -35,6 +38,7 @@ from benchmark.synth.register import register_synthetic
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = ROOT / "policies" / "au-medicolegal-v0.yaml"
+CLIENT_POLICY = ROOT / "policies" / "au-medicolegal-v1.yaml"
 CFG = EvalConfig(dpi=150)
 
 
@@ -50,13 +54,15 @@ def env(tmp_path_factory):
     mp.undo()
 
 
-def candidate(tmp: Path, spec: str, provides="output_pdf, text, mentions, entities, plan, run_info") -> Path:
-    path = tmp / f"mock-{spec}.yaml"
+def candidate(tmp: Path, spec: str, provides="output_pdf, text, mentions, entities, plan, run_info",
+              follow_policy: bool = False) -> Path:
+    path = tmp / f"mock-{spec}{'-policy' if follow_policy else ''}.yaml"
     gt = (tmp / "gt").as_posix()
+    policy = " --policy {policy}" if follow_policy else ""
     path.write_text(f"""schema: rb.candidate/0.1
 name: mock-{spec}
 version: "0.1.0"
-command: '{{python}} -m benchmark.mocks.adapter --input {{input}} --workdir {{workdir}} --mode {{mode}} --inject-dir {{inject_dir}} {{seed}} --spec {spec}'
+command: '{{python}} -m benchmark.mocks.adapter --input {{input}} --workdir {{workdir}} --mode {{mode}} --inject-dir {{inject_dir}} {{seed}}{policy} --spec {spec}'
 provides: [{provides}]
 accepts_injection: [text, mentions, entities, regions]
 seed_flag: --seed
@@ -338,6 +344,112 @@ def test_a_timed_out_tool_is_stopped_with_everything_it_started(env, tmp_path, m
     assert skipped[0]["reason"] == "timed out after 2s; output.pdf was written or changed after the run recorded it"
 
 
+# -- the run's policy: recorded in run.json, compared at scoring ------------------------------------
+
+
+def test_the_run_records_its_policy_and_scoring_warns_when_another_is_used(env, tmp_path):
+    from benchmark.report.board import build_board
+
+    run = run_candidate(candidate(env, "reference-replace", follow_policy=True), "synthetic@0.0.1",
+                        ROOT / "experiments" / "e2e.yaml", POLICY, run_id="given-draft")
+    draft = load_policy(POLICY)
+    assert (run.policy.name, run.policy.version) == (draft.name, draft.version)
+    assert run.policy.sha256 == hashlib.sha256(POLICY.read_bytes()).hexdigest()
+    assert run.policy.path == str(POLICY.resolve()) and load_run("given-draft").policy == run.policy
+    assert run.policy.given_to_tool is True  # its command passes {policy}
+    same = json.loads((score_run("given-draft", POLICY, CFG) / "scoring.json").read_text(encoding="utf-8"))
+    assert same["policy_warning"] is None and same["run_policy"]["version"] == draft.version
+    assert same["policy_given_to_tool"] is True
+    # Scored under the client's policy, which the tool was not given: said in scoring.json, the report
+    # and the board.
+    res = score_run("given-draft", CLIENT_POLICY, CFG)
+    warning = json.loads((res / "scoring.json").read_text(encoding="utf-8"))["policy_warning"]
+    assert warning == ("The tool was given policy au-medicolegal@0.1.0-draft when it ran, but these scores use "
+                       "policy au-medicolegal@1.1.0: its output is judged against rules it was not given.")
+    report = build_report("given-draft", res).read_text(encoding="utf-8")
+    assert html.escape(warning) in report and report.index(html.escape(warning)) < report.index("<h2>Scorecard")
+    board = build_board(["given-draft"], tmp_path / "board.html").read_text(encoding="utf-8")
+    assert html.escape(warning) in board and "tool given au-medicolegal@0.1.0-draft" in board
+    # `rb score` without --policy scores a run under the policy it was made with.
+    from benchmark.cli_run import DEFAULT_POLICY, _score_policy
+
+    assert _score_policy("given-draft", None) == str(POLICY.resolve())
+    assert _score_policy("given-draft", str(CLIENT_POLICY)) == str(CLIENT_POLICY)
+    path = env / "runs" / "given-draft" / "run.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["policy"]["path"] = str(tmp_path / "gone.yaml")
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert _score_policy("given-draft", None) == DEFAULT_POLICY  # its file is gone: the client's policy
+
+
+def test_a_policy_file_changed_after_the_run_is_flagged(env, tmp_path):
+    from benchmark.report.board import build_board
+
+    policy = tmp_path / "policy.yaml"
+    shutil.copyfile(CLIENT_POLICY, policy)
+    run_candidate(candidate(env, "reference", follow_policy=True), "synthetic@0.0.1", ROOT / "experiments" / "e2e.yaml",
+                  policy, run_id="edited")
+    with policy.open("a", encoding="utf-8") as f:
+        f.write("# edited after the run\n")  # same name and version, other content
+    res = score_run("edited", policy, CFG)
+    warning = json.loads((res / "scoring.json").read_text(encoding="utf-8"))["policy_warning"]
+    assert warning.startswith("The policy file au-medicolegal@1.1.0 was changed between the run and scoring")
+    # Name and version alone look the same, so the board names the two files by their hashes.
+    board = build_board(["edited"], tmp_path / "board.html").read_text(encoding="utf-8")
+    assert "tool given au-medicolegal@1.1.0 with other content (file " in board
+
+
+def test_a_tool_that_does_not_read_the_policy_is_never_said_to_have_been_given_one(env, tmp_path):
+    # Like tool 2: no {policy} in its command and no oracle inputs. It follows its own rules whatever the
+    # run was started with, so scoring it under another policy, or an edited file, is no mismatch.
+    from benchmark.report.board import build_board
+
+    policy = tmp_path / "policy.yaml"
+    shutil.copyfile(CLIENT_POLICY, policy)
+    run = run_candidate(candidate(env, "reference"), "synthetic@0.0.1", ROOT / "experiments" / "e2e.yaml", policy,
+                        run_id="unread")
+    assert run.policy.given_to_tool is False
+    policy.write_text(policy.read_text(encoding="utf-8").replace("version: 1.1.0", "version: 1.2.0"), encoding="utf-8")
+    res = score_run("unread", policy, CFG)
+    scoring = json.loads((res / "scoring.json").read_text(encoding="utf-8"))
+    assert scoring["policy_id"] == "au-medicolegal@1.2.0" and scoring["run_policy"]["version"] == "1.1.0"
+    assert scoring["policy_given_to_tool"] is False and scoring["policy_warning"] is None
+    board = build_board(["unread"], tmp_path / "board.html").read_text(encoding="utf-8")
+    assert "tool given" not in board and "Scored under another policy" not in board
+    # A run recorded before the flag was kept: worked out from its recorded command and experiment.
+    path = env / "runs" / "unread" / "run.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["policy"]["given_to_tool"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert load_run("unread").policy.given_to_tool is None
+    assert json.loads((score_run("unread", policy, CFG) / "scoring.json").read_text(encoding="utf-8"))[
+        "policy_warning"] is None
+
+
+@pytest.mark.parametrize("command, mode, inject_from, given", [
+    ("tool {input} --policy {policy}", "e2e", "gt", True),
+    ("tool {input}", "e2e", "gt", False),
+    ("tool {input} --inject {inject_dir}", "oracle_text", "gt", False),  # GT text is the same under any policy
+    ("tool {input} --inject {inject_dir}", "oracle_mentions", "gt", True),  # built under the run's policy
+    ("tool {input} --inject {inject_dir}", "oracle_regions", "run:other", False),  # another run's artifacts
+])
+def test_whether_the_runs_policy_reaches_the_tool(command, mode, inject_from, given):
+    from benchmark.runner.runner import policy_given
+
+    assert policy_given(command, mode, inject_from) is given
+
+
+def test_a_run_made_before_the_policy_was_recorded_still_loads_and_scores(env):
+    run_and_score(env, "reference", "old")
+    path = env / "runs" / "old" / "run.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["policy"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert load_run("old").policy is None
+    scoring = json.loads((score_run("old", POLICY, CFG) / "scoring.json").read_text(encoding="utf-8"))
+    assert scoring["run_policy"] is None and scoring["policy_warning"] is None
+
+
 # -- the matter the tool is given ---------------------------------------------------------------------
 
 
@@ -406,3 +518,40 @@ def test_synthetic_documents_get_the_matter_of_their_gt(env):
     # What the ceiling mock reads to keep one fake per person across the matter.
     found = {g.doc_id for g in find_matter_gts("MX")}
     assert "syn-digital" in found and "syn-rotated-content" not in found
+
+
+# -- the client's rules: departures shown, the ceiling mock clean ----------------------------------
+
+
+def test_the_ceiling_mock_follows_the_run_policy_and_reports_show_the_departures(env, tmp_path):
+    v1 = load_policy(CLIENT_POLICY)
+    for spec, run_id in (("reference-replace", "ceiling"), ("reference", "remover")):
+        run = run_candidate(candidate(env, spec, follow_policy=True), "synthetic@0.0.1",
+                            ROOT / "experiments" / "e2e.yaml", CLIENT_POLICY, run_id=run_id)
+        assert all(not i.error and not i.invalid_artifacts for i in run.items), run.items
+        score_run(run_id, CLIENT_POLICY, CFG)
+    res = env / "results" / "ceiling"
+    scoring = json.loads((res / "scoring.json").read_text(encoding="utf-8"))
+    assert scoring["policy_id"] == "au-medicolegal@1.1.0"
+    assert [d["id"] for d in scoring["deviations"]] == ["whole-address", "role-words"]
+    rows, _ = query(res, "SELECT clean_document FROM documents WHERE must_mentions IS NOT NULL")
+    assert rows == [(True,)]
+    assert {r[0] for r in must_rows(res)} == {"SAFE_REPLACED"}
+    # Run with the client policy, the plain remover hides everything but replaces nothing.
+    assert {r[0] for r in must_rows(env / "results" / "remover")} == {"NOT_REPLACED"}
+    title = html.escape("Departures from the client's answers")
+    report = build_report("ceiling", res).read_text(encoding="utf-8")
+    assert title in report and report.index(title) < report.index("<h2>Scorecard</h2>")
+    assert all(html.escape(getattr(d, k)) in report for d in v1.deviations for k in ("client_answer", "reason"))
+    assert title not in build_report("ref", env / "results" / "ref").read_text(encoding="utf-8")  # draft: none
+
+    from benchmark.report.board import build_board
+
+    board = build_board(["ceiling", "remover", "ref"], tmp_path / "board.html").read_text(encoding="utf-8")
+    assert board.count(title) == 1 and board.count(html.escape(v1.deviations[0].applied)) == 1
+    # Two policies on one board: each row names its policy, and the departures name the runs they apply to.
+    assert "These runs were scored under different policies" in board
+    assert "<th>policy</th>" in board and "<td>au-medicolegal@0.1.0-draft</td>" in board
+    assert "<td>ceiling, remover</td>" in board  # the departures' runs; ref was scored under the draft
+    assert "departs" not in board  # the plural, never "the policies ... departs"
+    assert title not in build_board(["ref"], tmp_path / "draft.html").read_text(encoding="utf-8")

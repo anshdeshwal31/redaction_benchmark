@@ -46,7 +46,7 @@ from .gt import (
     SurfaceItem,
 )
 from .policy import PolicyDeviation, PolicyMatch, PolicyProfile, PolicyRule
-from .run import ExperimentSpec, RunItem, RunManifest
+from .run import ExperimentSpec, RunItem, RunManifest, RunPolicy
 
 # Exported JSON Schemas: file name -> model.
 EXPORTED = {

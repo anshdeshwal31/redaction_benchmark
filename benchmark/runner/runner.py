@@ -2,7 +2,8 @@
 
 Each (document, repeat) gets its own working directory containing only a neutrally named
 ``input.pdf`` and, for oracle experiments, the injected GT-derived artifacts. GT itself is
-never placed there. Every input and output is hashed into the run manifest.
+never placed there. Every input and output is hashed into the run manifest, and so is the
+policy file the run was made with.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from .. import __version__
 from ..dataset import document_pdf, load_manifest, manifest_path
 from ..gt.io import find_gt, load_policy, read_model, write_model
 from ..schemas import CandidateManifest, InjectionKind
-from ..schemas.run import MODE_INJECTS, ExperimentSpec, RunItem, RunManifest
+from ..schemas.run import MODE_INJECTS, ExperimentSpec, RunItem, RunManifest, RunPolicy
 from .artifacts import load_artifacts, sha256_file
 from .oracle import materialise, materialise_from_run
 
@@ -192,6 +193,23 @@ def resolve_version(manifest: CandidateManifest) -> str:
     return first[0]
 
 
+def policy_record(policy_path: str | Path, given_to_tool: bool | None = None) -> RunPolicy:
+    """Name, version, content hash and absolute path of a policy file."""
+    path = Path(policy_path).resolve()
+    policy = load_policy(path)
+    return RunPolicy(name=policy.name, version=policy.version, sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                     path=str(path), given_to_tool=given_to_tool)
+
+
+def policy_given(command: str, mode: str, inject_from: str = "gt") -> bool:
+    """Whether a run's policy reaches the tool: its command passes ``{policy}``, or the experiment
+    injects mentions, entities or regions built from GT under that policy. Injected text is the same
+    under every policy, and another run's artifacts (``inject_from: run:<id>``) carry that run's."""
+    built = inject_from == "gt" and any(k in MODE_INJECTS[mode] for k in (
+        InjectionKind.MENTIONS, InjectionKind.ENTITIES, InjectionKind.REGIONS))
+    return "{policy}" in command or built
+
+
 def build_command(manifest: CandidateManifest, input_pdf: Path, out_dir: Path, mode: str,
                   inject_dir: Path | None, seed: int, policy: str | Path | None = None,
                   matter: str | None = None) -> str:
@@ -252,6 +270,7 @@ def run_candidate(
                    "manifest": manifest.model_dump(mode="json", by_alias=True)},
         experiment=exp,
         environment=environment(),
+        policy=policy_record(policy_path, policy_given(manifest.command, exp.mode, exp.inject_from)),
     )
     env = dict(os.environ)
     env.update({k: v.format(repo=str(ROOT)) for k, v in manifest.env.items()})

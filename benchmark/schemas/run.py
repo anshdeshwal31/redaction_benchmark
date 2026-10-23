@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import Field
 
 from .candidate import InjectionKind
-from .common import StrictModel
+from .common import Sha256, StrictModel
 
 EXPERIMENT_SCHEMA = "rb.experiment/0.1"
 RUN_SCHEMA = "rb.run/0.1"
@@ -51,6 +51,22 @@ class RunItem(StrictModel):
     error: str | None = None
 
 
+class RunPolicy(StrictModel):
+    """The policy file a run was made with. It reaches the tool only through ``{policy}`` in the
+    tool's command or through oracle inputs built under it; when it did, scoring warns if it scores
+    by another policy."""
+
+    name: str
+    version: str
+    sha256: Sha256 = Field(description="SHA-256 of the policy file's bytes")
+    path: str = Field(description="Absolute path of the policy file when the run was made")
+    given_to_tool: bool | None = Field(None, description="Whether the tool received this policy: its command passes "
+                                                         "{policy}, or the experiment injected mentions, entities or "
+                                                         "regions built from GT under it. Absent in runs recorded "
+                                                         "before it was kept; scoring then works it out from the "
+                                                         "recorded command and experiment")
+
+
 class RunManifest(StrictModel):
     schema_id: Literal["rb.run/0.1"] = Field(RUN_SCHEMA, alias="schema")
     run_id: str
@@ -60,4 +76,5 @@ class RunManifest(StrictModel):
     candidate: dict
     experiment: ExperimentSpec
     environment: dict
+    policy: RunPolicy | None = Field(None, description="Absent in runs made before the run's policy was recorded")
     items: list[RunItem] = []

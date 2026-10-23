@@ -5,6 +5,8 @@
 - Q11: kept words must stay searchable; a changed page size is accepted.
 - Q16: damaging more than 1% of a document's ordinary words fails it.
 - The tool's own safety check is graded against the evaluator's verdict.
+- Policy 1.1.0 departs from two answers on purpose (whole addresses replaced, role words kept);
+  every report shows the departures.
 - A mock that follows the client's rules completely is clean on every encoding: the ceiling. It
   gives each person one fake across a matter, and each phone and Medicare number a fake of its own.
 """
@@ -23,6 +25,7 @@ from benchmark.gt.policy import resolve
 from benchmark.metrics import evaluate_pseudonyms
 from benchmark.mocks import MockSpec, run_mock, target_regions
 from benchmark.mocks.named import NAMED
+from benchmark.report import deviations
 from benchmark.runner.oracle import oracle_entities, oracle_mentions, oracle_regions, oracle_text
 from benchmark.runner.scoring import matter_consistency, self_check_verdict
 from benchmark.schemas import Action, GTMention, PiiType, PolicyProfile, Requirement, Segment
@@ -274,6 +277,39 @@ def test_a_deviation_must_name_rules_of_its_policy():
         PolicyProfile.model_validate(_with_deviations(dev, dev))
     with pytest.raises(ValidationError):
         PolicyProfile.model_validate(_with_deviations({"id": "d2", "question": "Q4"}))  # no answer, no reason
+
+
+def test_departures_section_escapes_every_value_and_shows_each_departure_once():
+    hostile = {"id": "x", "question": "Q<4>", "client_answer": "<script>alert('a')</script>",
+               "applied": "a & b", "reason": '"quoted"', "effect": "", "rules": []}
+    found = deviations.collect([{"policy_id": "p@1", "deviations": [hostile]},
+                                {"policy_id": "p@1", "deviations": [hostile]}])
+    assert len(found) == 1 and found[0]["policy_id"] == "p@1"
+    page = deviations.section(found)
+    assert deviations.TITLE.replace("'", "&#x27;") in page
+    assert "&lt;script&gt;alert(&#x27;a&#x27;)&lt;/script&gt;" in page and "<script>" not in page
+    assert "Q&lt;4&gt;" in page and "a &amp; b" in page and "&quot;quoted&quot;" in page
+    assert deviations.section([]) == ""
+    # The same deviation id in two policies is two departures, with a policy column.
+    two = deviations.collect([{"policy_id": "p@1", "deviations": [hostile]},
+                              {"policy_id": "p@2", "deviations": [hostile]}])
+    page = deviations.section(two)
+    assert len(two) == 2 and "<th>policy</th>" in page
+    assert "The policies of these runs depart from" in page and "departs" not in page
+
+
+def test_departures_on_a_board_of_several_policies_name_their_runs():
+    v1 = {"run_id": "tool-a", "policy_id": "au-medicolegal@1.1.0",
+          "deviations": [d.model_dump() for d in V1.deviations]}
+    draft = {"run_id": "tool-b", "policy_id": "au-medicolegal@0.1.0-draft", "deviations": []}
+    found = deviations.collect([v1, draft])
+    assert [d["runs"] for d in found] == [["tool-a"], ["tool-a"]]
+    page = deviations.section(found, {"au-medicolegal@1.1.0": ["tool-a"], "au-medicolegal@0.1.0-draft": ["tool-b"]})
+    assert "scored under different policies" in page and "au-medicolegal@0.1.0-draft (tool-b)" in page
+    assert "<th>runs</th>" in page and "<td>tool-a</td>" in page and "departs" not in page
+    # Results scored before the policy version was recorded are named by their file.
+    assert deviations.policy_label({"policy": "C:/x/policies/au-medicolegal-v0.yaml"}) == \
+        "au-medicolegal-v0.yaml (version not recorded)"
 
 
 # -- the ceiling: a mock that does everything the client's rules ask (D3) ------------------------

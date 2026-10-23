@@ -98,23 +98,41 @@ def _cmd_run(args) -> int:
         print(f"rb run: {exc}", file=sys.stderr)
         return 2
     failed = [i for i in run.items if i.error or i.invalid_artifacts]
-    print(f"run {run.run_id}: {len(run.items)} item(s), {len(failed)} with errors -> {runs_root() / run.run_id}")
+    unread = "" if run.policy.given_to_tool else ", which the tool does not read"
+    print(f"run {run.run_id} (policy {run.policy.name}@{run.policy.version}{unread}): {len(run.items)} item(s), "
+          f"{len(failed)} with errors -> {runs_root() / run.run_id}")
     for i in failed:
         print(f"  {i.doc_id}/r{i.repeat}: {i.error or ''} {i.invalid_artifacts or ''}")
     return 0
 
 
+def _score_policy(run_id: str, given: str | None) -> str:
+    """--policy if given; else the policy the run was made with, if recorded and still there; else the default."""
+    if given:
+        return given
+    from .runner.runner import load_run
+
+    recorded = load_run(run_id).policy
+    return recorded.path if recorded and Path(recorded.path).exists() else DEFAULT_POLICY
+
+
 def _cmd_score(args) -> int:
+    import sys
+
     from .evaluate import EvalConfig
     from .runner.scoring import score_run
 
     oracle = dict(o.split("=", 1) for o in args.oracle or [])
-    out = score_run(args.run_id, args.policy, EvalConfig(dpi=args.dpi), oracle_runs=oracle)
+    out = score_run(args.run_id, _score_policy(args.run_id, args.policy), EvalConfig(dpi=args.dpi),
+                    oracle_runs=oracle)
     from .report.store import query
 
     rows, cols = query(out, "SELECT doc_id, repeat, must_mentions, must_leak_rate, clean_document FROM documents "
                             "WHERE must_mentions IS NOT NULL ORDER BY doc_id, repeat")
-    print(f"scored -> {out}")
+    scoring = json.loads((out / "scoring.json").read_text(encoding="utf-8"))
+    print(f"scored under policy {scoring['policy_id']} -> {out}")
+    if scoring.get("policy_warning"):
+        print(f"WARNING: {scoring['policy_warning']}", file=sys.stderr)
     for r in rows:
         print("  " + "  ".join(f"{c}={v}" for c, v in zip(cols, r)))
     return 0
@@ -323,7 +341,8 @@ def register(sub) -> None:
 
     s = sub.add_parser("score", help="score a recorded run against GT")
     s.add_argument("run_id")
-    s.add_argument("--policy", default=DEFAULT_POLICY)
+    s.add_argument("--policy", help="default: the policy the run was made with (recorded in run.json), else the "
+                                    "client's policy; scoring warns when it differs from the run's")
     s.add_argument("--dpi", type=float, default=200)
     s.add_argument("--oracle", action="append", help="MODE=RUN_ID of a scored oracle run (repeatable)")
     s.set_defaults(func=_cmd_score)
