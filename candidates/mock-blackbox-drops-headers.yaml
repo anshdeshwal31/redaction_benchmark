@@ -2,7 +2,7 @@
 schema: rb.candidate/0.1
 name: mock-blackbox-drops-headers
 version: "0.1.0"
-command: '{python} -m benchmark.mocks.adapter --input {input} --workdir {workdir} --mode {mode} --inject-dir {inject_dir} {seed} --spec drops-headers'
+command: '{python} -m benchmark.mocks.adapter --input {input} --workdir {workdir} --mode {mode} --inject-dir {inject_dir} {seed} --policy {policy} --spec drops-headers'
 provides: [output_pdf]
 accepts_injection: [text, mentions, entities, regions]
 frame: display_pt

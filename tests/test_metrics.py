@@ -315,6 +315,19 @@ def test_invalid_contact_replacements_are_flagged():
     assert r.checks["postcode_state_valid_rate"] is None  # street line only since GT 0.2
 
 
+def test_a_replaced_locality_is_checked_for_a_postcode_of_its_state():
+    # Under the client policy (1.1.0) the locality of an address is replaced too: that is where
+    # GT 0.2 keeps the state and postcode.
+    from benchmark.mocks.named import NAMED
+
+    client = load_policy(Path(__file__).resolve().parents[1] / "policies" / "au-medicolegal-v1.yaml")
+    fx, _, _ = setup("digital")
+    res = resolve(fx.gt, client)
+    r = evaluate_pseudonyms(fx.gt, res, run_mock(fx.pdf, fx.gt, client, NAMED["reference-replace"]).pdf)
+    assert r.checks["postcode_state_valid_rate"] == 1.0 and not r.issues["invalid"]
+    assert any(o.type == "LOCATION" and o.subtype == "locality" and o.replacement for o in r.other)
+
+
 @pytest.mark.parametrize("kind, subtype, new, problem", [
     ("LOCATION", "locality", "Oakvale NSW 2150", None),
     ("LOCATION", "locality", "Oakvale NSW 4150", "postcode does not belong to the state"),

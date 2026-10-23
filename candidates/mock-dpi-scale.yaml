@@ -2,7 +2,7 @@
 schema: rb.candidate/0.1
 name: mock-dpi-scale
 version: "0.1.0"
-command: '{python} -m benchmark.mocks.adapter --input {input} --workdir {workdir} --mode {mode} --inject-dir {inject_dir} {seed} --spec dpi-scale'
+command: '{python} -m benchmark.mocks.adapter --input {input} --workdir {workdir} --mode {mode} --inject-dir {inject_dir} {seed} --policy {policy} --spec dpi-scale'
 provides: [output_pdf, text, mentions, entities, plan, run_info]
 accepts_injection: [text, mentions, entities, regions]
 frame: display_pt

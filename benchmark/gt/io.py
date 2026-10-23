@@ -71,5 +71,22 @@ def find_gt(doc_id: str | None = None, sha256: str | None = None) -> GTDocument 
     return None
 
 
+def find_matter_gts(matter: str) -> list[GTDocument]:
+    """Every GT document of a matter on the GT search path, one per document id (the first found).
+    For mocks, which may read GT; real candidates never can."""
+    out: dict[str, GTDocument] = {}
+    for d in gt_dirs():
+        if not d.exists():
+            continue
+        for path in sorted(d.rglob("*.gt.json")):
+            try:
+                head = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if head.get("matter") == matter and head.get("doc_id") not in out:
+                out[head["doc_id"]] = GTDocument.model_validate(head)
+    return list(out.values())
+
+
 def load_policy(path: str | Path) -> PolicyProfile:
     return read_model(PolicyProfile, path)

@@ -395,3 +395,14 @@ def test_stage_files_and_a_release_verdict_written_after_the_run_are_not_graded(
     errors, doc = scored()
     assert "mentions" not in errors and doc["self_check.released"] is True
     assert doc["self_check.verdict"] == ("correct_release" if doc["clean_document"] else "unsafe_release")
+
+
+def test_synthetic_documents_get_the_matter_of_their_gt(env):
+    from benchmark.gt.io import find_matter_gts
+
+    m = register_synthetic("0.0.2", ["rotated_content"])  # its GT has no matter
+    assert m.document("syn-rotated-content").matter is None
+    assert load_manifest("synthetic", "0.0.1").document("syn-digital").matter == "MX"
+    # What the ceiling mock reads to keep one fake per person across the matter.
+    found = {g.doc_id for g in find_matter_gts("MX")}
+    assert "syn-digital" in found and "syn-rotated-content" not in found

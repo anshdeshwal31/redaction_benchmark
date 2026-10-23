@@ -5,6 +5,11 @@ from .mock import MockSpec
 NAMED = {spec.name: spec for spec in [
     MockSpec("reference"),
     MockSpec("reference-raster", method="rasterize"),
+    # Does everything the client's rules ask (the board's ceiling): a fake of the right kind for every
+    # required item, one fake per person across a matter, drawn stand-ins for signatures and images,
+    # and a searchable text layer. 300 DPI keeps the kept words undamaged at every evaluation DPI.
+    MockSpec("reference-replace", method="rasterize", replace_all=True, pseudonym_key="entity", stand_ins=True,
+             redacted_text_layer=True, raster_dpi=300),
     MockSpec("null", method="null"),
     MockSpec("overlay", method="overlay"),
     MockSpec("annotation", method="annotation"),

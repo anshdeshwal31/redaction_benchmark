@@ -1,0 +1,15 @@
+# Mock candidate (test double). Mocks may read GT through RB_GT_DIRS; real candidates never can.
+# Does everything the client's rules ask for under the run's policy (a fake of the right kind for
+# every required item, one fake per person across a matter, drawn stand-ins for signatures and
+# images, a searchable text layer): the ceiling on the comparison board.
+schema: rb.candidate/0.1
+name: mock-reference-replace
+version: "0.1.0"
+command: '{python} -m benchmark.mocks.adapter --input {input} --workdir {workdir} --mode {mode} --inject-dir {inject_dir} {seed} --policy {policy} --spec reference-replace'
+provides: [output_pdf, text, mentions, entities, plan, pseudonyms, run_info]
+accepts_injection: [text, mentions, entities, regions]
+frame: display_pt
+seed_flag: --seed
+timeout_s: 300
+env:
+  RB_GT_DIRS: "{repo}/gt"

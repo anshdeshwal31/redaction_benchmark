@@ -1,10 +1,13 @@
 """Mock candidate as an external process, speaking the adapter contract (docs/adapter_guide.md).
 
     python -m benchmark.mocks.adapter --input input.pdf --workdir out --mode e2e \
-        [--inject-dir inject] [--seed 0] --spec overlay
+        [--inject-dir inject] [--seed 0] [--policy policy.yaml] --spec overlay
 
 Mocks are test doubles and may read GT (located by the input's hash through
-$RB_GT_DIRS); real candidates never can.
+$RB_GT_DIRS); real candidates never can. A mock targets what ``--policy`` requires: the
+manifests pass the run's policy (``{policy}``); without it the draft policy is used. A mock
+whose fakes are keyed on GT entities also reads the GT of the other documents of the matter,
+so each person keeps one fake across the matter.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import json
 import sys
 from pathlib import Path
 
-from ..gt.io import find_gt, load_policy, write_model
+from ..gt.io import find_gt, find_matter_gts, load_policy, write_model
 from ..schemas import EntitiesArtifact, MentionsArtifact, PlanArtifact, RunInfo, TextArtifact
 from .mock import run_mock
 from .named import NAMED
@@ -51,14 +54,17 @@ def main(argv: list[str] | None = None) -> int:
             p = Path(a.inject_dir) / fname
             if p.exists():
                 injected[kind] = model.model_validate(json.loads(p.read_text(encoding="utf-8")))
-    out = run_mock(source, gt, load_policy(a.policy), spec, injected=injected)
+    policy = load_policy(a.policy)
+    matter = find_matter_gts(gt.matter) if gt.matter and spec.pseudonym_key == "entity" else None
+    out = run_mock(source, gt, policy, spec, injected=injected, matter_gts=matter)
     w = Path(a.workdir)
     w.mkdir(parents=True, exist_ok=True)
     (w / "output.pdf").write_bytes(out.pdf)
     for name, art in out.artifacts().items():
         write_model(art, w / f"{name}.json")
     write_model(RunInfo(candidate=f"mock-{spec.name}", candidate_version="0", seed=spec.seed,
-                        config={"spec": spec.name, "mode": a.mode, "injected": sorted(injected)}), w / "run_info.json")
+                        config={"spec": spec.name, "mode": a.mode, "injected": sorted(injected),
+                                "policy": f"{policy.name}@{policy.version}"}), w / "run_info.json")
     return 0
 
 

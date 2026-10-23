@@ -5,8 +5,11 @@
 - Q11: kept words must stay searchable; a changed page size is accepted.
 - Q16: damaging more than 1% of a document's ordinary words fails it.
 - The tool's own safety check is graded against the evaluator's verdict.
+- A mock that follows the client's rules completely is clean on every encoding: the ceiling. It
+  gives each person one fake across a matter, and each phone and Medicare number a fake of its own.
 """
 
+import json
 from functools import lru_cache
 from pathlib import Path
 
@@ -17,8 +20,10 @@ from pydantic import ValidationError
 from benchmark.evaluate import HIDDEN, SAFE, EvalConfig, MentionStatus, check_integrity, evaluate_output
 from benchmark.gt import load_policy
 from benchmark.gt.policy import resolve
-from benchmark.mocks import MockSpec, run_mock
-from benchmark.runner.oracle import oracle_regions
+from benchmark.metrics import evaluate_pseudonyms
+from benchmark.mocks import MockSpec, run_mock, target_regions
+from benchmark.mocks.named import NAMED
+from benchmark.runner.oracle import oracle_entities, oracle_mentions, oracle_regions, oracle_text
 from benchmark.runner.scoring import matter_consistency, self_check_verdict
 from benchmark.schemas import Action, GTMention, PiiType, PolicyProfile, Requirement, Segment
 from benchmark.synth import ALL_VARIANTS
@@ -269,3 +274,261 @@ def test_a_deviation_must_name_rules_of_its_policy():
         PolicyProfile.model_validate(_with_deviations(dev, dev))
     with pytest.raises(ValidationError):
         PolicyProfile.model_validate(_with_deviations({"id": "d2", "question": "Q4"}))  # no answer, no reason
+
+
+# -- the ceiling: a mock that does everything the client's rules ask (D3) ------------------------
+
+
+REFERENCE = NAMED["reference-replace"]
+
+
+@pytest.mark.parametrize("variant", sorted(ALL_VARIANTS))
+def test_reference_replace_is_clean_on_every_encoding(variant):
+    ev = evaluate(variant, mocked(variant, REFERENCE))
+    statuses = {m.mention_id: m.status for m in must(ev)}
+    assert statuses and set(statuses.values()) == {MentionStatus.SAFE_REPLACED}, statuses
+    s = ev.summary
+    assert s["searchable_ok"] and s["collateral_ok"] and not s["protected_damaged"] and s["integrity_ok"], s
+    assert s["clean_document"]
+
+
+def test_reference_replace_makes_valid_fakes_of_every_kind():
+    fx = fixture("digital")
+    out = run_mock(fx.pdf, fx.gt, V1, REFERENCE)
+    r = evaluate_pseudonyms(fx.gt, resolve(fx.gt, V1), out.pdf)
+    c = r.checks
+    assert c["replaced"] == c["name_components"] and c["collisions"] == 0 and c["collides_with_real_name"] == 0
+    assert c["phone_valid_rate"] == c["email_valid_rate"] == c["email_from_new_name_rate"] == 1.0
+    assert c["medicare_checksum_valid_rate"] == 1.0 and c["postcode_state_valid_rate"] == 1.0
+    assert c["invalid_replacements"] == 0
+    # Identifiers keep their format with every letter and digit changed.
+    gt_mention = {f"d{i}": m for i, m in enumerate(out.targeted)}  # detections in GT order, none spurious
+    claim = next(m.text for m in fx.gt.mentions if m.id == "clm0")
+    fake = next(x.replacement for x in out.plan.regions if gt_mention[x.mentions[0]] == "clm0")
+    assert len(fake) == len(claim) and fake[3] == claim[3] == "-"
+    assert all(a != b for a, b in zip(fake, claim) if a.isalnum())
+    assert fake[:3].isupper() and fake[4:].isdigit()
+    # Every required kind gets a fake, the signature a drawn stand-in (a region with no text).
+    regions = [x for x in out.plan.regions if x.action == "replace"]
+    assert len(regions) == len(out.plan.regions)
+    assert [x.replacement for x in regions if x.id.endswith("sig1")] == [None]
+
+
+def test_entity_keyed_fakes_are_the_same_in_every_document_of_a_matter():
+    fx = fixture("digital")
+    reordered = fx.gt.model_copy(update={"mentions": list(reversed(fx.gt.mentions))})
+
+    def fakes(gt, spec):
+        out = run_mock(fx.pdf, gt, V1, spec)
+        return {(e.component, e.replacement) for e in evaluate_pseudonyms(gt, resolve(gt, V1), out.pdf).replacements
+                if e.entity == "E3"}
+
+    # People appear in another order in the second document: per-document clusters give the husband
+    # other fakes, fakes keyed on the GT entity stay the same.
+    assert fakes(fx.gt, REFERENCE) == fakes(reordered, REFERENCE)
+    clustered = MockSpec("by-cluster", replace_all=True)
+    assert fakes(fx.gt, clustered) != fakes(reordered, clustered)
+
+
+def _only(gt, doc_id: str, people: set[str]):
+    """The document as another one of the matter that names only some of its people."""
+    return gt.model_copy(update={"doc_id": doc_id, "mentions": [m for m in gt.mentions
+                                                                 if m.entity is None or m.entity in people]})
+
+
+def _planned_name_fakes(gt, matter_gts=None) -> dict[tuple[str, str], set[str]]:
+    """(person, name component) -> the fakes the ceiling plans for them in one document."""
+    plan, targeted, fakes = target_regions(gt, V1, REFERENCE, matter_gts)
+    mentions = {m.id: m for m in gt.mentions}
+    out: dict[tuple[str, str], set[str]] = {}
+    for key, value in fakes.items():
+        det, wid = key.split(":")
+        m = mentions[targeted[int(det[1:])]]
+        for comp, wids in m.components.items():
+            if m.type is PiiType.PERSON_NAME and wid in wids:
+                out.setdefault((m.entity, comp.value), set()).add(value.strip(".,;:()").casefold())
+    return out
+
+
+def test_every_person_keeps_one_fake_across_a_matter_whoever_else_a_document_names():
+    gt = fixture("digital").gt
+    # E1 (the claimant) and E5 (her GP) start from the same surname slot; a document that names only E2
+    # and E5, or one that names E5 before E1, must not hand E5 the claimant's fake or change hers.
+    docs = [gt.model_copy(update={"doc_id": "a"}),
+            gt.model_copy(update={"doc_id": "b", "mentions": list(reversed(gt.mentions))}),
+            _only(gt, "c", {"E2", "E5"}), _only(gt, "d", {"E1", "E5"})]
+    by_doc = [_planned_name_fakes(d, docs) for d in docs]
+    merged: dict[tuple[str, str], set[str]] = {}
+    for fakes in by_doc:
+        for key, values in fakes.items():
+            merged.setdefault(key, set()).update(values)
+    assert {e for e, _ in merged} == {"E1", "E2", "E3", "E5"} and ("E5", "surname") in by_doc[2]
+    assert all(len(values) == 1 for values in merged.values()), merged  # one fake per person and part
+    owners: dict[tuple[str, str], set[str]] = {}
+    for (entity, comp), values in merged.items():
+        for v in values:
+            owners.setdefault((comp, v), set()).add(entity)
+    assert all(len(people) == 1 for people in owners.values()), owners  # never one fake for two people
+    # Without the rest of the matter the fakes still do not depend on the order of the mentions.
+    assert _planned_name_fakes(docs[0]) == _planned_name_fakes(docs[1])
+
+
+def test_the_ceiling_reads_any_spelling_of_gender_and_never_runs_out_of_fakes():
+    from benchmark.mocks.mock import _GIVEN_KEYED, _assign
+    from benchmark.schemas import AttributeValue
+
+    gt = fixture("digital").gt
+    # GT writes gender freely: "female" and "male", or a value the mock has no name pool for.
+    spelled = {"E1": "female", "E2": "male", "E3": "X"}
+    entities = [e.model_copy(update={"attributes": {**e.attributes, "gender": AttributeValue(value=spelled[e.id])}})
+                if e.id in spelled else e for e in gt.entities]
+    fakes = _planned_name_fakes(gt.model_copy(update={"entities": entities}))
+    given = {e: next(iter(v)) for (e, c), v in fakes.items() if c == "given"}
+    pools = {g: {n.casefold() for n in names} for g, names in _GIVEN_KEYED.items()}
+    assert given["E1"] in pools["F"] and given["E2"] in pools["M"] and given["E3"] in pools["F"]
+    # A matter with more people than a pool has names: each person still gets a fake no one else has.
+    people = {(f"P{k:02d}", "given"): {f"Original{k}"} for k in range(40)}
+    values = _assign(people, {}, frozenset(), salt="M1")
+    assert len(_GIVEN_KEYED["F"]) < 40 and len({v.casefold() for v in values.values()}) == 40
+
+
+def test_the_mock_adapter_keeps_each_persons_fake_across_the_documents_of_a_matter(tmp_path, monkeypatch):
+    # As `rb run` calls it, one document at a time. Each document names only some of the matter's people,
+    # in the order that hands E5 the claimant's surname when a document is planned on its own.
+    from benchmark.gt.io import write_model
+    from benchmark.mocks.adapter import main
+
+    docs = {"c": ("digital", {"E2", "E5"}), "d": ("cropbox", {"E1", "E5"})}
+    gts = {doc_id: _only(fixture(variant).gt, doc_id, people) for doc_id, (variant, people) in docs.items()}
+    for doc_id, gt in gts.items():
+        write_model(gt, tmp_path / "gt" / f"{doc_id}.gt.json")
+    monkeypatch.setenv("RB_GT_DIRS", str(tmp_path / "gt"))
+    fakes: dict[tuple[str, str], set[str]] = {}
+    for doc_id, (variant, _) in docs.items():
+        work = tmp_path / doc_id
+        work.mkdir()
+        (work / "input.pdf").write_bytes(fixture(variant).pdf)
+        assert main(["--input", str(work / "input.pdf"), "--workdir", str(work / "out"), "--spec", "reference-replace",
+                     "--policy", str(ROOT / "policies" / "au-medicolegal-v1.yaml")]) == 0
+        whose = {wid: (m.entity, comp.value) for m in gts[doc_id].mentions if m.type is PiiType.PERSON_NAME
+                 for comp, wids in m.components.items() for wid in wids}
+        for entry in json.loads((work / "out" / "pseudonyms.json").read_text(encoding="utf-8"))["entries"]:
+            if entry["original"] in whose:
+                fakes.setdefault(whose[entry["original"]], set()).add(entry["replacement"].strip(".,;:()").casefold())
+    assert {e for e, _ in fakes} == {"E1", "E2", "E5"}
+    assert all(len(values) == 1 for values in fakes.values()), fakes  # one fake per person across the matter
+    owners: dict[tuple[str, str], set[str]] = {}
+    for (entity, comp), values in fakes.items():
+        owners.setdefault((comp, next(iter(values))), set()).add(entity)
+    assert all(len(people) == 1 for people in owners.values()), owners  # and no fake for two people
+
+
+@pytest.mark.parametrize("words", [["(02)", "9876", "5432"], ["02", "9876", "5432"], ["0412", "555", "678"],
+                                   ["04", "1234", "5678"], ["1300", "333", "767"], ["1800", "975", "707"],
+                                   ["+61", "2", "9876", "5432"], ["+61", "412", "345", "678"],
+                                   ["+61", "(0)412", "345", "678"], ["+61412345678"], ["131", "450"],
+                                   ["Tel", "9876", "5432"]])
+def test_a_fake_phone_keeps_its_kind_and_shares_no_word_with_the_original(words):
+    from benchmark.evaluate.layers import text_leaks
+    from benchmark.metrics.pseudonyms import phone_valid
+    from benchmark.mocks.mock import _fake_phone
+
+    fake = _fake_phone(words, 7)
+    assert len(fake) == len(words) and fake == _fake_phone(words, 7)  # one value, one fake
+    assert not any(text_leaks(w.strip(".,;:()"), f, CFG) for w, f in zip(words, fake)), fake
+    if phone_valid(" ".join(words)):
+        assert phone_valid(" ".join(fake)), fake
+    assert all(t.count("(") == t.count(")") for t in fake), fake  # an area code in brackets stays whole
+    if "".join(words).replace("+61", "0").replace("(0)", "").startswith("04"):
+        # A mobile stays a mobile, except where its 04 has a word of its own: a fake cannot keep that word
+        # unchanged without the evaluator reading it as the original.
+        assert fake[0].startswith("04") or words[0] == "04", fake
+
+
+@pytest.mark.parametrize("words", [["2123", "45670", "2"], ["2123", "45670", "1", "3"], ["2123456702"]])
+def test_a_fake_medicare_number_is_valid_with_every_digit_changed(words):
+    from benchmark.evaluate.layers import text_leaks
+    from benchmark.metrics.pseudonyms import medicare_valid
+    from benchmark.mocks.mock import _fake_medicare
+
+    fake = _fake_medicare(words, 7)
+    assert medicare_valid(" ".join(fake)) and len(fake) == len(words)
+    assert not any(text_leaks(w, f, CFG) for w, f in zip(words, fake)), fake
+    old, new = "".join(words), "".join(fake)
+    assert all(a != b for k, (a, b) in enumerate(zip(old, new)) if k != 8)  # the check digit falls as it may
+
+
+def _contacts_spec():
+    """The digital fixture with a landline in (02) for the claimant, a Medicare issue number of 2, and
+    the husband's own mobile and Medicare number."""
+    from benchmark.synth.spec import L, MentionSpec, T, medico_legal_spec
+
+    spec = medico_legal_spec()
+    p0, p1 = spec.pages
+    phone = next(i for i, line in enumerate(p0) if any("m:ph1" in t.tags for t in line.toks))
+    p0[phone] = L(72, 180, 11, T("Phone:"), T("(02)", "m:ph1"), T("9876", "m:ph1"), T("5432", "m:ph1"),
+                  T("Email:"), T("jane.smithers@example.com", "m:em1"))
+    signed = next(i for i, line in enumerate(p0) if line.y == 360)  # above the signature, in reading order
+    p0.insert(signed, L(72, 290, 11, T("His"), T("mobile:"), T("0433", "m:ph3"), T("765", "m:ph3"),
+                        T("901", "m:ph3")))
+    medicare = next(i for i, line in enumerate(p1) if any("m:gov1" in t.tags for t in line.toks))
+    p1[medicare] = L(72, 140, 11, T("Medicare"), T("number"), T("2123", "m:gov1"), T("45670", "m:gov1"),
+                     T("2", "m:gov1"))
+    p1.insert(len(p1) - 1, L(72, 200, 11, T("His"), T("Medicare"), T("number"), T("3456", "m:gov3"),
+                             T("78908", "m:gov3"), T("1", "m:gov3")))  # before the running footer
+    spec.mentions["ph3"] = MentionSpec(PiiType.PHONE, "E3", subtype="mobile")
+    spec.mentions["gov3"] = MentionSpec(PiiType.ID_GOVERNMENT, "E3", subtype="medicare")
+    return spec
+
+
+def test_the_ceiling_gives_each_person_their_own_phone_and_medicare_fake():
+    from benchmark.metrics.pseudonyms import medicare_valid, phone_valid
+    from benchmark.synth.fixtures import digital
+
+    fx = digital(_contacts_spec())
+    out = run_mock(fx.pdf, fx.gt, V1, REFERENCE)
+    ev = evaluate_output(fx.pdf, out.pdf, fx.gt, V1, CFG)
+    assert {m.status for m in must(ev)} == {MentionStatus.SAFE_REPLACED} and ev.summary["clean_document"], [
+        (m.mention_id, m.status.value) for m in must(ev) if m.status is not MentionStatus.SAFE_REPLACED]
+    gt_mention = {f"d{i}": m for i, m in enumerate(out.targeted)}
+    fake = {}
+    for r in out.plan.regions:
+        if r.replacement:
+            fake.setdefault(gt_mention[r.mentions[0]], []).append(r.replacement)
+    assert fake["ph1"] != fake["ph3"] and fake["gov1"] != fake["gov3"]
+    assert fake["ph1"][0] != "(02)" and phone_valid(" ".join(fake["ph1"])) and fake["ph3"][0].startswith("04")
+    assert medicare_valid(" ".join(fake["gov1"])) and fake["gov1"][2] != "2"
+
+
+def test_a_drawn_stand_in_with_true_redaction_counts_as_replaced():
+    out = mocked("digital", MockSpec("true-stand-ins", stand_ins=True))
+    assert _signature_status(out) is MentionStatus.SAFE_REPLACED
+
+
+def test_true_redaction_with_fakes_at_the_original_size_fails_only_where_known():
+    # The open calibration issue, pinned: at 150 DPI only the locality ("SA" over "QLD") is judged PARTIAL,
+    # at 200 DPI the document is clean. A leak anywhere else, or a crash, fails here.
+    fx = fixture("digital")
+    out = mocked("digital", MockSpec("true-replace", replace_all=True, stand_ins=True))
+    at_150 = evaluate("digital", out)
+    assert {m.mention_id: m.status for m in must(at_150) if m.status is not MentionStatus.SAFE_REPLACED} == {
+        "addr1-loc": MentionStatus.PARTIAL}
+    at_200 = evaluate_output(fx.pdf, out, fx.gt, V1, EvalConfig(dpi=200))
+    assert {m.status for m in must(at_200)} == {MentionStatus.SAFE_REPLACED} and at_200.summary["clean_document"]
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="open calibration issue (docs/metrics.md): correct fakes written in the original's font, "
+                          "size and place can line up with its glyph bands and be judged PARTIAL; the ceiling draws "
+                          "its fakes at 80% size to avoid this")
+def test_true_redaction_with_fakes_at_the_original_size_is_clean():
+    ev = evaluate("digital", mocked("digital", MockSpec("true-replace", replace_all=True, stand_ins=True)))
+    assert next(m for m in must(ev) if m.mention_id == "addr1-loc").status is MentionStatus.SAFE_REPLACED
+
+
+def test_reference_replace_fills_injected_oracle_regions_with_its_fakes():
+    fx = fixture("digital")
+    injected = {"text": oracle_text(fx.gt), "mentions": oracle_mentions(fx.gt, V1),
+                "entities": oracle_entities(fx.gt, V1), "regions": oracle_regions(fx.gt, V1)}
+    ev = evaluate("digital", run_mock(fx.pdf, fx.gt, V1, REFERENCE, injected=injected).pdf)
+    assert {m.status for m in must(ev)} == {MentionStatus.SAFE_REPLACED} and ev.summary["clean_document"]
