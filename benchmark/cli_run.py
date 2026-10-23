@@ -231,24 +231,28 @@ def _cmd_selfcheck(args) -> int:
     from .dataset import document_pdf, load_manifest
     from .evaluate import EvalConfig
     from .gt.io import find_gt, load_gt, load_policy
-    from .selfcheck import selfcheck
+    from .selfcheck import error_result, selfcheck
 
     name, version = args.dataset.split("@")
     m = load_manifest(name, version)
+    policy = load_policy(args.policy)
     failed = 0
     report = {}
     for d in m.documents:
         if args.docs and d.doc_id not in args.docs:
             continue
-        gt = load_gt(Path(args.gt_dir) / f"{d.doc_id}{args.gt_suffix}") if args.gt_dir else find_gt(d.doc_id, d.sha256)
-        if gt is None:
-            print(f"{d.doc_id}: no GT, skipped")
-            continue
-        res = selfcheck(document_pdf(d).read_bytes(), gt, load_policy(args.policy), EvalConfig(dpi=args.dpi),
-                        only=args.only)
+        try:
+            gt = (load_gt(Path(args.gt_dir) / f"{d.doc_id}{args.gt_suffix}") if args.gt_dir
+                  else find_gt(d.doc_id, d.sha256))
+            if gt is None:
+                print(f"{d.doc_id}: no GT, skipped")
+                continue
+            res = selfcheck(document_pdf(d).read_bytes(), gt, policy, EvalConfig(dpi=args.dpi), only=args.only)
+        except Exception as exc:  # noqa: BLE001 - one document that cannot be checked must not stop the rest
+            res = [error_result("(document)", "the document can be checked", exc)]
         report[d.doc_id] = [r.to_dict() for r in res]
         for r in res:
-            mark = {True: "PASS", False: "FAIL", None: "N/A "}[r.passed]
+            mark = "ERR " if r.extra.get("error") else {True: "PASS", False: "FAIL", None: "N/A "}[r.passed]
             failed += r.passed is False
             print(f"{d.doc_id:12s} {r.name:17s} {mark} {r.seconds:6.1f}s  {r.observed}")
     if args.json:

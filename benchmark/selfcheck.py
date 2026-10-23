@@ -21,7 +21,8 @@ SAFE = HIDDEN
 from .gt.policy import resolve
 from .metrics import InkIndex, evaluate_plan
 from .mocks import MockSpec, run_mock
-from .schemas import GTDocument, PiiType, PolicyProfile
+from .mocks.named import NAMED
+from .schemas import Action, GTDocument, PiiType, PolicyProfile, Requirement
 
 
 @dataclass
@@ -109,6 +110,32 @@ def _pseudonyms(ev, _):
 
 _WITH_COMPONENTS: set[str] = set()  # set per document by selfcheck(); only these can be pseudonymised
 
+
+def _replace_all(ev, _):
+    """Everything the client's rules ask for: every required mention replaced, text searchable."""
+    ms = _must(ev)
+    if not ms:
+        return None, "no required mentions evaluated: not applicable"
+    bad = [m.mention_id for m in ms if m.status is not MentionStatus.SAFE_REPLACED]
+    searchable = ev.summary.get("searchable_ok")
+    return not bad and bool(searchable), (f"{len(bad)}/{len(ms)} not SAFE_REPLACED: {bad[:8]}; searchable "
+                                          f"{ev.summary.get('searchable_rate')} ({'ok' if searchable else 'FAIL'})")
+
+
+def _remove_only(ev, context):
+    """True removal without fakes gets the verdict the policy implies for every required mention:
+    NOT_REPLACED where a fake is required, SAFE_REMOVED where removal is allowed. A leak fails."""
+    required = context.get("replace_required", set())
+    ms = _must(ev)
+    if not ms:
+        return None, "no required mentions evaluated: not applicable"
+    fake = sum(1 for m in ms if m.mention_id in required)
+    bad = [m.mention_id for m in ms if m.status is not (
+        MentionStatus.NOT_REPLACED if m.mention_id in required else MentionStatus.SAFE_REMOVED)]
+    return not bad, (f"{len(bad)}/{len(ms)} not as the policy implies (NOT_REPLACED for {fake} that need a fake, "
+                     f"SAFE_REMOVED for {len(ms) - fake} that may be removed): {bad[:8]}")
+
+
 CHECKS = [
     Check("reference-true", MockSpec("reference"), "all SAFE, collateral <= 2%, no protected damage", _reference),
     Check("reference-raster", MockSpec("reference-raster", method="rasterize"), "all SAFE, collateral <= 2%",
@@ -126,6 +153,10 @@ CHECKS = [
     Check("dpi-scale", MockSpec("scale", scale=0.24), "all not safe; diagnosed as scale 72/300", _scale),
     Check("pseudonyms", MockSpec("pseud", pseudonyms="consistent"), "names SAFE_REPLACED", _pseudonyms,
           needs_text_layer=True),
+    # The client's rules (Q6, Q7, Q11): the perfect replacer passes, a perfect remover does not.
+    Check("replace-all", NAMED["reference-replace"], "all SAFE_REPLACED and searchable", _replace_all),
+    Check("remove-only", MockSpec("remove-only"), "NOT_REPLACED where the policy requires a fake, SAFE_REMOVED "
+          "where it allows removal", _remove_only),
 ]
 
 
@@ -158,6 +189,8 @@ def selfcheck(source: bytes, gt: GTDocument, policy: PolicyProfile, config: Eval
 
     cfg = config or EvalConfig()
     res = resolve(gt, policy)
+    replace_required = {mid for mid, r in res.mentions.items()
+                        if r.requirement is Requirement.MUST and r.action is Action.REPLACE}
     _WITH_COMPONENTS.clear()
     _WITH_COMPONENTS.update(m.id for m in gt.mentions if m.components)
     has_text = any(p.get_text().strip() for p in pymupdf.open("pdf", source))
@@ -171,13 +204,24 @@ def selfcheck(source: bytes, gt: GTDocument, policy: PolicyProfile, config: Eval
         if c.needs_text_layer and not has_text:
             continue
         t0 = time.time()
-        mock = run_mock(source, gt, policy, c.spec)
-        ev = evaluate_output(source, mock.pdf, gt, policy, cfg)
-        extra = {}
-        if c.name == "dpi-scale":
-            index = index or InkIndex.build(gt, source, 100)
-            extra["diagnosis"] = evaluate_plan(mock.plan, gt, res, index).document_diagnosis
-        passed, observed = c.test(ev, extra)
+        try:
+            mock = run_mock(source, gt, policy, c.spec)
+            ev = evaluate_output(source, mock.pdf, gt, policy, cfg)
+            extra = {}
+            if c.name == "dpi-scale":
+                index = index or InkIndex.build(gt, source, 100)
+                extra["diagnosis"] = evaluate_plan(mock.plan, gt, res, index).document_diagnosis
+            passed, observed = c.test(ev, dict(extra, replace_required=replace_required))
+        except Exception as exc:  # noqa: BLE001 - a check that breaks fails; the other checks still run
+            out.append(error_result(c.name, c.expect, exc, round(time.time() - t0, 1)))
+            continue
         statuses = dict(Counter(m.status.value for m in ev.mentions if m.requirement == "MUST"))
         out.append(CheckResult(c.name, c.expect, passed, observed, statuses, round(time.time() - t0, 1), extra))
     return out
+
+
+def error_result(name: str, expect: str, exc: BaseException, seconds: float = 0.0) -> CheckResult:
+    """A check (or a whole document) that raised: failed, named by the exception's class only, since
+    its message can quote document text."""
+    kind = type(exc).__name__
+    return CheckResult(name, expect, False, f"ERROR: {kind} (could not run)", {}, seconds, {"error": kind})
