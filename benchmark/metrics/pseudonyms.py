@@ -12,6 +12,7 @@ import re
 import string
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
+from itertools import combinations
 
 import numpy as np
 import pymupdf
@@ -219,7 +220,8 @@ def evaluate_pseudonyms(gt: GTDocument, res: Resolution, output: bytes) -> Pseud
     survived, missing, similar, style_lost = [], [], [], []
     value_map: dict[tuple, set[str]] = defaultdict(set)
     entity_map: dict[tuple, set[str]] = defaultdict(set)
-    replacement_owner: dict[tuple, set[str]] = defaultdict(set)
+    # (component, fake) -> the (person, original value) pairs it replaced
+    replacement_owner: dict[tuple, set[tuple[str, str]]] = defaultdict(set)
     for r in names:
         if r.replacement is None or not _core(r.replacement):
             missing.append(r.word_id)
@@ -235,10 +237,10 @@ def evaluate_pseudonyms(gt: GTDocument, res: Resolution, output: bytes) -> Pseud
         ent = r.entity or r.mention_id
         value_map[(ent, r.component, o.casefold())].add(n.casefold())
         entity_map[(ent, r.component)].add(n.casefold())
-        replacement_owner[(r.component, n.casefold())].add(o.casefold())
+        replacement_owner[(r.component, n.casefold())].add((ent, o.casefold()))
     value_inconsistent = {f"{e}:{c}:{v}": sorted(s) for (e, c, v), s in value_map.items() if len(s) > 1}
     entity_inconsistent = {f"{e}:{c}": sorted(s) for (e, c), s in entity_map.items() if len(s) > 1}
-    collisions = {f"{c}:{n}": sorted(o) for (c, n), o in replacement_owner.items() if len(o) > 1}
+    collisions = _collisions(replacement_owner)
     real_name = sorted({n for (c, n) in replacement_owner if n in real_values})
     gender_mismatch = []
     for r in reps:
@@ -271,6 +273,22 @@ def evaluate_pseudonyms(gt: GTDocument, res: Resolution, output: bytes) -> Pseud
     checks.update(checks_other)
     issues["invalid"] = invalid
     return PseudonymResult(True, None, reps, checks, issues, other)
+
+
+def _collisions(owners: dict[tuple[str, str], set[tuple[str, str]]]) -> dict[str, list[str]]:
+    """Fakes that stand for two different people with different names: one value (per name
+    component) given to two people who share none of the names it replaced. One person written two
+    ways, or two people who share a name (a married couple's surname), may share a fake, also when
+    both happen at once (McDonald and Macdonald for him, McDonald for her).
+    ``owners``: (component, fake) -> {(person, original)}; the result is keyed "component:fake"."""
+    out = {}
+    for (component, fake), pairs in owners.items():
+        names: dict[str, set[str]] = defaultdict(set)
+        for person, original in pairs:
+            names[person].add(original)
+        if any(not (a & b) for a, b in combinations([names[p] for p in sorted(names)], 2)):
+            out[f"{component}:{fake}"] = sorted({o for _, o in pairs})
+    return out
 
 
 def _rate(flags: list[bool]) -> float | None:

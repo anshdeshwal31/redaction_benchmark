@@ -238,6 +238,21 @@ def test_pseudonym_checks(mode, check, expect):
     assert expect(value) if callable(expect) else value == expect
 
 
+@pytest.mark.parametrize("owners, collides", [
+    ({("E1", "kellie-ann"), ("E1", "kelli-ann")}, False),  # one person written two ways, one fake
+    ({("E1", "smithers"), ("E3", "smithers")}, False),  # a married couple's surname, one fake
+    ({("E1", "smithers"), ("E2", "strong")}, True),  # two people with different names, one fake
+    ({("E1", "smithers"), ("E3", "smithers"), ("E2", "strong")}, True),
+    # A husband written two ways and his wife, one surname fake for the couple: consistent, no collision.
+    ({("E1", "mcdonald"), ("E1", "macdonald"), ("E2", "mcdonald")}, False),
+])
+def test_a_collision_is_one_fake_for_different_people_with_different_names(owners, collides):
+    from benchmark.metrics.pseudonyms import _collisions
+
+    found = _collisions({("surname", "baxter"): owners})
+    assert found == ({"surname:baxter": sorted({o for _, o in owners})} if collides else {})
+
+
 def test_consistent_pseudonyms_infer_a_perfect_resolution():
     fx, res, _ = setup("digital")
     r = evaluate_pseudonyms(fx.gt, res, mock("digital", MockSpec("c", pseudonyms="consistent")).pdf)
