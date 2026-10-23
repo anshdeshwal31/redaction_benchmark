@@ -8,22 +8,30 @@
 # Differences from au-medicolegal@0.1.0-draft:
 # - professionals' names, organisations, their contact details, every identifier and every
 #   signature, mark, avatar and photo are now required (Q1, Q2, Q5, Q6);
-# - dates of birth, ages, suburbs, towns, postcodes, places of birth, occupation, physical
-#   description, family composition and cultural background must be kept (Q3, Q4, Q9);
-# - addresses are split in GT 0.2: the street line is an ADDRESS (required), the suburb, state
-#   and postcode a LOCATION/locality (kept);
+# - dates of birth, ages, suburbs and towns mentioned on their own, places of birth, occupation,
+#   physical description, family composition and cultural background must be kept (Q3, Q4, Q9);
+# - addresses are split in GT 0.2: the street line is an ADDRESS, the suburb, state and postcode
+#   a LOCATION/locality;
 # - handwriting follows the type rules: a handwritten date or suburb is kept like its typed form.
 #
-# Still open: Q10 role words ("the claimant") are not in GT; the client is to clarify. Quasi-
-# identifiers the questionnaire did not ask about (religion, education, qualifications, marital,
-# benefit or employment status, accreditation, courses) stay MAY.
+# Departures from the client's answers (1.1.0; listed under `deviations`, shown in every report):
+# - whole-address (Q4): the whole address is replaced, street line and locality alike. The project
+#   owner decided on 2026-10-22 that every tool replaces whole addresses; it is not tied to the check
+#   of the rule-based address splits of GT 0.2, and only the owner can lift it. A suburb or town
+#   mentioned on its own is still kept.
+# - role-words (Q10): role words such as "the claimant" are left as they are; they are not in GT,
+#   so changing them only counts as damage to ordinary words. To be confirmed with the client.
+#
+# Still open: quasi-identifiers the questionnaire did not ask about (religion, education,
+# qualifications, marital, benefit or employment status, accreditation, courses) stay MAY.
 schema: rb.policy/0.1
 name: au-medicolegal
-version: 1.0.0
+version: 1.1.0
 description: >
   The client's decisions of 2026-10-18: replace every person, organisation, contact detail,
-  identifier, signature and image of a person with a fake; keep every date, age, place below
-  street level, occupation and clinical or legal content.
+  identifier, signature and image of a person with a fake; keep every date, age, occupation and
+  clinical or legal content, and suburbs and towns mentioned on their own. Departs from the
+  answers in two places (see deviations): whole addresses are replaced, and role words are kept.
 consistency_scope: matter          # Q8: same fake for a person across the matter's documents
 
 rules:
@@ -48,7 +56,7 @@ rules:
       type: [ADDRESS, PHONE, EMAIL, URL]
     requirement: MUST
     action: replace
-    note: Persons' and organisations' alike. ADDRESS is the street line only (GT 0.2 split).
+    note: Persons' and organisations' alike. ADDRESS is the street line (GT 0.2 split).
 
   # --- organisations (Q2) ------------------------------------------------------------
   - id: organisations
@@ -77,12 +85,21 @@ rules:
     requirement: MUST_NOT
     note: Including children's ages (Q3, Q4).
 
+  - id: address-locality-replaced
+    when:
+      type: [LOCATION]
+      subtype: [locality]
+    requirement: MUST
+    action: replace
+    note: The suburb, state and postcode of an address are replaced with its street line; every tool replaces
+      whole addresses (deviation whole-address, the project owner's rule; the client keeps them, Q4).
+
   - id: places-kept
     when:
       type: [LOCATION]
-      subtype: [locality, suburb, city, region, state, country, postcode, place_of_declaration]
+      subtype: [suburb, city, region, state, country, postcode, place_of_declaration]
     requirement: MUST_NOT
-    note: Suburbs, towns and places of birth (Q4); the locality part of a split address.
+    note: Suburbs, towns and places of birth mentioned on their own (Q4).
 
   - id: quasi-identifiers-kept
     when:
@@ -101,3 +118,29 @@ rules:
 default_mention: MAY
 default_classified: MUST_NOT
 optional_words: MAY
+
+# Deliberate departures from the client's answers. Scoring copies them into its results and every
+# run report and comparison board shows them, so nobody reads these scores as the client's rules.
+deviations:
+  - id: whole-address
+    question: Q4
+    client_answer: Suburbs and towns are kept (Q4); the client's profile also keeps postcodes.
+    applied: >-
+      The whole address is replaced: street line, suburb, state and postcode. A suburb or town
+      mentioned on its own is still kept.
+    reason: >-
+      The project owner's rule: on 2026-10-22 the owner decided that every tool replaces whole
+      addresses, and the scores hold every tool to it. It began on 2026-10-21, when GT 0.2 split each
+      address into street line and locality by a rule no person had checked; checking the splits does
+      not end it. Only the owner can lift it, and the localities of addresses would then be kept again.
+    effect: A tool that keeps the suburb and postcode of an address, as the client asked, is scored as leaking them.
+    rules: [address-locality-replaced]
+
+  - id: role-words
+    question: Q10
+    client_answer: Role words such as 'the claimant' or 'the employer' also count.
+    applied: >-
+      Role words are left as they are. They are not in the ground truth, so changing them only
+      counts as damage to ordinary words.
+    reason: Decided by the project owner on 2026-10-21; to be confirmed with the client.
+    rules: []

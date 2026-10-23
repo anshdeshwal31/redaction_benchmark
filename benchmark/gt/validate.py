@@ -11,6 +11,7 @@ import numpy as np
 
 from ..geometry import area, as_poly
 from ..schemas import GTDocument, NameComponent, PiiType
+from .address_split import ADDRESS_LOCALITY, LOCALITY_SUBTYPE, PLACE_SUBTYPES
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,13 @@ def validate_gt(gt: GTDocument, source_pdf: str | Path | None = None) -> list[Is
                     err("component-outside", f"mention {m.id}: component {comp.value} word {wid} not in mention")
         if m.type is PiiType.PERSON_NAME and has_words and not m.components:
             warn("no-components", f"person mention {m.id} has no name components (needed for pseudonym checks)")
+        if m.type is PiiType.LOCATION and m.subtype == LOCALITY_SUBTYPE and ADDRESS_LOCALITY not in m.conditions:
+            # The policy decides by subtype: a place on its own labelled `locality` would be replaced like
+            # an address's locality (policy 1.1.0) instead of kept.
+            warn("locality-outside-address",
+                 f"mention {m.id}: subtype '{LOCALITY_SUBTYPE}' is only for the locality part of an address "
+                 f"(condition {ADDRESS_LOCALITY}); a place mentioned on its own takes one of "
+                 f"{', '.join(PLACE_SUBTYPES)}")
         if m.parent is not None:
             parent = mentions.get(m.parent)
             if parent is None:

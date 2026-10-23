@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pymupdf
 import pytest
+from pydantic import ValidationError
 
 from benchmark.evaluate import HIDDEN, SAFE, EvalConfig, MentionStatus, check_integrity, evaluate_output
 from benchmark.gt import load_policy
@@ -19,7 +20,7 @@ from benchmark.gt.policy import resolve
 from benchmark.mocks import MockSpec, run_mock
 from benchmark.runner.oracle import oracle_regions
 from benchmark.runner.scoring import matter_consistency, self_check_verdict
-from benchmark.schemas import Action, PiiType, Requirement
+from benchmark.schemas import Action, GTMention, PiiType, PolicyProfile, Requirement, Segment
 from benchmark.synth import ALL_VARIANTS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,17 +66,49 @@ def _draw(out: bytes, fn) -> bytes:
 # -- policy -------------------------------------------------------------------------------------
 
 
-def test_v1_requires_replacement_and_keeps_places_and_dates():
+def test_v1_requires_replacement_of_the_whole_address_and_keeps_dates():
     gt = fixture("digital").gt
     res = resolve(gt, V1)
     by_type = {}
     for m in gt.mentions:
         by_type.setdefault((m.type, m.subtype), res.mentions[m.id])
     assert by_type[(PiiType.ADDRESS, "residential")].requirement is Requirement.MUST
-    assert by_type[(PiiType.LOCATION, "locality")].requirement is Requirement.MUST_NOT
+    # Policy 1.1.0 (deviation whole-address): the suburb, state and postcode of an address go too.
+    locality = by_type[(PiiType.LOCATION, "locality")]
+    assert locality.requirement is Requirement.MUST and locality.rule_id == "address-locality-replaced"
     assert by_type[(PiiType.DATE, "dob")].requirement is Requirement.MUST_NOT
     assert by_type[(PiiType.ORGANISATION, None)].requirement is Requirement.MUST
     assert all(r.action is Action.REPLACE for r in res.mentions.values() if r.requirement is Requirement.MUST)
+
+
+@pytest.mark.parametrize("subtype, requirement", [
+    ("locality", Requirement.MUST), ("suburb", Requirement.MUST_NOT), ("city", Requirement.MUST_NOT),
+    ("region", Requirement.MUST_NOT), ("state", Requirement.MUST_NOT), ("country", Requirement.MUST_NOT),
+    ("postcode", Requirement.MUST_NOT), ("place_of_declaration", Requirement.MUST_NOT),
+])
+def test_a_place_on_its_own_is_kept_but_the_locality_of_an_address_is_replaced(subtype, requirement):
+    # No fixture has a place mentioned on its own, so one is added to an ordinary word.
+    gt = fixture("digital").gt
+    word = next(w for w in gt.page(1).words if w.text == "six")
+    place = GTMention(id="place", type=PiiType.LOCATION, subtype=subtype, text=word.text,
+                      segments=[Segment(page=1, words=[word.id])])
+    res = resolve(gt.model_copy(update={"mentions": [*gt.mentions, place]}), V1)
+    assert res.mentions["place"].requirement is requirement
+    assert res.mentions["place"].rule_id == ("address-locality-replaced" if subtype == "locality" else "places-kept")
+
+
+def test_validation_warns_when_a_place_on_its_own_is_labelled_locality():
+    # The subtype decides keep or replace, so `locality` is reserved for the locality of a split address.
+    from benchmark.gt.validate import validate_gt
+
+    gt = fixture("digital").gt
+    assert not [i for i in validate_gt(gt) if i.code == "locality-outside-address"]
+    word = next(w for w in gt.page(1).words if w.text == "six")
+    place = GTMention(id="place", type=PiiType.LOCATION, subtype="locality", text=word.text,
+                      segments=[Segment(page=1, words=[word.id])])
+    issues = [i for i in validate_gt(gt.model_copy(update={"mentions": [*gt.mentions, place]}))
+              if i.code == "locality-outside-address"]
+    assert [i.severity for i in issues] == ["warning"] and "a place mentioned on its own takes" in issues[0].message
 
 
 def test_oracle_regions_carry_the_policy_action():
@@ -207,3 +240,32 @@ def test_matter_consistency_compares_documents_of_a_matter():
     assert [(r["entity"], r["component"], r["consistent"]) for r in rows] == [
         ("E1", "given", False), ("E1", "surname", True)]
     assert rows[0]["documents"] == "DPI,IME" and rows[0]["distinct_replacements"] == 2
+
+
+# -- departures from the client's answers (policy 1.1.0) -------------------------------------------
+
+
+def test_v1_records_its_two_departures_from_the_client():
+    by_id = {d.id: d for d in V1.deviations}
+    assert V1.version == "1.1.0" and set(by_id) == {"whole-address", "role-words"}
+    assert by_id["whole-address"].question == "Q4" and by_id["whole-address"].rules == ["address-locality-replaced"]
+    assert by_id["role-words"].question == "Q10" and by_id["role-words"].rules == []
+    assert all(d.client_answer and d.applied and d.reason for d in V1.deviations)
+    assert DRAFT.deviations == []
+
+
+def _with_deviations(*devs) -> dict:
+    data = DRAFT.model_dump(mode="json", by_alias=True)
+    data["deviations"] = list(devs)
+    return data
+
+
+def test_a_deviation_must_name_rules_of_its_policy():
+    dev = {"id": "d1", "question": "Q4", "client_answer": "a", "applied": "b", "reason": "c"}
+    assert PolicyProfile.model_validate(_with_deviations(dict(dev, rules=["dates-kept"]))).deviations[0].effect == ""
+    with pytest.raises(ValidationError, match="no-such-rule"):
+        PolicyProfile.model_validate(_with_deviations(dict(dev, rules=["no-such-rule"])))
+    with pytest.raises(ValidationError, match="listed twice"):
+        PolicyProfile.model_validate(_with_deviations(dev, dev))
+    with pytest.raises(ValidationError):
+        PolicyProfile.model_validate(_with_deviations({"id": "d2", "question": "Q4"}))  # no answer, no reason

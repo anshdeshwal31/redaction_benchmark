@@ -302,8 +302,8 @@ def test_valid_contact_replacements_pass_format_checks():
     assert c["other_replaced"] == 4 and c["invalid_replacements"] == 0
     assert c["phone_valid_rate"] == c["email_valid_rate"] == c["email_from_new_name_rate"] == 1.0
     assert c["medicare_checksum_valid_rate"] == 1.0
-    # GT 0.2 addresses are street lines (suburb, state and postcode are kept), so there is no
-    # replaced postcode to check against its state.
+    # GT 0.2 addresses are street lines, and under the draft the locality (suburb, state and
+    # postcode) is not required, so there is no replaced postcode to check against its state.
     assert c["postcode_state_valid_rate"] is None
 
 
@@ -313,6 +313,21 @@ def test_invalid_contact_replacements_are_flagged():
                                                                   replace_other="invalid")).pdf)
     assert set(r.issues["invalid"]) == {"ph1", "em1", "gov1"}
     assert r.checks["postcode_state_valid_rate"] is None  # street line only since GT 0.2
+
+
+@pytest.mark.parametrize("kind, subtype, new, problem", [
+    ("LOCATION", "locality", "Oakvale NSW 2150", None),
+    ("LOCATION", "locality", "Oakvale NSW 4150", "postcode does not belong to the state"),
+    ("ADDRESS", "residential", "27 Banksia Road, Oakvale VIC 3150", None),  # an unsplit address: as before
+    ("ADDRESS", "residential", "27 Banksia Road, Oakvale VIC 2150", "postcode does not belong to the state"),
+    ("ADDRESS", "residential", "27 Banksia Road", None),  # a street line has no postcode: not checked
+])
+def test_postcode_check_on_localities_and_addresses(kind, subtype, new, problem):
+    from benchmark.metrics.pseudonyms import OtherReplacement, _validity
+
+    checks, invalid = _validity([OtherReplacement("x", "E1", kind, subtype, "Faketown QLD 4000", new)], [])
+    assert invalid.get("x") == problem
+    assert checks["postcode_state_valid_rate"] == (None if new == "27 Banksia Road" else float(problem is None))
 
 
 @pytest.mark.parametrize("text,ok", [("0400 123 456", True), ("(07) 5575 2444", True), ("+61 2 5550 1234", True),

@@ -66,6 +66,14 @@ class PseudonymResult:
 
 
 OTHER_TYPES = (PiiType.PHONE, PiiType.EMAIL, PiiType.ADDRESS, PiiType.ID_GOVERNMENT)
+LOCALITY = "locality"  # the suburb, state and postcode of a split address (GT 0.2)
+
+
+def _is_other(m) -> bool:
+    """Contact details and identifiers whose replacement format is checked, and the locality
+    of a split address, which is where its state and postcode are."""
+    return m.type in OTHER_TYPES or (m.type is PiiType.LOCATION and (m.subtype or "") == LOCALITY)
+
 
 # Australia Post postcode ranges by state/territory.
 POSTCODES = {
@@ -169,7 +177,7 @@ def _read_all(gt: GTDocument, res: Resolution, output: bytes):
     words = gt.word_index()
     wanted: dict[int, set[str]] = defaultdict(set)
     for m in gt.mentions:
-        if (m.type is PiiType.PERSON_NAME or m.type in OTHER_TYPES) and                 res.mentions[m.id].requirement is Requirement.MUST:
+        if (m.type is PiiType.PERSON_NAME or _is_other(m)) and res.mentions[m.id].requirement is Requirement.MUST:
             for seg in m.segments:
                 wanted[seg.page].update(seg.words)
             for wid in m.optional_words:
@@ -201,7 +209,7 @@ def _read_all(gt: GTDocument, res: Resolution, output: bytes):
             out.append(ComponentReplacement(m.id, m.entity, wid, "title", words[wid][1].text, texts.get(wid)))
     other = []
     for m in gt.mentions:
-        if m.type not in OTHER_TYPES or res.mentions[m.id].requirement is not Requirement.MUST:
+        if not _is_other(m) or res.mentions[m.id].requirement is not Requirement.MUST:
             continue
         got = [texts.get(wid) for seg in m.segments for wid in seg.words]
         other.append(OtherReplacement(m.id, m.entity, m.type.value, m.subtype, m.text,
@@ -329,7 +337,7 @@ def _validity(other: list[OtherReplacement], names: list[ComponentReplacement]) 
                 derived.append(ok_d)
                 if not ok_d:
                     invalid[o.mention_id] = "email not derived from the new name"
-        elif o.type == PiiType.ADDRESS.value:
+        elif o.type in (PiiType.ADDRESS.value, PiiType.LOCATION.value):  # an unsplit address, or a locality
             ok = postcode_state_valid(new)
             if ok is not None:
                 postcode.append(ok)

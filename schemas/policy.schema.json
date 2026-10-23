@@ -61,6 +61,59 @@
    "title": "PiiType",
    "type": "string"
   },
+  "PolicyDeviation": {
+   "additionalProperties": false,
+   "description": "Where the policy knowingly applies something other than the client's answer, and why.",
+   "properties": {
+    "id": {
+     "minLength": 1,
+     "title": "Id",
+     "type": "string"
+    },
+    "question": {
+     "description": "Questionnaire item, e.g. 'Q4'",
+     "title": "Question",
+     "type": "string"
+    },
+    "client_answer": {
+     "title": "Client Answer",
+     "type": "string"
+    },
+    "applied": {
+     "description": "What the policy applies instead",
+     "title": "Applied",
+     "type": "string"
+    },
+    "reason": {
+     "title": "Reason",
+     "type": "string"
+    },
+    "effect": {
+     "default": "",
+     "description": "How scores differ from scoring by the client's answer",
+     "title": "Effect",
+     "type": "string"
+    },
+    "rules": {
+     "default": [],
+     "description": "Ids of the rules that implement the departure",
+     "items": {
+      "type": "string"
+     },
+     "title": "Rules",
+     "type": "array"
+    }
+   },
+   "required": [
+    "id",
+    "question",
+    "client_answer",
+    "applied",
+    "reason"
+   ],
+   "title": "PolicyDeviation",
+   "type": "object"
+  },
   "PolicyMatch": {
    "additionalProperties": false,
    "properties": {
@@ -290,6 +343,15 @@
   "optional_words": {
    "$ref": "#/$defs/Requirement",
    "default": "MAY"
+  },
+  "deviations": {
+   "default": [],
+   "description": "Deliberate departures from the client's answers; highlighted in every report",
+   "items": {
+    "$ref": "#/$defs/PolicyDeviation"
+   },
+   "title": "Deviations",
+   "type": "array"
   }
  },
  "required": [

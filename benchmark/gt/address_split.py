@@ -4,7 +4,12 @@ The client keeps suburbs, towns, states and postcodes but replaces street lines,
 ADDRESS fact becomes two mentions of the same entity:
 
 - the street line (unit, number, street, PO box), still ``ADDRESS`` with its subtype;
-- the locality (suburb, state, postcode, country), ``LOCATION`` with subtype ``locality``.
+- the locality (suburb, state, postcode, country), ``LOCATION`` with subtype ``locality`` and the
+  condition ``address_locality``. That subtype is reserved for this part of an address: a place
+  mentioned on its own takes ``suburb``, ``city``, ``region``, ``state``, ``country``, ``postcode`` or
+  ``place_of_declaration`` (``rb gt validate`` warns otherwise). Policy 1.1.0 replaces the locality
+  too (deviation ``whole-address``): the project owner decided on 2026-10-22 that every tool replaces
+  whole addresses. A check of the splits does not end that; only the owner can.
 
 Australian addresses end in ``<suburb> <state> <postcode>``; the locality is found from
 the end, and its start is the nearest boundary before the state: a street-type word, a
@@ -33,6 +38,8 @@ STREET_TYPES = {
 PO_WORDS = {"box", "bag", "locked", "gpo", "po", "p.o.", "rmb", "rsd"}
 POSTCODE = re.compile(r"^\d{4}$")
 LOCALITY_SUBTYPE = "locality"
+ADDRESS_LOCALITY = "address_locality"  # condition of the locality part of a split address
+PLACE_SUBTYPES = ("suburb", "city", "region", "state", "country", "postcode", "place_of_declaration")
 
 
 @dataclass
@@ -146,7 +153,7 @@ def split_addresses(gt: GTDocument, version: str | None = None) -> tuple[GTDocum
             out.append(m)
             continue
         street, loc = toks[:k], toks[k:]
-        loc_conditions = sorted(set(m.conditions) | {"address_locality"})
+        loc_conditions = sorted(set(m.conditions) | {ADDRESS_LOCALITY})
         if not street:
             out.append(m.model_copy(update={"type": PiiType.LOCATION, "subtype": LOCALITY_SUBTYPE,
                                             "conditions": loc_conditions}))
