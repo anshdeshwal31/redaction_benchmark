@@ -15,12 +15,23 @@ from ..metrics import InkIndex, compare_runs
 from ..report.store import rows_for_score, write_tables
 from ..schemas import CandidateManifest, PiiType
 from ..score import score_document
-from .artifacts import load_artifacts
+from .artifacts import load_artifacts, sha256_file
 from .runner import ROOT, load_run, runs_root
 
 
 def results_root() -> Path:
     return Path(os.environ.get("RB_RESULTS_DIR", ROOT / "results"))
+
+
+def _no_output_reason(item, out_pdf: Path) -> str | None:
+    """Why an item has no output to grade: none was written, or output.pdf appeared or changed after
+    the runner recorded the item (for example a tool still writing after its timeout)."""
+    if not out_pdf.exists():
+        return item.error or "no output.pdf"
+    if sha256_file(out_pdf) != item.artifacts.get("output_pdf"):
+        late = "output.pdf was written or changed after the run recorded it"
+        return f"{item.error}; {late}" if item.error else late
+    return None
 
 
 def _oracle_status(run_id: str) -> dict[str, dict[str, str]]:
@@ -32,12 +43,12 @@ def _oracle_status(run_id: str) -> dict[str, dict[str, str]]:
     return out
 
 
-def _release(workdir: Path):
-    """The tool's own release verdict from run_info.json, if it reported one."""
+def _release(workdir: Path, recorded_sha256: str | None = None):
+    """The tool's own release verdict from run_info.json, if it reported one when the run recorded it."""
     from ..schemas import RunInfo
 
     path = workdir / "run_info.json"
-    if not path.exists():
+    if not path.exists() or (recorded_sha256 is not None and sha256_file(path) != recorded_sha256):
         return None
     try:
         return RunInfo.model_validate(json.loads(path.read_text(encoding="utf-8"))).release
@@ -128,16 +139,20 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
         for item in sorted(items, key=lambda i: i.repeat):
             workdir = runs_root() / run_id / item.workdir / "out"
             out_pdf = workdir / "output.pdf"
-            if not out_pdf.exists():
-                reason = item.error or "no output.pdf"
+            reason = _no_output_reason(item, out_pdf)
+            if reason:
                 skipped.append({"doc_id": doc_id, "repeat": item.repeat, "reason": reason})
                 no_out = _no_output_rows(ident, doc_id, item.repeat, gt, policy, reason)
                 no_out["documents"][0].update(gt_used[doc_id])
                 for name, rows in no_out.items():
                     tables[name].extend(rows)
                 continue
-            artifacts, _, errors = load_artifacts(workdir, manifest)
+            artifacts, hashes, errors = load_artifacts(workdir, manifest)
             artifacts.pop("output_pdf", None)
+            for kind, digest in hashes.items():  # graded as recorded by the run, never as changed later
+                if kind in artifacts and digest != item.artifacts.get(kind):
+                    artifacts.pop(kind)
+                    errors[kind] = f"{kind} was written or changed after the run recorded it"
             per_rep.append((item, out_pdf.read_bytes(), artifacts, errors))
         unstable = None
         if len(per_rep) > 1:
@@ -170,7 +185,7 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
             doc_row.update(gt_used[doc_id])
             if item.error:
                 doc_row["candidate_error"] = item.error
-            release = _release(runs_root() / run_id / item.workdir / "out")
+            release = _release(runs_root() / run_id / item.workdir / "out", item.artifacts.get("run_info", ""))
             if release is not None:
                 doc_row["self_check.released"] = release.released
                 doc_row["self_check.checks_failed"] = ",".join(release.checks_failed)

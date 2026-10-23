@@ -14,6 +14,7 @@ import platform
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -113,6 +114,34 @@ def expand(template: str, values: dict[str, str]) -> str:
         return _ENV_PLACEHOLDER.sub(env, template).format(**values)
     except KeyError as exc:
         raise ValueError(f"unknown placeholder {{{exc.args[0]}}} in {template!r}") from None
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Stop a command and every process it started. On Windows the shell is all that Popen.kill
+    stops, and the tool would keep running beside the next document."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=60)
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)  # the command runs in a session of its own
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
+def run_command(cmd: str, stdout, stderr, env: dict, cwd: str, timeout: float) -> int:
+    """Run a candidate command through the shell. On a timeout (or Ctrl+C) the whole process tree
+    is stopped before the exception propagates, so no tool keeps writing after its item is recorded."""
+    extra = {} if os.name == "nt" else {"start_new_session": True}
+    proc = subprocess.Popen(cmd, shell=True, stdout=stdout, stderr=stderr, env=env, cwd=cwd, **extra)
+    try:
+        return proc.wait(timeout=timeout)
+    except BaseException:
+        _kill_tree(proc)
+        raise
 
 
 def _git_state() -> dict:
@@ -269,9 +298,7 @@ def run_candidate(
             t0 = time.time()
             try:
                 with open(work / "stdout.log", "wb") as so, open(work / "stderr.log", "wb") as se:
-                    proc = subprocess.run(cmd, shell=True, stdout=so, stderr=se, env=env, cwd=str(work),
-                                          timeout=manifest.timeout_s)
-                item.exit_code = proc.returncode
+                    item.exit_code = run_command(cmd, so, se, env, str(work), manifest.timeout_s)
             except subprocess.TimeoutExpired:
                 item.timed_out = True
                 item.error = f"timed out after {manifest.timeout_s}s"

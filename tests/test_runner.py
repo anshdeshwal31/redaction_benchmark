@@ -2,11 +2,13 @@
 compare, regression and candidate checks (PLAN.md phase 6 exit criterion)."""
 
 import ast
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -302,6 +304,40 @@ def test_an_env_value_cmd_would_change_stops_the_run_before_anything_runs(env, t
     assert not (env / "runs" / "pct").exists()
 
 
+# A tool that hands its work to a child process, as tools with worker pools do. The child writes the
+# output late; "spawned" shows the child was started before the time limit.
+SLOW_TOOL = """import pathlib, subprocess, sys
+child = "import shutil, sys, time; time.sleep(3); shutil.copyfile(sys.argv[1], sys.argv[2])"
+proc = subprocess.Popen([sys.executable, "-c", child, sys.argv[1], str(pathlib.Path(sys.argv[2]) / "output.pdf")])
+(pathlib.Path(sys.argv[2]) / "spawned").write_text("yes")
+proc.wait()
+"""
+
+
+def test_a_timed_out_tool_is_stopped_with_everything_it_started(env, tmp_path, monkeypatch):
+    script = tmp_path / "slow_tool.py"
+    script.write_text(SLOW_TOOL, encoding="utf-8")
+    monkeypatch.setenv("RB_TEST_SLOW_TOOL", str(script))
+    cand = tmp_path / "slow.yaml"
+    cand.write_text("schema: rb.candidate/0.1\nname: slow\nversion: '1'\n"
+                    "command: '{python} {env:RB_TEST_SLOW_TOOL} {input} {workdir}'\nprovides: [output_pdf]\n"
+                    "timeout_s: 2\n", encoding="utf-8")
+    run = run_candidate(cand, "synthetic@0.0.1", ROOT / "experiments" / "e2e.yaml", POLICY, run_id="slow")
+    item = run.items[0]
+    assert item.timed_out and item.error == "timed out after 2s" and not item.artifacts
+    work = env / "runs" / "slow" / item.workdir
+    if not (work / "out" / "spawned").exists():
+        pytest.skip("the tool did not start its child within the time limit on this machine")
+    time.sleep(4)
+    assert not (work / "out" / "output.pdf").exists()  # the child was stopped with the tool
+    # An output that appears after the run recorded the item is not graded as the tool's.
+    shutil.copyfile(work / "input.pdf", work / "out" / "output.pdf")
+    res = score_run("slow", POLICY, CFG)
+    assert {r[0] for r in must_rows(res)} == {"NO_OUTPUT"}
+    skipped = json.loads((res / "scoring.json").read_text(encoding="utf-8"))["skipped"]
+    assert skipped[0]["reason"] == "timed out after 2s; output.pdf was written or changed after the run recorded it"
+
+
 # -- the matter the tool is given ---------------------------------------------------------------------
 
 
@@ -324,3 +360,38 @@ def test_a_matter_that_differs_between_dataset_and_gt_is_reported(env, tmp_path)
     scoring = json.loads((res / "scoring.json").read_text(encoding="utf-8"))
     assert scoring["matter_mismatch"] == [{"doc_id": "syn-digital", "dataset": None, "gt": "MX"}]
     assert "syn-digital (dataset none, GT MX)" in build_report("matterless", res).read_text(encoding="utf-8")
+
+
+# -- graded as the run recorded them -------------------------------------------------------------------
+
+
+def test_stage_files_and_a_release_verdict_written_after_the_run_are_not_graded(env):
+    run = run_candidate(candidate(env, "reference"), "synthetic@0.0.1", ROOT / "experiments" / "e2e.yaml", POLICY,
+                        run_id="late")
+    out = env / "runs" / "late" / run.items[0].workdir / "out"
+    # After the run: the mentions are rewritten, and a release verdict appears in run_info.json.
+    mentions = json.loads((out / "mentions.json").read_text(encoding="utf-8"))
+    mentions["mentions"] = mentions["mentions"][:1]
+    (out / "mentions.json").write_text(json.dumps(mentions), encoding="utf-8")
+    info = json.loads((out / "run_info.json").read_text(encoding="utf-8"))
+    info["release"] = {"released": True, "checks_failed": []}
+    (out / "run_info.json").write_text(json.dumps(info), encoding="utf-8")
+
+    def scored():
+        res = score_run("late", POLICY, CFG)
+        errors = json.loads((res / "scores" / "syn-digital-r0.json").read_text(encoding="utf-8"))["invalid_artifacts"]
+        rows, cols = query(res, "SELECT * FROM documents WHERE must_mentions IS NOT NULL AND repeat = 0")
+        return errors, dict(zip(cols, rows[0]))
+
+    errors, doc = scored()
+    assert errors["mentions"] == "mentions was written or changed after the run recorded it"
+    assert not any(c.startswith("self_check") for c in doc)  # the late release verdict is not graded
+    # The same files, recorded by the run (as if the tool had written them in time), are graded.
+    path = env / "runs" / "late" / "run.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for kind, name in (("mentions", "mentions.json"), ("run_info", "run_info.json")):
+        data["items"][0]["artifacts"][kind] = hashlib.sha256((out / name).read_bytes()).hexdigest()
+    path.write_text(json.dumps(data), encoding="utf-8")
+    errors, doc = scored()
+    assert "mentions" not in errors and doc["self_check.released"] is True
+    assert doc["self_check.verdict"] == ("correct_release" if doc["clean_document"] else "unsafe_release")
