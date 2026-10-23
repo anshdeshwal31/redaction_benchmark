@@ -18,7 +18,13 @@ class EvalConfig(BaseModel):
 
     # eval-0.3: NOT_REPLACED verdict, stand-in detection for regions, searchable-text and
     # collateral pass marks, page size changes no longer an integrity problem.
-    version: str = "eval-0.3"
+    # eval-0.3.1 (2026-10-22): the pen strokes of a drawn signature or mark that are still in the file,
+    # under a box or a stand-in, are recoverable like glyph paths. A stroke survives only as the very
+    # same path; form rules and the glyphs of kept words inside its region are not counted. Results
+    # labelled eval-0.3 either ignored drawn strokes (scored before the check was added, early on
+    # 2026-10-22) or matched them by bounding box alone; rescore them. eval-0.4 stays reserved for the
+    # calibration fixes listed in docs/metrics.md.
+    version: str = "eval-0.3.1"
     dpi: float = Field(200, ge=150, le=600, description="Rendering resolution for pixel evidence. Calibrated "
                                                           "for 150-300 DPI; below ~120 DPI the character bands of "
                                                           "8 pt text are too coarse and produce false leaks")

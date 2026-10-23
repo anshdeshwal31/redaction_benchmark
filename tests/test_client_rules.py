@@ -1,7 +1,9 @@
-"""The client's decisions (policies/au-medicolegal-v1.yaml, eval-0.3).
+"""The client's decisions (policies/au-medicolegal-v1.yaml, eval-0.3.1).
 
 - Q7: hiding a required item instead of replacing it is NOT_REPLACED: not a leak, not a pass.
-- Q6: signatures and other marks count as replaced only when a stand-in is drawn in their place.
+- Q6: signatures and other marks count as replaced only when a stand-in is drawn in their place;
+  a drawn signature left in the file under a box or a stand-in is recoverable, and a new stand-in
+  is never taken for it.
 - Q11: kept words must stay searchable; a changed page size is accepted.
 - Q16: damaging more than 1% of a document's ordinary words fails it.
 - The tool's own safety check is graded against the evaluator's verdict.
@@ -11,10 +13,14 @@
   gives each person one fake across a matter, and each phone and Medicare number a fake of its own.
 """
 
+import dataclasses
+import io
 import json
+import math
 from functools import lru_cache
 from pathlib import Path
 
+import pikepdf
 import pymupdf
 import pytest
 from pydantic import ValidationError
@@ -183,6 +189,118 @@ def test_a_box_or_blank_over_a_signature_is_not_replaced(fill):
     out = _draw(mocked("digital", MockSpec("ref-true", method="true")),
                 lambda page: page.draw_rect(rect + (-2, -2, 2, 2), color=None, fill=fill))
     assert _signature_status(out) is MentionStatus.NOT_REPLACED
+
+
+def _signature(ev):
+    return next(m for m in ev.mentions if m.type == "SIGNATURE")
+
+
+@pytest.mark.parametrize("variant", ["digital", "vector", "cropbox"])
+def test_a_drawn_signature_left_under_a_box_is_recoverable(variant):
+    # Its pen strokes are still in the file, like glyph paths under an overlay box.
+    sig = _signature(evaluate(variant, mocked(variant, MockSpec("overlay", method="overlay"))))
+    assert sig.status is MentionStatus.LEAK_RECOVERABLE and "vector_paths" in sig.l2_sources
+
+
+def test_a_stand_in_drawn_over_a_signature_that_is_still_there_is_recoverable():
+    rect = _signature_rect()
+
+    def stand_in(page):
+        page.draw_rect(rect + (-2, -2, 2, 2), color=None, fill=(1, 1, 1))
+        page.draw_polyline([(rect.x0 + 4 + k * (rect.width - 8) / 24, rect.y0 + rect.height * (0.3 if k % 2 else 0.7))
+                            for k in range(25)], color=(0, 0, 0), width=1.2)
+
+    sig = _signature(evaluate("digital", _draw(fixture("digital").pdf, stand_in)))
+    assert sig.status is MentionStatus.LEAK_RECOVERABLE and "vector_paths" in sig.l2_sources
+
+
+def test_a_form_rule_inside_a_signature_region_is_not_a_surviving_stroke():
+    from benchmark.evaluate.layers import vector_survival
+    from benchmark.mocks.mock import _geoms
+
+    fx = fixture("digital")
+    rect = _signature_rect()
+    line = (pymupdf.Point(rect.x0 + 4, rect.y1 - 3), pymupdf.Point(rect.x1 - 4, rect.y1 - 3))
+    source = _draw(fx.pdf, lambda page: page.draw_line(*line, color=(0, 0, 0), width=0.8))
+    # The tool removes the pen strokes and keeps the line the signature was written on.
+    out = _draw(mocked("digital", MockSpec("ref-true", method="true")),
+                lambda page: page.draw_line(*line, color=(0, 0, 0), width=0.8))
+    region = fx.gt.page(0).regions[0].id
+    survival = vector_survival(pymupdf.open("pdf", source)[0], pymupdf.open("pdf", out)[0], _geoms(source)[0],
+                               fx.gt.page(0), set(), {region})
+    assert survival == {region: (1, 0)}  # the pen stroke counted and gone; the rule not counted
+
+
+def _scribble(box: pymupdf.Rect, n: int = 80) -> list[tuple[float, float]]:
+    """A looping line, unlike the fixture's zigzag signature, scaled to fill ``box`` exactly."""
+    raw = [(k / (n - 1), math.sin(2 * math.pi * 3.3 * k / (n - 1)) * math.cos(k / 9)) for k in range(n)]
+    us, vs = [u for u, _ in raw], [v for _, v in raw]
+    return [(box.x0 + (u - min(us)) / (max(us) - min(us)) * box.width,
+             box.y0 + (v - min(vs)) / (max(vs) - min(vs)) * box.height) for u, v in raw]
+
+
+def test_a_new_stand_in_drawn_to_the_original_signatures_size_counts_as_replaced():
+    # The pen stroke is gone. A different scribble scaled to its exact box shares its bounding box, but
+    # it is not the original stroke.
+    from benchmark.evaluate.layers import _path_key
+
+    stroke = next(d for d in pymupdf.open("pdf", fixture("digital").pdf)[0].get_drawings() if d["type"] == "s")
+
+    def stand_in(page):
+        page.draw_rect(_signature_rect() + (-2, -2, 2, 2), color=None, fill=(1, 1, 1))
+        page.draw_polyline(_scribble(stroke["rect"]), color=(0, 0, 0), width=1.6)
+
+    out = _draw(mocked("digital", MockSpec("ref-true", method="true")), stand_in)
+    assert _path_key(stroke) in {_path_key(d) for d in pymupdf.open("pdf", out)[0].get_drawings()}
+    sig = _signature(evaluate("digital", out))
+    assert sig.status is MentionStatus.SAFE_REPLACED and sig.vector_residual == 0.0
+
+
+@lru_cache(maxsize=None)
+def _signature_across_its_label():
+    """The vector fixture (glyphs drawn as paths) with its signature 30 pt lower, across the outlined
+    "Signed: Dr" line; the region is boxed as the fixture boxes it (the stroke's box, 2 pt around)."""
+    from benchmark.synth.fixtures import vector
+    from benchmark.synth.spec import medico_legal_spec
+
+    spec = medico_legal_spec()
+    sq = spec.squiggles[0][0]
+    moved = dataclasses.replace(sq, points=tuple((x, y + 30) for x, y in sq.points))
+    return vector(dataclasses.replace(spec, squiggles={0: [moved]}))
+
+
+def _without_the_signature_stroke(pdf: bytes) -> bytes:
+    """The vector fixture with only the signature's stroke taken out of the page content."""
+    with pikepdf.open(io.BytesIO(pdf)) as p:
+        page = p.pages[0]
+        lines = page.Contents.read_bytes().decode().split("\n")
+        kept = [ln for ln in lines if not ln.startswith("1.6 w 0 G")]
+        assert len(kept) == len(lines) - 1
+        page.Contents = p.make_stream("\n".join(kept).encode())
+        buf = io.BytesIO()
+        p.save(buf)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("stroke_left", [False, True])
+def test_a_signature_across_its_outlined_label_is_judged_by_its_own_stroke(stroke_left):
+    # The label's glyph paths inside the signature's box are kept text, not pen strokes: they stay in the
+    # file under the stand-in's paper without making the signature recoverable. The signature's own
+    # stroke still counts: left under the stand-in, it is recoverable.
+    from benchmark.mocks.mock import _stable, _stand_in_strokes
+
+    fx = _signature_across_its_label()
+    region = fx.gt.page(0).regions[0]
+    xs, ys = [q[0] for q in region.poly], [q[1] for q in region.poly]
+    doc = pymupdf.open("pdf", fx.pdf if stroke_left else _without_the_signature_stroke(fx.pdf))
+    doc[0].draw_rect(pymupdf.Rect(min(xs), min(ys), max(xs), max(ys)), color=None, fill=(1, 1, 1))
+    for line in _stand_in_strokes(region.poly, _stable("stand-in")):
+        doc[0].draw_polyline([tuple(q) for q in line.tolist()], color=(0, 0, 0), width=1.0)
+    sig = _signature(evaluate_output(fx.pdf, doc.tobytes(), fx.gt, V1, CFG))
+    if stroke_left:
+        assert sig.status is MentionStatus.LEAK_RECOVERABLE and "vector_paths" in sig.l2_sources
+    else:
+        assert sig.status is MentionStatus.SAFE_REPLACED and sig.vector_residual == 0.0
 
 
 # -- Q11: searchable text and page size -------------------------------------------------------------

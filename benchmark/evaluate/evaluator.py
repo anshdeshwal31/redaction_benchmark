@@ -258,6 +258,7 @@ def evaluate_output(
 
     must_or_may_words = {wid for wid, eff in res.words.items() if eff in (Effective.MUST, Effective.MAY)}
     mention_words = {wid for m in gt.mentions for seg in m.segments for wid in seg.words}
+    mention_regions = {rid for m in gt.mentions for seg in m.segments for rid in seg.regions}
     kept_words = {wid for wid, eff in res.words.items() if eff in (Effective.ORDINARY, Effective.MUST_NOT)}
     layer_cache: dict[int, np.ndarray] = {}
 
@@ -339,7 +340,8 @@ def evaluate_output(
             img[i] = unit_flags(pc, prim.informative, _flags_from(rec, n))
             img_lat[i] = {u: v and not img[i].get(u, False)
                           for u, v in unit_flags(pc, prim.informative, _flags_from(ltn, n)).items()}
-            vector[i] = vector_survival(src_doc[i], out_page, src_geoms[i], page, mention_words)
+            # Drawn signatures and marks too: their strokes can survive under a box like glyph paths.
+            vector[i] = vector_survival(src_doc[i], out_page, src_geoms[i], page, mention_words, mention_regions)
         else:
             texts[i], img[i], img_lat[i], vector[i] = {}, {}, {}, {}
 
@@ -416,8 +418,8 @@ def evaluate_output(
         f_text = hit / total_chars if total_chars else 0.0
         f_rev = max(f_rev_px, rev_hit / total_chars if total_chars else 0.0)
         vec_orig = vec_surv = 0
-        for (pg, wid) in req_text:
-            o_s = vector.get(pg, {}).get(wid)
+        for (pg, key) in [*req_text, *((seg.page, rid) for seg in m.segments for rid in seg.regions)]:
+            o_s = vector.get(pg, {}).get(key)
             if o_s:
                 vec_orig, vec_surv = vec_orig + o_s[0], vec_surv + o_s[1]
         f_vec = vec_surv / vec_orig if vec_orig else 0.0
