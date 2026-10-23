@@ -1,0 +1,67 @@
+# mlredact (redaction_tool_from_scratch_2), client profile: end to end and the four oracle modes.
+# The adapter is mlredact's own "bench" command; it hands over output.pdf even when its verification
+# holds the document back, and records that verdict in run_info.json.
+#
+# Environment:
+#   RB_MLREDACT_PYTHON  mlredact's interpreter (backend/.venv/Scripts/python on Windows,
+#                       backend/.venv/bin/python elsewhere).  Required.
+#   MLREDACT_CONFIG     on a machine without Tesseract, a config that disables OCR engine B, e.g.
+#                       backend/configs/runtime/laptop-no-engine-b.yaml (absolute path).  Results then
+#                       differ from runs with engine B.
+#   MLREDACT_SURROGATE_KEY  optional; without it the public development key is used (run_info notes).
+#
+# label_map: mlredact's entity types and the region kinds it reports as PII.
+schema: rb.candidate/0.1
+name: mlredact-client
+version_command: '{env:RB_MLREDACT_PYTHON} -m mlredact.cli.main bench-version'
+command: '{env:RB_MLREDACT_PYTHON} -m mlredact.cli.main bench --input {input} --workdir {workdir} --mode {mode} --inject-dir {inject_dir} --scope-id {matter} {seed}'
+provides: [output_pdf, text, mentions, entities, plan, pseudonyms, run_info]
+accepts_injection: [text, mentions, entities, regions]
+frame: display_pt
+seed_flag: --seed
+timeout_s: 14400
+label_map:
+  person: PERSON_NAME
+  date_of_birth: DATE
+  date_of_death: DATE
+  date: DATE
+  age: AGE
+  street_address: ADDRESS
+  locality: LOCATION
+  postcode: LOCATION
+  phone: PHONE
+  email: EMAIL
+  url: URL
+  ip_address: ID_OTHER
+  medicare: ID_GOVERNMENT
+  ihi: ID_GOVERNMENT
+  dva_file: ID_GOVERNMENT
+  crn: ID_GOVERNMENT
+  tfn: ID_GOVERNMENT
+  ndis: ID_GOVERNMENT
+  driver_licence: ID_GOVERNMENT
+  passport: ID_GOVERNMENT
+  hpi: ID_PROVIDER
+  provider_number: ID_PROVIDER
+  ahpra: ID_PROVIDER
+  clinical_id: ID_OTHER
+  reference: ID_CLAIM
+  court_file: ID_LEGAL_REF
+  bank_account: ID_FINANCIAL
+  card_number: ID_FINANCIAL
+  abn: ID_BUSINESS
+  acn: ID_BUSINESS
+  employee_id: ID_OTHER
+  vehicle_reg: ID_OTHER
+  vin: ID_OTHER
+  other_id: ID_OTHER
+  organisation: ORGANISATION
+  file_path: FILE_PATH
+  signature: SIGNATURE
+  face: IMAGE_PII
+  photo: IMAGE_PII
+  handwriting: HANDWRITTEN_MARK
+  barcode: ID_OTHER
+  logo: ORGANISATION
+  stamp: ORGANISATION
+  illegible: ID_OTHER
