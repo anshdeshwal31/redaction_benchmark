@@ -96,10 +96,11 @@
     }
    ],
    "default": null,
+   "description": "Shell command printing the version on its first line; placeholders: {python} {repo} {env:NAME}",
    "title": "Version Command"
   },
   "command": {
-   "description": "Template; placeholders: {input} {workdir} {mode} {inject} {seed}",
+   "description": "Template, run through the shell; placeholders: {input} {workdir} {mode} {inject_dir} {seed} {policy} {matter} {python} {repo} {env:NAME}. Paths and values are quoted by the runner and reach the tool unchanged, one argument each; on Windows (cmd.exe) a value containing a double quote, % or ! or a line break is refused instead. {env:NAME} is the value of an environment variable such as RB_MLREDACT_PYTHON and must be set",
    "title": "Command",
    "type": "string"
   },

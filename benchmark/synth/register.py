@@ -24,7 +24,10 @@ def register_synthetic(version: str, variants: list[str] | None = None) -> Datas
             path = Path(tmp) / f"{doc_id}.pdf"
             path.write_bytes(fx.pdf)
             sources[doc_id] = path
-            matters[doc_id] = fx.gt.matter or "MX"
+            # The tool is given the dataset's matter ({matter}) and the matter check groups by the GT's,
+            # so the two are kept equal: a fixture without a matter has none in the dataset either.
+            if fx.gt.matter:
+                matters[doc_id] = fx.gt.matter
             sheets[doc_id] = Datasheet(document_type=f"synthetic medico-legal ({name})",
                                        provenance="benchmark.synth (fictional)", authorisation="not required")
             write_model(fx.gt.model_copy(update={"doc_id": doc_id}), gt_dir / f"{doc_id}.gt.json")
@@ -64,7 +67,8 @@ def register_ladder(factor: str, version: str, source_dataset: str, docs: list[s
                 path = Path(tmp) / f"{doc_id}.pdf"
                 path.write_bytes(fx.pdf)
                 sources[doc_id] = path
-                matters[doc_id] = entry.matter or "MX"
+                if fx.gt.matter:  # the step's GT keeps its source GT's matter; the tool is given the same
+                    matters[doc_id] = fx.gt.matter
                 sheets[doc_id] = Datasheet(document_type=f"{factor} ladder step {value:g} of {entry.doc_id}",
                                            provenance=f"benchmark.synth.twins.degrade from {source_dataset}",
                                            authorisation=entry.datasheet.authorisation)

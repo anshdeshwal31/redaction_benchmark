@@ -45,9 +45,14 @@ class CandidateManifest(StrictModel):
     schema_id: Literal["rb.candidate/0.1"] = Field(CANDIDATE_SCHEMA, alias="schema")
     name: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]*$")
     version: str | None = None
-    version_command: str | None = None
+    version_command: str | None = Field(None, description="Shell command printing the version on its first line; "
+                                                          "placeholders: {python} {repo} {env:NAME}")
     command: str = Field(
-        description="Template; placeholders: {input} {workdir} {mode} {inject} {seed}",
+        description="Template, run through the shell; placeholders: {input} {workdir} {mode} {inject_dir} {seed} "
+                    "{policy} {matter} {python} {repo} {env:NAME}. Paths and values are quoted by the runner and "
+                    "reach the tool unchanged, one argument each; on Windows (cmd.exe) a value containing a double "
+                    "quote, % or ! or a line break is refused instead. {env:NAME} is the value of an environment "
+                    "variable such as RB_MLREDACT_PYTHON and must be set",
     )
     provides: list[ArtifactKind]
     accepts_injection: list[InjectionKind] = []

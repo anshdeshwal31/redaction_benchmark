@@ -1,19 +1,34 @@
 """End-to-end: mocks run as external processes through the runner, then scoring, report,
 compare, regression and candidate checks (PLAN.md phase 6 exit criterion)."""
 
+import ast
 import json
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
+from benchmark.dataset import document_pdf, ingest, load_manifest
 from benchmark.evaluate import EvalConfig
 from benchmark.report.compare import compare
 from benchmark.report.html import build_report
 from benchmark.report.regression import check, promote
 from benchmark.report.store import query
 from benchmark.runner.artifacts import load_artifacts
-from benchmark.runner.runner import load_candidate, run_candidate
+from benchmark.runner.runner import (
+    CandidateEnvError,
+    CommandValueError,
+    build_command,
+    load_candidate,
+    resolve_version,
+    run_candidate,
+)
 from benchmark.runner.scoring import score_run
+from benchmark.schemas import CandidateManifest, DocumentEntry
 from benchmark.synth.register import register_synthetic
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -187,3 +202,125 @@ def test_ladder_dataset_and_curves(env, tmp_path):
     assert sorted(v for v, _, _ in lad["dpi"]["mock-reference-raster"]) == [100.0, 150.0, 200.0, 300.0]
     page = build_board(["lad"], tmp_path / "b.html").read_text(encoding="utf-8")
     assert "Leak rate vs dpi" in page
+
+
+# -- command placeholders: {policy}, {matter}, {env:NAME} ---------------------------------------------
+
+
+def _manifest(command: str, version_command: str | None = None) -> CandidateManifest:
+    return CandidateManifest(name="tool", command=command, provides=["output_pdf"],
+                             **({"version_command": version_command} if version_command else {"version": "1"}))
+
+
+def test_policy_matter_and_env_placeholders_reach_the_tool_intact(tmp_path, monkeypatch):
+    # The path of this repository has spaces and an apostrophe ("Joel's projects"); so do these.
+    odd = tmp_path / "Joel's tools" / "a b"
+    odd.mkdir(parents=True)
+    policy = odd / "policy v1.yaml"
+    policy.write_text("x", encoding="utf-8")
+    monkeypatch.setenv("RB_TEST_TOOL_PYTHON", sys.executable)
+    monkeypatch.setenv("RB_TEST_TOOL_HOME", str(odd))
+    manifest = _manifest('{env:RB_TEST_TOOL_PYTHON} -c "import sys; print(chr(10).join(sys.argv[1:]))" '
+                         "{policy} {matter} {env:RB_TEST_TOOL_HOME} {matter}")
+    cmd = build_command(manifest, tmp_path / "input.pdf", tmp_path / "out", "e2e", None, 0, policy=policy,
+                        matter="Matter 7's")
+    out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.splitlines() == [str(policy.resolve()), "Matter 7's", str(odd), "Matter 7's"]
+    no_matter = build_command(manifest, tmp_path / "input.pdf", tmp_path / "out", "e2e", None, 0, policy=policy)
+    assert subprocess.run(no_matter, shell=True, capture_output=True, text=True,
+                          timeout=60).stdout.splitlines()[1] == ""  # "" when the document has no matter
+
+
+def test_version_command_expands_python_repo_and_env(monkeypatch):
+    monkeypatch.setenv("RB_TEST_TOOL_PYTHON", sys.executable)
+    assert resolve_version(_manifest("x", '{env:RB_TEST_TOOL_PYTHON} -c "print(4.2)"')) == "4.2"
+    assert resolve_version(_manifest("x", '{python} -c "import sys; print(sys.argv[1])" {repo}')) == str(ROOT)
+
+
+def test_an_unset_tool_variable_fails_before_anything_runs(env, tmp_path, monkeypatch):
+    monkeypatch.delenv("RB_NOT_SET_PYTHON", raising=False)
+    cand = tmp_path / "tool.yaml"
+    cand.write_text("schema: rb.candidate/0.1\nname: tool\nversion_command: '{env:RB_NOT_SET_PYTHON} -V'\n"
+                    "command: '{env:RB_NOT_SET_PYTHON} -m tool {input} {workdir}'\nprovides: [output_pdf]\n",
+                    encoding="utf-8")
+    with pytest.raises(CandidateEnvError, match="RB_NOT_SET_PYTHON is not set; set it to the tool's interpreter"):
+        run_candidate(cand, "synthetic@0.0.1", ROOT / "experiments" / "e2e.yaml", POLICY, run_id="unset")
+    assert not (env / "runs" / "unset").exists()
+    with pytest.raises(CandidateEnvError, match="invalid placeholder"):
+        build_command(_manifest("{env:rb_lower} {input}"), tmp_path / "in.pdf", tmp_path, "e2e", None, 0)
+
+
+# Commands run through cmd.exe on Windows, which acts on & | < > ^ ( ) outside quotes and expands %NAME%
+# even inside them.
+ARGV = '{python} -c "import sys; print(repr(sys.argv[1:]))" BEGIN {matter} END'
+CMD_UNSAFE = ["x%OS%y", 'a"b & c', "a!b", "a\nb"]
+
+
+def _argv(cmd: str) -> list[str]:
+    out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    return ast.literal_eval(out.stdout.strip())
+
+
+@pytest.mark.parametrize("value", ["M&A-07", "a^b", "a|b", "a<b>c", "(x) & y", "Smith & Jones", "trail\\"]
+                         + ([] if os.name == "nt" else CMD_UNSAFE))
+def test_shell_characters_in_a_value_reach_the_tool_unchanged(tmp_path, value):
+    cmd = build_command(_manifest(ARGV), tmp_path / "in.pdf", tmp_path, "e2e", None, 0, matter=value)
+    assert _argv(cmd) == ["BEGIN", value, "END"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="only cmd.exe changes these inside quotes")
+@pytest.mark.parametrize("value", CMD_UNSAFE)
+def test_a_value_cmd_would_change_is_refused_and_named(tmp_path, value):
+    with pytest.raises(CommandValueError, match=r"the matter id \(\{matter\}\) contains"):
+        build_command(_manifest(ARGV), tmp_path / "in.pdf", tmp_path, "e2e", None, 0, matter=value)
+
+
+def test_a_dataset_matter_is_a_plain_code(env):
+    entry = load_manifest("synthetic", "0.0.1").documents[0].model_dump(mode="json")
+    for ok in ("M1", "MX", "case-2024.07_b"):
+        assert DocumentEntry.model_validate(dict(entry, matter=ok)).matter == ok
+    for bad in ("M&A-07", "A^B", "x%OS%y", "Smith v Jones", "-M1"):
+        with pytest.raises(ValidationError):
+            DocumentEntry.model_validate(dict(entry, matter=bad))
+
+
+def test_an_env_value_set_with_quotes_is_used_without_them(monkeypatch):
+    monkeypatch.setenv("RB_TEST_TOOL_PYTHON", f'"{sys.executable}"')  # what cmd's `set X="..."` stores
+    assert resolve_version(_manifest("x", '{env:RB_TEST_TOOL_PYTHON} -c "print(4.2)"')) == "4.2"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="only cmd.exe changes these inside quotes")
+def test_an_env_value_cmd_would_change_stops_the_run_before_anything_runs(env, tmp_path, monkeypatch):
+    monkeypatch.setenv("RB_TEST_PCT_PYTHON", "C:\\R%OS%D\\python.exe")
+    cand = tmp_path / "pct.yaml"
+    cand.write_text("schema: rb.candidate/0.1\nname: pct\nversion: '1'\n"
+                    "command: '{env:RB_TEST_PCT_PYTHON} {input}'\nprovides: [output_pdf]\n", encoding="utf-8")
+    with pytest.raises(CandidateEnvError, match="RB_TEST_PCT_PYTHON contains '%'"):
+        run_candidate(cand, "synthetic@0.0.1", ROOT / "experiments" / "e2e.yaml", POLICY, run_id="pct")
+    assert not (env / "runs" / "pct").exists()
+
+
+# -- the matter the tool is given ---------------------------------------------------------------------
+
+
+def test_a_matter_that_differs_between_dataset_and_gt_is_reported(env, tmp_path):
+    src = tmp_path / "syn-digital.pdf"
+    shutil.copyfile(document_pdf(load_manifest("synthetic", "0.0.1").document("syn-digital")), src)
+    ingest("mattermix", "0.0.1", {"syn-digital": src}, split="synthetic", matters={"syn-digital": "M9"})
+    run_candidate(candidate(env, "reference"), "mattermix@0.0.1", ROOT / "experiments" / "e2e.yaml", POLICY,
+                  run_id="mattermix")
+    res = score_run("mattermix", POLICY, CFG)
+    scoring = json.loads((res / "scoring.json").read_text(encoding="utf-8"))
+    assert scoring["matter_mismatch"] == [{"doc_id": "syn-digital", "dataset": "M9", "gt": "MX"}]
+    assert "Matter ids differ between the dataset and the GT" in build_report("mattermix", res).read_text(
+        encoding="utf-8")
+    # Also when only one of them has a matter: the tool was told none, the GT groups the document with MX.
+    ingest("matterless", "0.0.1", {"syn-digital": src}, split="synthetic")
+    run_candidate(candidate(env, "reference"), "matterless@0.0.1", ROOT / "experiments" / "e2e.yaml", POLICY,
+                  run_id="matterless")
+    res = score_run("matterless", POLICY, CFG)
+    scoring = json.loads((res / "scoring.json").read_text(encoding="utf-8"))
+    assert scoring["matter_mismatch"] == [{"doc_id": "syn-digital", "dataset": None, "gt": "MX"}]
+    assert "syn-digital (dataset none, GT MX)" in build_report("matterless", res).read_text(encoding="utf-8")

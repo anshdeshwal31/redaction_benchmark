@@ -11,6 +11,7 @@ import datetime as _dt
 import hashlib
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -35,8 +36,83 @@ def runs_root() -> Path:
     return Path(os.environ.get("RB_RUNS_DIR", ROOT / "runs"))
 
 
-def _quote(s: str) -> str:
-    return subprocess.list2cmdline([s]) if os.name == "nt" else shlex.quote(s)
+class CommandValueError(ValueError):
+    """A value cannot be passed to a candidate command unchanged through the shell."""
+
+
+# Commands run through the shell: cmd.exe on Windows. Inside double quotes cmd.exe leaves & | < > ^ ( )
+# alone, but it still expands %NAME% (and !NAME! with delayed expansion), a double quote ends the quoting,
+# and a line break ends the command.
+_CMD_UNSAFE = re.compile(r'["%!\r\n]')
+
+
+def _quote(s: str, what: str = "a value") -> str:
+    """Quote one substituted value so the tool receives it unchanged as one argument. POSIX shells
+    take any value in single quotes; on Windows the value goes in double quotes, and a value cmd.exe
+    would still change is refused with an error naming it, never passed on altered."""
+    if os.name != "nt":
+        return shlex.quote(s)
+    bad = sorted(set(_CMD_UNSAFE.findall(s)))
+    if bad:
+        shown = ", ".join("a line break" if c in "\r\n" else repr(c) for c in bad)
+        raise CommandValueError(f"{what} contains {shown}, which cmd.exe would change or act on; "
+                                f"rename it or move it to a path without these characters: {s!r}")
+    # Backslashes right before the closing quote are doubled so the program's own argument parsing
+    # (the C runtime's rules) does not read the quote as part of the value.
+    return f'"{s}{chr(92) * (len(s) - len(s.rstrip(chr(92))))}"'
+
+
+# {env:NAME} reaches a tool's own interpreter or install (RB_MLREDACT_PYTHON, RB_REDACTOR_PYTHON, ...).
+_ENV_PLACEHOLDER = re.compile(r"\{env:([^{}]*)\}")
+_ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+class CandidateEnvError(RuntimeError):
+    """A candidate command names an environment variable that is not set, not a valid name, or holds
+    a value that cannot be passed through the shell."""
+
+
+def _env_value(name: str) -> str:
+    if not _ENV_NAME.match(name):
+        raise CandidateEnvError(f"invalid placeholder {{env:{name}}}: the variable name must match [A-Z][A-Z0-9_]*")
+    value = os.environ.get(name, "")
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        value = value[1:-1]  # cmd's `set X="C:\a b\python.exe"` keeps the quotes; they are not part of the path
+    if not value:
+        raise CandidateEnvError(f"environment variable {name} is not set; set it to the tool's interpreter or path")
+    return value
+
+
+def _env_quoted(name: str) -> str:
+    value = _env_value(name)
+    try:
+        return _quote(value, f"environment variable {name}")
+    except CommandValueError as exc:
+        raise CandidateEnvError(str(exc)) from None
+
+
+def check_env(manifest: CandidateManifest) -> None:
+    """Fail before anything runs when the command or version_command needs a variable that is not
+    set, or one whose value the shell would change."""
+    for template in (manifest.command, manifest.version_command):
+        for name in _ENV_PLACEHOLDER.findall(template or ""):
+            try:
+                _env_quoted(name)
+            except CandidateEnvError as exc:
+                raise CandidateEnvError(f"candidate {manifest.name}: {exc}") from None
+
+
+def expand(template: str, values: dict[str, str]) -> str:
+    """Fill a command template: {env:NAME} first (str.format cannot parse it), then the named
+    placeholders. Substituted paths and values arrive at the tool unchanged, one argument each:
+    ``_quote`` quotes them for the shell, or refuses a value the shell would change."""
+    def env(match: re.Match) -> str:
+        return _env_quoted(match.group(1)).replace("{", "{{").replace("}", "}}")
+
+    try:
+        return _ENV_PLACEHOLDER.sub(env, template).format(**values)
+    except KeyError as exc:
+        raise ValueError(f"unknown placeholder {{{exc.args[0]}}} in {template!r}") from None
 
 
 def _git_state() -> dict:
@@ -70,29 +146,38 @@ def load_experiment(path: str | Path) -> ExperimentSpec:
     return read_model(ExperimentSpec, path)
 
 
+def _common_values() -> dict[str, str]:
+    return {"python": _quote(sys.executable, "the benchmark's Python interpreter ({python})"),
+            "repo": _quote(str(ROOT), "the repository path ({repo})")}
+
+
 def resolve_version(manifest: CandidateManifest) -> str:
     if manifest.version:
         return manifest.version
-    out = subprocess.run(manifest.version_command, shell=True, capture_output=True, text=True, timeout=60)
+    cmd = expand(manifest.version_command, _common_values())
+    out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
     first = (out.stdout or "").strip().splitlines()
     if out.returncode != 0 or not first:
-        raise RuntimeError(f"version_command failed: {out.stderr.strip()}")
+        raise RuntimeError(f"version_command {manifest.version_command!r} failed (exit code {out.returncode}): "
+                           f"{(out.stderr or '').strip() or 'it printed no version'}")
     return first[0]
 
 
 def build_command(manifest: CandidateManifest, input_pdf: Path, out_dir: Path, mode: str,
-                  inject_dir: Path | None, seed: int) -> str:
+                  inject_dir: Path | None, seed: int, policy: str | Path | None = None,
+                  matter: str | None = None) -> str:
     seed_arg = f"{manifest.seed_flag} {seed}" if manifest.seed_flag else ""
     values = {
-        "python": _quote(sys.executable),
-        "repo": _quote(str(ROOT)),
-        "input": _quote(str(input_pdf)),
-        "workdir": _quote(str(out_dir)),
+        **_common_values(),
+        "input": _quote(str(input_pdf), "the input path ({input})"),
+        "workdir": _quote(str(out_dir), "the working directory ({workdir})"),
         "mode": mode,
-        "inject_dir": _quote(str(inject_dir)) if inject_dir else '""',
+        "inject_dir": _quote(str(inject_dir), "the inject directory ({inject_dir})") if inject_dir else '""',
         "seed": seed_arg,
+        "policy": _quote(str(Path(policy).resolve()), "the policy path ({policy})") if policy else '""',
+        "matter": _quote(matter, "the matter id ({matter})") if matter else '""',
     }
-    return manifest.command.format(**values)
+    return expand(manifest.command, values)
 
 
 def run_candidate(
@@ -104,6 +189,7 @@ def run_candidate(
     run_id: str | None = None,
 ) -> RunManifest:
     manifest = load_candidate(candidate_path)
+    check_env(manifest)
     exp = load_experiment(experiment_path)
     needed = MODE_INJECTS[exp.mode]
     missing = [k.value for k in needed if k not in manifest.accepts_injection]
@@ -115,10 +201,14 @@ def run_candidate(
     name, version = dataset.split("@")
     ds = load_manifest(name, version)
     policy = load_policy(policy_path)
-    cand_version = resolve_version(manifest)
     stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_id = run_id or f"{stamp}-{manifest.name}-{exp.name}"
     root = runs_root() / run_id
+    # Values shared by every item: refused here, before anything runs, if the shell would change them.
+    _common_values()
+    _quote(str(Path(policy_path).resolve()), "the policy path ({policy})")
+    _quote(str(root), "the run directory")
+    cand_version = resolve_version(manifest)
     if root.exists():
         raise FileExistsError(root)
     cand_file = Path(candidate_path).read_bytes()
@@ -169,7 +259,13 @@ def run_candidate(
                 inject_dir = work / "inject"
                 paths = materialise(needed, gt, policy, inject_dir)
                 item.injected = {k: sha256_file(p) for k, p in paths.items()}
-            cmd = build_command(manifest, input_pdf, out_dir, exp.mode, inject_dir, seed)
+            try:
+                cmd = build_command(manifest, input_pdf, out_dir, exp.mode, inject_dir, seed, policy=policy_path,
+                                    matter=doc.matter)
+            except CommandValueError as exc:
+                item.error = f"not run: {exc}"
+                run.items.append(item)
+                continue
             t0 = time.time()
             try:
                 with open(work / "stdout.log", "wb") as so, open(work / "stderr.log", "wb") as se:

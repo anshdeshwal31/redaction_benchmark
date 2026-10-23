@@ -108,6 +108,7 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
     tables: dict[str, list[dict]] = defaultdict(list)
     skipped = []
     gt_used: dict[str, dict] = {}
+    matter_mismatch = []  # the tool is given the dataset's matter; the matter check groups by the GT's
     # (matter, entity, component) -> doc id -> replacement values, from repeat 0
     matter_reps: dict[tuple[str, str, str], dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     by_doc: dict[str, list] = defaultdict(list)
@@ -120,6 +121,8 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
             skipped.append({"doc_id": doc_id, "reason": "no GT"})
             continue
         gt_used[doc_id] = _gt_info(gt)
+        if (entry.matter or None) != (gt.matter or None):  # also when only one of them has a matter
+            matter_mismatch.append({"doc_id": doc_id, "dataset": entry.matter, "gt": gt.matter})
         source = (runs_root() / run_id / items[0].workdir / "input.pdf").read_bytes()
         per_rep = []
         for item in sorted(items, key=lambda i: i.repeat):
@@ -182,6 +185,7 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
         "run_id": run_id, "eval_config": cfg.model_dump(mode="json"), "eval_digest": cfg.digest(),
         "policy": str(policy_path), "oracle_runs": oracle_runs or {}, "gt": gt_used,
         "matter_consistency": {"compared": len(tables["matters"]), "consistent": consistent},
+        "matter_mismatch": matter_mismatch,
         "skipped": skipped}, indent=1),
         encoding="utf-8")
     return out_root

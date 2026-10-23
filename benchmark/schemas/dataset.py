@@ -66,7 +66,9 @@ class DocumentEntry(StrictModel):
     size_bytes: int = Field(gt=0)
     page_count: int = Field(gt=0)
     split: Literal["dev", "test", "regression", "synthetic"]
-    matter: str | None = None
+    # A code such as "M1", never a name: it reaches candidate commands as {matter}, so it is kept
+    # free of characters a shell would interpret.
+    matter: str | None = Field(None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     gt_version: str | None = None
     pdf_version: str | None = None
     producer: str | None = None

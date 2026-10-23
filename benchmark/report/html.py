@@ -102,7 +102,7 @@ code{font-size:12px}.wrap{overflow-x:auto}
 {% if shareable %}<p class="mut">Shareable mode: GT spans are masked in all crops.</p>{% else %}<p class="bad">Sensitive: contains crops of real documents. Do not circulate; use <code>--shareable</code>.</p>{% endif %}
 {% if pending %}<p class="mut">Policy decisions pending (scored as MAY, neither rewarded nor penalised): {% for q, n in pending %}{{ q }} ({{ n }} mentions){% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}
 {% if skipped %}<p class="mut">Not scored: {% for s in skipped %}{{ s.doc_id }}{% if s.repeat is defined %}/r{{ s.repeat }}{% endif %} ({{ s.reason }}){% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
-
+{% if matter_mismatch %}<p class="mut">Matter ids differ between the dataset and the GT: {% for m in matter_mismatch %}{{ m.doc_id|e }} (dataset {{ (m.dataset or 'none')|e }}, GT {{ (m.gt or 'none')|e }}){% if not loop.last %}, {% endif %}{% endfor %}. The tool was given the dataset's; the same-fake-across-matter check groups documents by the GT's and leaves out a document whose GT has none.</p>{% endif %}
 <h2>Scorecard</h2>
 <div class="grid">{% for c in cards %}<div class="card"><span class="mut">{{ c.label }}</span><b class="{{ c.cls }}">{{ c.value }}</b><span class="mut">{{ c.note }}</span></div>{% endfor %}</div>
 
@@ -278,7 +278,8 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
                            components=comp_rows, docs=docs, breakdowns=breakdowns, funnel=funnel,
                            attribution=[(*k, v) for k, v in attribution.most_common()],
                            over=sorted(over.items()), determinism=determinism, gallery=gallery,
-                           pending=sorted(pending.items()), skipped=scoring.get("skipped", []))
+                           pending=sorted(pending.items()), skipped=scoring.get("skipped", []),
+                           matter_mismatch=scoring.get("matter_mismatch", []))
     out = results_dir / ("report-shareable.html" if shareable else "report.html")
     out.write_text(page, encoding="utf-8")
     return out

@@ -87,9 +87,16 @@ def _cmd_synth_dataset(args) -> int:
 
 
 def _cmd_run(args) -> int:
-    from .runner.runner import run_candidate, runs_root
+    import sys
 
-    run = run_candidate(args.candidate, args.dataset, args.experiment, args.policy, docs=args.docs, run_id=args.run_id)
+    from .runner.runner import CandidateEnvError, CommandValueError, run_candidate, runs_root
+
+    try:
+        run = run_candidate(args.candidate, args.dataset, args.experiment, args.policy, docs=args.docs,
+                            run_id=args.run_id)
+    except (CandidateEnvError, CommandValueError) as exc:
+        print(f"rb run: {exc}", file=sys.stderr)
+        return 2
     failed = [i for i in run.items if i.error or i.invalid_artifacts]
     print(f"run {run.run_id}: {len(run.items)} item(s), {len(failed)} with errors -> {runs_root() / run.run_id}")
     for i in failed:
