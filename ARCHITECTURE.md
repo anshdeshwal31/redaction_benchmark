@@ -1,7 +1,9 @@
 # Architecture
 
 How the redaction benchmark is put together and how work moves through it. This describes
-the code as of commit `d6a63ba` (2026-10-05).
+the code on branch `feat/benchmark-integration` as of 2026-10-22: commit `a6b0e8b` plus the
+follow-ups of that day (policy 1.1.0 and its departures, the `{policy}`, `{matter}` and
+`{env:NAME}` placeholders, the run's policy record, the ceiling mock).
 
 - For why it is designed this way, see [PLAN.md](PLAN.md).
 - For exact metric definitions and thresholds, see [docs/metrics.md](docs/metrics.md).
@@ -23,7 +25,10 @@ It is an **offline evaluation pipeline built around files**. Each tool runs as a
 program and writes files, and the benchmark scores those files against ground truth (GT).
 The score depends only on the dataset, the GT, the policy, the evaluation settings and the
 tool's files. So when the GT, the policy or a metric changes, a run can be scored again
-without running the tool again.
+without running the tool again. One caveat: a tool that follows the run's policy (it is passed
+as `{policy}`; every mock does) was given that policy, so scoring its run under another one
+judges it against rules it never saw. The run records its policy, and scoring warns when the two
+differ.
 
 These rules hold across the whole codebase:
 
@@ -40,7 +45,12 @@ These rules hold across the whole codebase:
   GT words it covers. This makes tools with different OCR, tokenisation and reading order
   directly comparable.
 - **A missing stage is N/A, never zero.** If a tool does not expose a stage, that stage is
-  not scored. Files a tool did not declare in its manifest are ignored.
+  not scored. Files a tool did not declare in its manifest are ignored, except `run_info.json`,
+  whose release verdict is always graded.
+- **The client's rules are the yardstick.** The default policy is the client's decisions
+  (`au-medicolegal-v1.yaml`, 1.1.0): every required item must be replaced by a realistic fake,
+  and hiding it without one is its own verdict, `NOT_REPLACED`. Where the policy departs from the
+  client's answers on purpose, every report says so.
 - **Confirmed and inferred causes are kept apart.** Every root cause is labelled
   *confirmed* (backed by the tool's files or an oracle run) or *inferred* (a black-box
   guess). The two are never counted together.
@@ -93,7 +103,7 @@ flowchart LR
 | Evaluate a tool | Benchmark owner | Run, score, report | Scorecard, failure funnel, gallery of failures |
 | Connect a new tool | Tool developer | Write manifest and adapter, validate the output files, run on the synthetic dataset | A working adapter and a first report on shareable data |
 | Annotate a real document | Annotators and owner | Ingest, draft, annotate, validate, measure agreement, self-check | Released GT for that document |
-| Find which stage fails | Benchmark owner | Normal (e2e) run plus oracle runs, score with the oracle results, build a board | The leak rate split by stage |
+| Find which stage fails | Benchmark owner | Normal (e2e) run plus oracle runs, score with the oracle results, build a board | The failure rate split by stage |
 | Track a tool across versions | Owner and developer | Compare two runs, promote failures to regression cases, check them | Fixed and regressed mentions, a regression check |
 | Test robustness | Benchmark owner | Build a degradation ladder, run, build a board | Leak rate against DPI, skew, JPEG quality, noise and blur |
 
@@ -121,23 +131,29 @@ flowchart LR
     oracle -.->|"oracle_text"| D
     oracle -.->|"oracle_mentions"| R
     oracle -.->|"oracle_entities"| L
-    oracle -.->|"oracle_regions"| A
+    oracle -.->|"oracle_regions"| P
 ```
 
 - Injected input contains only the mentions the policy marks MUST. It is what a perfect
-  upstream stage would hand over.
+  upstream stage would hand over. Each mode injects everything upstream of its stage:
+  `oracle_regions` gives text, mentions, entities and the plan, and every planned region carries
+  the policy's action (`replace` or `remove`) and names its mention. The tool still has to draw
+  the right kind of fake there, so that run tests replacement as well as application.
 - An experiment can inject another candidate's files instead of GT. This is *stage
   swapping*: for example, tool A's OCR output fed into tool B's detector. The swapped files
   are first converted to the standard frame and to the benchmark's labels.
-- Leak rates from oracle runs split the end-to-end (e2e) leak rate by subtraction. The
-  intermediate terms cancel out, so the parts add up to the e2e rate:
+- Failure rates from oracle runs split the end-to-end (e2e) failure rate by subtraction. The
+  failure rate counts leaks and required replacements that were not made, so a tool that hides
+  everything but replaces nothing shows its failures in the last stage. The intermediate terms
+  cancel out, so the parts add up to the e2e rate:
 
-  | Stage | Share of the leak rate |
+  | Stage | Share of the failure rate |
   |---|---|
   | Text acquisition | e2e − oracle_text |
   | Detection | oracle_text − oracle_mentions |
-  | Resolution and localization | oracle_mentions − oracle_regions |
-  | Application | oracle_regions |
+  | Resolution | oracle_mentions − oracle_entities |
+  | Localization | oracle_entities − oracle_regions |
+  | Application, including replacement | oracle_regions |
 
 - Tools that accept no injected input can still be analysed by stage through controlled
   inputs. Both work on any document that has GT:
@@ -155,7 +171,8 @@ combinations capability tiers T0–T4.)
 | + plan | Adds localization: how much of each mention's ink the planned regions cover, spill outside it, and diagnosis of coordinate bugs. Also compares the plan with what was actually applied |
 | + mentions | Adds detection: strict, exact-boundary, tolerant and partial matching, boundary classes, type confusion |
 | + text | Adds text acquisition: CER/WER, the same rates restricted to PII words, reading order |
-| + entities or pseudonyms | Adds entity resolution from the tool's own clusters, and its replacement mapping |
+| + entities | Adds entity resolution from the tool's own clusters (without them it is inferred from the fakes in the output), and lets a pseudonym inconsistency or collision be traced to a resolution split or merge |
+| + pseudonyms | Adds the tool's replacement mapping to the determinism check. The pseudonym checks themselves always read the fakes from the output |
 
 ## Running a candidate
 
@@ -167,57 +184,70 @@ sequenceDiagram
     participant Tool as Adapter command
     participant Dir as Run directory
 
-    Op->>Run: run candidate on dataset with experiment
+    Op->>Run: run candidate on dataset with experiment and policy
     Run->>Run: check required injections against what the tool accepts
     Note over Run: an unsupported experiment is refused and reported N/A
+    Run->>Run: check environment variables and shared values the command needs
+    Note over Run: an unset variable, or a value the shell would change, stops the run here
     loop every document and repeat
         Run->>Dir: copy source PDF as neutral input.pdf
         opt oracle or stage-swap experiment
             Run->>Inj: build stage inputs from GT or from another run
             Inj->>Dir: write injected text, mentions, entities or plan
         end
-        Run->>Tool: shell command with input, workdir, mode, inject dir, seed
+        Run->>Tool: shell command with input, workdir, mode, inject dir, seed, policy, matter
         Tool->>Dir: output.pdf, declared stage files, run_info
         Run->>Dir: validate declared artifacts and hash everything
         Note over Run,Dir: timeouts, exit codes and invalid artifacts are recorded, not fatal
     end
-    Run->>Dir: run manifest with versions, environment and hashes
+    Run->>Dir: run manifest with versions, environment, policy and hashes
 ```
 
 - **The manifest** declares:
-  - the command template;
+  - the command template, and a version or a command that prints it;
   - which files the tool provides;
   - which injected inputs it accepts;
   - how its labels map onto the benchmark's PII types;
   - its coordinate frame;
-  - its seed flag.
+  - its seed flag, its time limit and extra environment variables.
+- **The command contract.** Placeholders give the tool its input, working directory, mode,
+  inject directory and seed, the path of the run's policy (`{policy}`), the document's matter
+  (`{matter}`, so a tool can keep one fake per person across a matter) and the value of an
+  environment variable (`{env:NAME}`, which points at the tool's own interpreter). Every value
+  reaches the tool unchanged as one argument: the runner quotes it for the shell, and on Windows
+  refuses a value `cmd.exe` would still change (a double quote, `%`, `!` or a line break) instead
+  of passing it on altered. Matter ids are plain codes by schema.
 - **Each document and repeat gets its own working directory.** It holds only `input.pdf`
   and, in oracle modes, the injected files. GT is never placed there.
 - **Output files are validated against strict schemas.** A file is rejected, with a reason,
-  if it is malformed, if it uses a coordinate frame other than the declared one, or if it
-  uses a label missing from the label map. Rejected files are never repaired.
+  if it is malformed or uses a coordinate frame other than the declared one. Rejected files are
+  never repaired. Labels missing from the label map are reported as invalid too, but those
+  mentions are still scored, with no type.
 - **Failures are recorded, not fatal.** Timeouts, non-zero exit codes and invalid files are
-  recorded per item. A document with no output later scores as `NO_OUTPUT`, which counts as
-  unprotected in the strict view.
+  recorded per item. A timed-out command is stopped with every process it started. A document
+  with no output later scores as `NO_OUTPUT`, which counts as unprotected in the strict view;
+  so does an output written or changed after the run recorded the item. Any output the tool did
+  write in time is graded, whatever its exit code.
 - **The run manifest records:**
   - the benchmark version and git state;
   - the hash of the dataset manifest;
   - the candidate's version and the hash of its manifest;
   - the environment and package versions;
+  - the policy the run was made with: name, version, SHA-256 of the file and its path;
   - the SHA-256 of every input, injected file and output file.
 
 ## Scoring a run
 
 ```mermaid
 flowchart TD
-    s0(["Score a run"]) --> load["Load run, dataset, policy<br/>find GT by document id and source hash"]
-    load --> has{"output.pdf<br/>present?"}
+    s0(["Score a run"]) --> load["Load run, dataset, policy (the run's own<br/>unless another is given; a mismatch is flagged)<br/>find GT by document id and source hash"]
+    load --> has{"output.pdf present,<br/>as the run recorded it?"}
     has -->|"no"| noout["Every MUST mention is NO_OUTPUT<br/>root cause CANDIDATE_ERROR"]
     has -->|"yes"| reps{"several<br/>repeats?"}
     reps -->|"yes"| det["Determinism D0 to D3<br/>flip rate, unstable mentions"]
     reps -->|"no"| ev
     det --> ev["Output evaluation<br/>always"]
-    ev --> comp["Component metrics<br/>only for declared, valid artifacts"]
+    ev --> comp["Component metrics<br/>only for declared artifacts that pass<br/>their schema, as the run recorded them"]
     comp --> attr["Root-cause attribution"]
     oracles[("Scored oracle runs<br/>optional")] -.->|"per-mention counterfactuals"| attr
     attr --> rows["Rows keyed by run, document,<br/>repeat and GT ids"]
@@ -230,6 +260,13 @@ only for the stages the candidate exposed, and finally attributes a root cause t
 failure. If there are several repeats, it first compares them for determinism. Mentions
 whose verdict changes between repeats are tagged `NONDETERMINISTIC`.
 
+Across documents, scoring also grades the tool's own release verdict from `run_info.json`
+(correct release, correct hold, false alarm, unsafe release) and checks that each person keeps
+one fake across the documents of a matter (the `matters` table, grouped by the GT's matter).
+`scoring.json` records the scoring policy and its departures from the client's answers, the
+policy the run was made with, a warning when the two differ, and the GT version and hash used
+for each document.
+
 ### Output evaluation
 
 ```mermaid
@@ -238,7 +275,7 @@ flowchart TD
     out[/"output PDF"/]
     gt[("GT geometry and<br/>policy resolution")]
 
-    out --> integ["Integrity<br/>opens in both engines, page count,<br/>page size, needed repair?"]
+    out --> integ["Integrity<br/>opens in both engines, page count,<br/>needed repair? (a changed page<br/>size is only a warning)"]
     src --> render["Render source and output<br/>MuPDF and PDFium, with and<br/>without annotations"]
     out --> render
     render --> reg["Register output onto source"]
@@ -247,7 +284,7 @@ flowchart TD
     cells --> pix
     pix --> l1["L1 visible"]
     pix --> l3["L3 latent"]
-    out --> file["File forensics at GT locations<br/>text objects, image layers,<br/>glyph paths, earlier revisions"]
+    out --> file["File forensics at GT locations<br/>text objects, image layers, glyph<br/>and signature paths, earlier revisions"]
     file --> l2["L2 recoverable"]
     out --> surf["Document surfaces<br/>metadata, XMP, outline, annotations,<br/>form values, attachments, alt text"]
     l1 --> verdict["Mention verdicts"]
@@ -255,7 +292,7 @@ flowchart TD
     l3 --> verdict
     pix --> words["Word outcomes<br/>preserved, damaged, removed"]
     reg --> spill["Changed pixels outside the<br/>tolerance zone: spill, orphan regions"]
-    verdict --> summary["Document summary<br/>leak rates, collateral, protected damage,<br/>effective token precision and recall,<br/>clean-document flag"]
+    verdict --> summary["Document summary<br/>leak and failure rates, not replaced,<br/>collateral and searchable pass marks,<br/>protected damage, effective token<br/>precision and recall, clean-document flag"]
     words --> summary
     surf --> summary
     integ --> summary
@@ -277,7 +314,11 @@ flowchart TD
   - text objects, in any render mode, including invisible text;
   - each image layer on its own. This catches boxes drawn over an untouched scan, and
     layered scans (MRC) where only some layers were edited;
-  - glyph paths that survive under a covering shape;
+  - glyph paths, and the pen strokes of a drawn signature or mark, that survive under a
+    covering shape. A pen stroke survives only as the very same path, so a new stand-in drawn
+    to the original's size is not taken for it; straight rules and boxes inside a signature
+    region belong to the form, and the glyphs of kept words drawn there (a "Signed:" label) are
+    kept text, so neither is counted (eval-0.3.1);
   - earlier revisions saved incrementally in the file.
 - **Document-level findings.** The evaluator searches for terms from required mentions in
   metadata, XMP, outlines, annotation contents, form values, attachment names,
@@ -306,25 +347,37 @@ flowchart TD
     l2 -->|"yes"| LR["LEAK_RECOVERABLE"]
     l2 -->|"no"| lat{"more than 2%<br/>latent?"}
     lat -->|"yes"| LL["LEAK_LATENT"]
-    lat -->|"no"| rep{"new text or<br/>text-like ink?"}
+    lat -->|"no"| rep{"new text, text-like ink,<br/>or a drawn stand-in<br/>for a signature or image?"}
     rep -->|"yes"| SR["SAFE_REPLACED"]
-    rep -->|"no"| SRM["SAFE_REMOVED"]
+    rep -->|"no"| act{"policy requires<br/>a fake?"}
+    act -->|"yes"| NR["NOT_REPLACED<br/>hidden: not a leak, not a pass"]
+    act -->|"no"| SRM["SAFE_REMOVED"]
 ```
+
+A required mention whose run produced no output (or whose output appeared after the run
+recorded it) is `NO_OUTPUT`, assigned by scoring. The **leak rate** counts required mentions that
+are not hidden; the **failure rate**, the client's bar, also counts `NOT_REPLACED`.
 
 A document is **clean** when all of the following hold:
 
 - integrity checks pass;
-- no required mention is PARTIAL, LEAK_VISIBLE or LEAK_RECOVERABLE (a latent-only leak does
-  not count against this);
+- no required mention is PARTIAL, LEAK_VISIBLE, LEAK_RECOVERABLE or NOT_REPLACED (a
+  latent-only leak does not count against this);
 - there are no document-level findings;
 - no protected word is damaged;
-- every required mention was evaluated.
+- every required mention was evaluated;
+- at most 1% of its ordinary words (two or more letters or digits) are damaged or removed
+  (client Q16);
+- at least 95% of its kept words are found in the output's text layer at their place (client
+  Q11): an image-only output fails.
 
 ### Root-cause attribution
 
 ```mermaid
 flowchart TD
-    f["Required mention not safe"] --> t{"Text exposed and<br/>mention unrecognisable?"}
+    f["Required mention failing"] --> nr{"Hidden, but the<br/>policy required a fake?"}
+    nr -->|"yes"| NR["NOT_REPLACED<br/>at the REPLACEMENT stage"]
+    nr -->|"no"| t{"Text exposed and<br/>mention unrecognisable?"}
     t -->|"yes"| T["TEXT_MISSING or TEXT_CORRUPTED"]
     t -->|"no"| d{"Detection exposed and<br/>missed, cut short or mistyped?"}
     d -->|"yes"| D["DETECTION_MISS, ALIAS_PROPAGATION,<br/>BOUNDARY or TYPE"]
@@ -349,14 +402,17 @@ flowchart TD
   stage looks correct and yet perfect upstream input fixes the mention, the cause is
   `INTERACTION`: each stage works alone but the combination fails.
 - **Tags on safe mentions.** A mention can be safe and still carry tags: inconsistent or
-  colliding pseudonyms, an invalid replacement format, a gender mismatch, a surviving
-  original name part, or nondeterminism. If the tool's own entity clusters split or merged
-  that person, the pseudonym tag is replaced by a resolution failure.
+  colliding pseudonyms (a collision is one fake for two people with different names; one
+  person written two ways, or two people sharing a surname, may share one), an invalid
+  replacement format, a gender mismatch, a surviving original name part, or nondeterminism. If
+  the tool's own entity clusters split or merged that person, the pseudonym tag is replaced by
+  a resolution failure.
 - **Over-redaction causes.** Over-redacted words are attributed separately:
   - confirmed: a false-positive detection, or localization spill;
   - inferred: replacement text overflowing its space, or spill during application.
 - **The funnel** counts how many required mentions survive each stage: required →
-  recognised → detected → planned → visually safe → truly safe.
+  recognised → detected → planned → visually safe → truly safe (hidden) → replaced as required.
+- **A failed run** gives `CANDIDATE_ERROR` for every required mention of the document.
 
 ## Determinism
 
@@ -396,29 +452,55 @@ flowchart LR
 - **The self-check re-tests the thresholds on real documents.** It runs the fault-injecting
   mock tools on the newly annotated document and checks that the evaluator reaches the
   expected verdict for each fault. The thresholds were calibrated on synthetic documents,
-  so this is how they are checked against real layouts, scans and fonts.
-- **The policy is still a draft.** Rules that depend on open questions in PLAN.md §16 are
-  set to MAY, so undecided categories neither reward nor penalise a tool. Reports list them
-  separately.
+  so this is how they are checked against real layouts, scans and fonts. A check that breaks
+  is recorded as an error, named by its exception's class only, and the other checks and
+  documents still run.
+- **The policy is the client's.** The default, `au-medicolegal-v1.yaml` (1.1.0), encodes the
+  client's questionnaire answers; only quasi-identifiers the questionnaire did not ask about stay
+  MAY, neither rewarding nor penalising a tool. It departs from the answers in two places, each
+  recorded under `deviations` and shown in every report and board: the whole address is
+  replaced (Q4), because the project owner decided on 2026-10-22 that every tool replaces whole
+  addresses (a check of the rule-based address splits of GT 0.2 does not end it; only the owner
+  can), while a suburb or town mentioned on its own is still kept; and role words such as "the
+  claimant" are left as they are (Q10). The GT's LOCATION subtype decides keep or replace, so
+  `locality` is reserved for the locality part of an address and `rb gt validate` warns
+  otherwise. The draft policy (`au-medicolegal-v0.yaml`) stays for re-scoring old runs and for
+  the benchmark's own tests.
 
 ## Results and reporting
 
 - **Results tables.** Scoring writes tidy long-format tables: documents, mentions, words,
-  components, determinism and findings. They are keyed by run, document, repeat and GT ids.
-  A new question is answered with a new SQL group-by, not new code.
+  components, determinism, findings and matters (one fake per person across a matter). They are
+  keyed by run, document, repeat and GT ids. Document rows also carry the GT version and hash
+  and the grading of the tool's own release verdict (`self_check.*`). A new question is
+  answered with a new SQL group-by, not new code.
 - **Run report.** A static HTML page that works offline. It contains:
-  - a scorecard with document-level bootstrap confidence intervals and sample sizes (n);
+  - the policy the scores use and, in a marked section above the scorecard, its departures from
+    the client's answers; a warning when the tool was given another policy than the scores use;
+  - a scorecard with document-level bootstrap confidence intervals and sample sizes (n),
+    including the not-replaced and searchable rates;
   - component metrics and a per-document table;
   - breakdowns by PII type, document condition and page encoding;
   - the failure funnel and root causes;
   - determinism results;
   - a gallery of failures showing the original and output crops side by side.
 - **Board.** One page covering several runs:
-  - a scorecard (with no combined score);
+  - the departures of the runs' policies, each shown once; when the runs were scored under
+    different policies, the board says so and each departure names its runs;
+  - a warning for any run scored under another policy than its tool was given;
+  - a scorecard (with no combined score) with the policy of each row, the failure and
+    not-replaced rates, the same-fake-across-matter check and the counts of the tools' release
+    verdicts;
   - heatmaps by PII type, condition and encoding;
   - the mix of failure categories;
   - the per-stage split from oracle runs;
   - leak-rate curves along the degradation ladders.
+- **The ceiling.** `candidates/mock-reference-replace.yaml` runs a mock that does everything
+  the client's rules ask, under the run's policy: a fake of the right kind for every required
+  item (one fake per person across a matter, its own fake for every phone and Medicare number),
+  a drawn stand-in for every signature or image and a searchable text layer. It is clean on all
+  nine synthetic encodings and goes on the board next to the real tools as the best result
+  reachable.
 - **Compare.** Classifies each required mention present in both runs as fixed, regressed,
   persistent, or changed in failure category. It gives a paired bootstrap confidence
   interval on the change in leak rate.
@@ -437,8 +519,8 @@ from it.
 | Measurement OCR calibrated per condition on the unredacted originals | Not built. The OCR is used for GT drafts and to read replacement names in image-only outputs |
 | Output rendered at 300 DPI | The default is 200 DPI. The evaluator is valid between 150 and 300 DPI, and `EvalConfig` rejects anything below 150 |
 | Offline submission: teams drop their files into a standard layout | Not built. A directory can be validated against a manifest, but scoring expects a run made by the runner |
-| `oracle_entities` experiment | Supported by the contract, the runner and the mocks. No experiment spec ships with the repo, no test covers it, and the board's per-stage split ignores it |
-| Run record includes the GT version | Not recorded. GT is found by document id and source hash when scoring, and its version and hash are not saved in the run or scoring record |
+| `oracle_entities` experiment | The experiment spec exists (`experiments/oracle-entities.yaml`) and the board splits resolution from localization with it. Only the mode's input builder is tested (one client-rules test); no test runs the mode or that split |
+| Run record includes the GT and policy versions | The run records its policy (name, version, file hash). GT is found by document id and source hash when scoring; its version and hash are saved in `scoring.json` and the document rows, not in the run |
 | Invariance probes, minimal repro cases and synthetic look-alikes on promotion, threshold-sensitivity analysis, factorial (Shapley-style) attribution, Label Studio converters, reference OCR baseline, GT dispute queue, sealed test split | Not built |
 | Validators run in CI | The repository has no CI configuration. Tests and validators run locally |
 
@@ -550,7 +632,8 @@ flowchart LR
 - **Results store and views:** Parquet tables queried with DuckDB, plus the run report,
   board, compare and regression suite.
 - **Mocks:** stand-in redaction tools that read the GT and fail only in the ways they are
-  told to. They expose every stage and run either in-process or as external commands.
+  told to. They expose every stage, follow the policy they are given and run either in-process
+  or as external commands. One of them, the ceiling, does everything the client's rules ask.
 - **Synthetic data and controlled inputs:** fictional documents in nine encodings, clean
   twins, and degradation ladders.
 - **Self-check:** checks the evaluator's verdicts on any document that has GT.
@@ -576,6 +659,7 @@ erDiagram
     POLICY ||--|{ POLICY_RULE : "first match wins"
     POLICY_RULE ||--o{ GT_MENTION : "assigns requirement"
     RUN_MANIFEST ||--|{ RUN_ITEM : "document and repeat"
+    RUN_MANIFEST }o--o| POLICY : "made with: name, version, hash"
     RUN_ITEM }o--|| DOCUMENT_ENTRY : "input hash"
     RUN_ITEM ||--o{ ARTIFACT : "hashed outputs"
     RUN_ITEM ||--o{ RESULT_ROW : "scored into"
@@ -606,7 +690,9 @@ erDiagram
   its files, never guessed.
 - **GT-word space as the common currency** for scoring every stage.
 - **GT records facts; the policy decides requirements.** Undecided questions map to MAY.
-- **N/A rather than zero.** Undeclared files are ignored.
+- **N/A rather than zero.** Undeclared files are ignored (`run_info.json` excepted).
+- **Say what the scores follow.** The scoring policy, its departures from the client's answers
+  and any mismatch with the run's policy are shown wherever scores are.
 - **Confirmed and inferred causes are never combined.**
 - **Thresholds in one hashed configuration.** Changing a threshold means a new evaluation
   version.
@@ -621,7 +707,7 @@ erDiagram
 
 ### Relevant tests and coverage gaps
 
-About 271 tests (per the README; they take roughly 18 minutes). They cover:
+385 tests (they take roughly 15 to 20 minutes on the development laptop). They cover:
 
 - **Geometry:** property-based round trips across every pair of frames, all rotations and
   CropBox offsets, checked against renders from both engines.
@@ -645,7 +731,17 @@ About 271 tests (per the README; they take roughly 18 minutes). They cover:
   - missing stages are N/A.
 - **End to end:** mocks run as external processes through run, score, report, compare,
   regression and board. These tests also check neutral inputs, ignored undeclared files,
-  oracle and stage-swap runs, failed runs in the strict view, and ladder curves.
+  oracle and stage-swap runs, failed runs in the strict view, ladder curves, the command
+  placeholders and their quoting, a timed-out tool stopped with its child processes, the run's
+  policy record and the warning when scores use another policy than the tool was given (none for
+  a tool that never reads it), stage files and release verdicts written after the run left
+  ungraded, and boards that mix policies.
+- **The client's rules:** NOT_REPLACED, stand-ins for signatures (and drawn signatures left
+  under a box; a new stand-in drawn to the original's size, or a label the signature crosses,
+  is not taken for its strokes), the searchable and collateral pass marks, the policy's
+  departures, release verdicts, matter consistency, every self-check under the client's policy
+  on a fixture, and the ceiling mock clean on all nine encodings with one fake per person across
+  a matter (also through the mock adapter, and with any spelling of gender in GT).
 - **Controlled inputs:** twins and ladders keep the GT aligned, and verdicts survive
   degradation.
 - **GT tools:** validators, agreement, drafts, review sheets, and that the exported schemas
@@ -657,12 +753,19 @@ Gaps:
 
 - **Seed GT is AI-annotated and unreviewed.** All acceptance testing uses fictional
   synthetic documents, plus the self-check on the five seed documents. Their GT is
-  `gt_version 0.1-ai` (2,054 mentions, annotated by an AI model from the machine drafts) and
-  no human has reviewed it. The self-check has run on all five: three checks fail, all
-  evaluator calibration issues (see docs/metrics.md). Agreement between annotators has not
-  been measured.
-- **No real candidate tool** has been run.
-- **`oracle_entities`** is not tested.
+  `gt_version 0.2-ai` (2,086 mentions: the AI annotator's 0.1-ai, archived under
+  `data/gt-archive/`, with its addresses split by rule) and no human has reviewed it or the
+  splits. The self-check ran on all five under the draft policy and eval-0.2: three checks
+  fail, all evaluator calibration issues (see docs/metrics.md). It has not been run under the
+  client's policy. Agreement between annotators has not been measured.
+- **Real tools.** Tool 2 (`mlredact-client.yaml`) has been run end to end on the synthetic
+  dataset (2026-10-22; results kept outside the repository). No real tool has been run on the
+  seed documents, and tool 1 and the client's tool have no manifest yet.
+- **`oracle_entities`** is not tested: no test runs the mode or the board's split of
+  resolution from localization; only its input builder is used by one test.
+- **Fakes at the original's size.** Correct fakes written in the original's font, size and
+  place can be judged `PARTIAL` (an open calibration issue, kept visible by an expected-failure
+  test); the ceiling mock avoids it by drawing its fakes smaller.
 - **The CLI layer** is not tested directly; the tests call the functions behind it.
 - **Shareable reports:** the test checks only the file name. It does not check that PII is
   actually masked.
@@ -687,12 +790,20 @@ Gaps:
   variable by design. Nothing stops a tool that misbehaves from reading GT.
 - **GT selection.** The first GT file on the search path whose document id and source hash
   match is used. If two files match (for example, two annotators' copies), one is chosen
-  without warning, and its version is not recorded.
+  without warning; its version and hash are recorded with the scores.
 - **Small seed set.** There are five documents, one per encoding, so the effects of
   document conditions cannot be separated from the effects of the individual documents.
   Confidence intervals are wide, and the seed documents cannot serve as a blind test set.
-- **Draft policy.** Many categories are still MAY until the open questions are answered,
-  so headline numbers will change. Runs can be rescored rather than rerun.
+- **Policy departures.** Policy 1.1.0 replaces whole addresses: the project owner's rule for
+  every tool since 2026-10-22, which a check of the GT address splits does not end. Only the
+  owner can lift it; localities would then become kept items and scores would change. A tool
+  that never reads the policy (no `{policy}`, no oracle inputs) can be rescored under a new
+  policy rather than rerun; a tool or mock that follows `{policy}` should be run again, and
+  scoring warns when it is not.
+- **Windows command line.** Commands run through `cmd.exe`, so a value containing a double quote,
+  `%`, `!` or a line break cannot be passed unchanged and is refused (a matter id never contains
+  one, by schema). A timed-out command is stopped with `taskkill /T`, which reaches every process
+  still attached to the command's process tree.
 - **Sensitive outputs.** Results contain matched PII terms, and report galleries contain
   crops of real documents. Shareable mode masks only spans annotated in GT, so PII the
   annotators missed would still show.
@@ -702,23 +813,30 @@ Gaps:
 
 ### Facts vs assumptions
 
-**Facts.** Checked in the code at `d6a63ba`:
+**Facts.** Checked in the code on 2026-10-22:
 
-- The candidate manifests in the repo are all mocks.
+- The candidate manifests in the repo are the mocks, the ceiling mock and tool 2's
+  `mlredact-client.yaml`; tool 2 has been run on the synthetic dataset only, and no real tool on
+  the seed documents.
+- The default policy is `au-medicolegal-v1.yaml` 1.1.0 with two departures; every mock manifest
+  passes `{policy}`.
 - Leak verdicts use no OCR.
-- GT version is not recorded in run or scoring records.
-- `oracle_entities` has no experiment spec and no test.
+- The GT version and hash are recorded in scoring records; the run's policy, and whether it
+  reached the tool, are recorded in the run manifest.
+- `oracle_entities` has an experiment spec; no test runs the mode or the board's split of
+  resolution from localization.
 - There is no CI configuration.
 - Each output in a run with repeats is evaluated twice.
 - The shareable-report test checks only the file name.
 - Nothing beyond the clean working directory isolates GT from a candidate.
-- `data/gt/` holds `0.1-ai` GT for all five seed documents (annotator `claude-opus-5-5`),
-  and `data/review/<DOC>/selfcheck-<DOC>.json` holds the self-check results. Both are
-  git-ignored.
+- `data/gt/` holds `0.2-ai` GT for all five seed documents (2,086 mentions; annotator
+  `claude-opus-5-5`, then the rule-based address split), `data/gt-archive/0.1-ai/` the earlier
+  version, and `data/review/<DOC>/selfcheck-<DOC>.json` the self-check results under the draft
+  policy. All are git-ignored.
 
 **Taken from the docs and review files, not re-measured:**
 
-- the test count and runtime, and the OCR speed (README);
+- the test runtime and the OCR speed (README);
 - the calibration figures (docs/metrics.md);
 - the self-check results on the seed documents (read from the saved
   `data/review/<DOC>/selfcheck-<DOC>.json` files, not re-run).

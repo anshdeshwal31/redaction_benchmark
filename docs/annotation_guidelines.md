@@ -34,7 +34,8 @@ repeats in running headers and footers, tables and annexures.
 | Name inside a reference code (`Name:abc:123`) | Nested mention (`parent` = the reference) with a character range. |
 | Name inside an email address | Nested PERSON_NAME mention on the local part, parent = the EMAIL. |
 | Name inside an organisation name | Nested PERSON_NAME mention, parent = the ORGANISATION. |
-| Address (GT 0.2) | Two mentions of the same entity: the street line (unit, number, street, PO box) as ADDRESS, and the suburb, state, postcode and country as LOCATION with subtype `locality`. The client replaces street lines and keeps localities. `rb gt split-addresses` splits older GT and lists each split in `<DOC>.address-split.json` for review; check every split, including the ones it marked confident. |
+| Address (GT 0.2) | Two mentions of the same entity: the street line (unit, number, street, PO box) as ADDRESS, and the suburb, state, postcode and country as LOCATION with subtype `locality` and the condition `address_locality`. The client replaces street lines and keeps localities; policy 1.1.0 replaces the locality too (deviation `whole-address`), because the project owner decided on 2026-10-22 that every tool replaces whole addresses. Checking the splits does not change that; only the owner can. A suburb or town mentioned on its own is still kept. `rb gt split-addresses` splits older GT and lists each split in `<DOC>.address-split.json` for review; check every split, including the ones it marked confident. |
+| Place mentioned on its own (not part of an address) | LOCATION with subtype `suburb`, `city`, `region`, `state`, `country`, `postcode` or `place_of_declaration`, never `locality`: that subtype is only for the locality part of an address. The policy decides by subtype, so a place on its own labelled `locality` would be replaced instead of kept as the client asked; `rb gt validate` warns about it (`locality-outside-address`). |
 | Multi-box form address (unit / street / suburb / state / postcode) | Several segments per part; field labels are not part of either. |
 | Name split across lines, table cells or form rows | One mention, several segments. |
 | Signature, handwritten initials, photo or avatar | Region (`signature`, `initials`, `avatar`, ...) plus a region-only mention (SIGNATURE / HANDWRITTEN_MARK / IMAGE_PII) linked to the entity. |
@@ -73,9 +74,10 @@ Keywords), XMP, outline titles, and the source filename.
 1. `rb gt draft` creates a machine draft (text layer / measurement OCR / regex). Every
    pre-labelled mention is tagged `prelabel` and has no entity: confirm, fix or delete it.
 2. Complete words, mentions, entities, regions, classified spans and surface items.
-3. `rb gt validate <file> --source <pdf> --policy policies/au-medicolegal-v0.yaml` must show
+3. `rb gt validate <file> --source <pdf> --policy policies/au-medicolegal-v1.yaml` must show
    no errors; resolve or justify every warning (`unannotated-repeat`,
-   `homograph-unclassified`, `no-components`).
+   `homograph-unclassified`, `no-components`, `locality-outside-address`). The counts it prints
+   by requirement are those of the client's policy, which scores use.
 4. `rb gt review` renders overlay sheets; a second annotator checks them.
 5. At least 20% of pages are annotated twice independently (always including the hardest
    pages, e.g. narrative annexures), then adjudicated. Measure agreement with
@@ -90,9 +92,10 @@ Keywords), XMP, outline titles, and the source filename.
 7. Disputes raised by benchmark results are adjudicated by the benchmark owner; fixes
    create a new GT version with the reason recorded.
 
-The ground truth for the five seed documents (`gt_version 0.1-ai`) was made by an AI
-annotator (claude-opus-5-5) that corrected the machine drafts under these guidelines. Steps 4
-and 5 have not happened yet, so it is not a release.
+The ground truth for the five seed documents (`gt_version 0.2-ai`) was made by an AI
+annotator (claude-opus-5-5) that corrected the machine drafts under these guidelines (0.1-ai);
+its addresses were then split by `rb gt split-addresses`, and no person has checked the splits
+yet. Steps 4 and 5 have not happened yet, so it is not a release.
 
 Real-document GT contains PII. Keep it under `$RB_DATA_DIR/gt` (git-ignored). The client has
 allowed the five representative PDFs to be shared and published, but whether their GT and

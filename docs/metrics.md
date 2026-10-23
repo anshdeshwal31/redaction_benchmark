@@ -1,7 +1,13 @@
-# Metric definitions (evaluation version eval-0.3)
+# Metric definitions (evaluation version eval-0.3.1)
 
 All thresholds live in `benchmark/evaluate/config.py` (`EvalConfig`). Every result
 records the configuration digest; changing a threshold creates a new evaluation version.
+
+eval-0.3.1 (2026-10-22) differs from eval-0.3 in one place: the pen strokes of a drawn signature
+or mark that are still in the output file make it `LEAK_RECOVERABLE` (see the table below).
+Results labelled eval-0.3 either did not look at drawn strokes or, for a few hours on 2026-10-22,
+matched them by bounding box alone, which took a new stand-in drawn to the original's size for the
+original; rescore them.
 
 ## Units
 
@@ -43,11 +49,15 @@ correct replacements of an all-capitals surname (adjacent capitals with similar 
 Both were found by running the evaluator self-check on more layouts.
 
 Real documents. The self-check has been run on all five seed documents against the AI
-annotated GT (`gt_version 0.1-ai`, not yet human-reviewed). The earlier run on machine-drafted
-GT for the two born-digital documents is superseded. Under eval-0.1, blur on 9-pt bold running
-headers was judged `PARTIAL`; under eval-0.2 all blurred mentions are `LEAK_VISIBLE`.
+annotated GT (`gt_version 0.1-ai`, not yet human-reviewed), **under the draft policy
+(`au-medicolegal-v0`) and eval-0.2**, before the client's policy existed; it has not been re-run
+under the client's policy 1.1.0, GT 0.2-ai or eval-0.3.1, which require far more mentions (TRN 91,
+DPI 100, IME 230, PSY 275, NOC 497) and add the `replace-all` and `remove-only` checks. The
+earlier run on machine-drafted GT for the two born-digital documents is superseded. Under
+eval-0.1, blur on 9-pt bold running headers was judged `PARTIAL`; under eval-0.2 all blurred
+mentions are `LEAK_VISIBLE`.
 
-| Document | Encoding | Required mentions | Result |
+| Document | Encoding | Required mentions (draft policy) | Result (eval-0.2) |
 |---|---|---|---|
 | TRN | born-digital, text layer | 4 | 10 pass, 1 fail |
 | PSY | born-digital, text layer | 113 | 11 pass, 0 fail |
@@ -68,8 +78,15 @@ Open calibration issues found by these runs. The GT was not changed to make any 
   safe mention is a name nested in an email address, and the partial mock happens to black out
   exactly that half of the word. The verdict is correct; the check should be measured per word,
   or skip mentions whose character range is about half the word.
+- **Fakes in the original's font, size and place** (synthetic fixtures, eval-0.3 and 0.3.1). True
+  redaction that writes correct fakes left-aligned at the original size can be judged `PARTIAL`
+  when single bands of neighbouring fake glyphs correlate with the original's (for example "SA"
+  written over "QLD": the top bands of Q and L, 2 of 15 cells of the locality). Nothing of the
+  original is left; the run rule lets two such chance matches count. The ceiling mock draws its
+  fakes at 80% of the line height, centred, which avoids it; a test marked as an expected failure
+  (`test_true_redaction_with_fakes_at_the_original_size_is_clean`) keeps the gap visible.
 
-Changing the first two will need a new evaluation version (eval-0.3) and a rescore.
+Changing the evaluator for any of these needs a new evaluation version (eval-0.4) and a rescore.
 
 The evaluator is valid between 150 and 300 DPI (`EvalConfig.dpi` enforces ≥ 150).
 
@@ -82,12 +99,12 @@ it. For the other documents the evaluator checks in this order:
 | `NOT_EVALUATED` | output unreadable, the page's displayed aspect ratio changed, or nothing in the mention can be measured |
 | `LEAK_VISIBLE` | ≥ 90% of units visible in any render configuration (MuPDF, PDFium; with and without annotations if the output has any) |
 | `PARTIAL` | > 2% of units visible |
-| `LEAK_RECOVERABLE` | not visible, but the original survives in the file: text layer at the location (any render mode), an image layer on its own, glyph vector paths, or an earlier incremental revision |
+| `LEAK_RECOVERABLE` | not visible, but the original survives in the file: text layer at the location (any render mode), an image layer on its own, glyph vector paths, the pen strokes of a drawn signature or mark, or an earlier incremental revision. A pen stroke survives only when the output still has the very same path (the same items through the same points), so a new stand-in drawn to the original's size is not taken for it; straight rules and boxes in the region (the form) and the glyphs of kept words drawn as paths there (a "Signed:" label the signature crosses) are not counted. Not covered: a mark drawn only with horizontal and vertical lines or rectangles, which counts as form, and other kept curved art inside a region's box, which counts as its strokes |
 | `LEAK_LATENT` | > 2% of units latent (e.g. translucent box, MRC ghost) |
 | `SAFE_REPLACED` | none of the above, and the region carries new text-like ink or new text; for a region-only mention (signature, mark, avatar, photo), the region holds new picture content: grey-level spread ≥ 12 inside it, eroded by 2 px, where a box or blank paper is near-uniform |
 | `NOT_REPLACED` | none of the above, and the policy requires a replacement (`action: replace`): hidden, so not a leak, but not a pass either (client Q7) |
 | `SAFE_REMOVED` | none of the above, and the policy allows removal |
-| `NO_OUTPUT` | (assigned by scoring) the candidate produced no output for the document (failed run); counted as unprotected in the strict view, excluded from the completed-only view |
+| `NO_OUTPUT` | (assigned by scoring) the candidate produced no output for the document (failed run), or its `output.pdf` was written or changed after the run recorded it (a tool still writing after its timeout); counted as unprotected in the strict view, excluded from the completed-only view |
 
 Document-level findings (separate from mentions): distinctive terms of required mentions
 found in metadata, XMP, outlines, annotation contents, form values, attachment names,
@@ -119,7 +136,31 @@ clean).
 
 **Same fake across the matter** (client Q8): for every person replaced in two or more
 documents of one matter, each name component must get one replacement value in all of them
-(`matters` table, repeat 0).
+(`matters` table, repeat 0). Documents are grouped by the GT's matter; the tool is given the
+dataset's (`{matter}`), and a document where the two differ, or only one of them has a matter, is
+listed (`matter_mismatch` in `scoring.json`, and the run report). A document whose GT has no matter
+is left out of this check.
+
+**Departures from the client's answers.** A policy can depart from the client's answers on
+purpose; each departure is recorded under `deviations` in the policy file (question, the client's
+answer, what is applied instead, why, and the effect on scores). Scoring copies the policy id and
+its departures into `scoring.json`, and the run report and the comparison board show them in a
+marked section, "Departures from the client's answers", above the scorecard, so a score is never
+read as the client's own rules when it is not. Policy 1.1.0 has two: the whole address is replaced
+(Q4; its locality is MUST: the project owner decided on 2026-10-22 that every tool replaces whole
+addresses, and only the owner can lift it) and role words are left as they are (Q10). A board shows
+the policy each run was scored under; when its runs were scored under different policies it says so,
+and each departure names the runs it applies to.
+
+**The run's policy.** `run.json` records the policy a run was started with (name, version, SHA-256
+of the file) and whether it reached the tool (`given_to_tool`): it does when the tool's command
+passes `{policy}`, or when an oracle experiment injects mentions, entities or regions built from GT
+under it. `rb score` uses that policy unless `--policy` names another (or the file is gone, then the
+client's policy). When the tool was given the policy and the scoring policy differs in name, version
+or file content, `scoring.json` (`policy_warning`), the run report and the board say plainly that
+the tool was given one policy and is scored against another. A tool that never receives the policy
+(no `{policy}`, no oracle inputs, like tool 2) follows its own rules whatever policy the run was
+started with: it gets no warning and can be rescored under any policy without a new run.
 
 ## Over-redaction
 
@@ -141,7 +182,7 @@ redacted when < 50% of its characters remain visible.
 | Resolution | MUC, B³, CEAF-e, LEA, pairwise links, explicit false merges and false splits. Response clusters come from `entities.json`, or are inferred from shared pseudonym values (mentions carrying a given name or surname only) |
 | Localization | Ink coverage of each required mention by planned regions; full-coverage rate; spill area outside the tolerance zone (2 pt); collateral words; median signed edge offsets; per-page **transform diagnosis** by per-region vote among: aligned, oversized, DPI scale (72/96/150/200/300 ratios), y-flip, x-flip, unrotated frame, MediaBox origin, page offset ±1, translation |
 | Application | Share of each planned region whose pixels changed in the output (applied ≥ 50%, partial ≥ 10%, else not applied); plan-vs-change IoU per page |
-| Pseudonyms | Replacement read from the output text layer at each GT name component: survived originals, value and entity consistency, collisions, collision with a real name in the document, near-identical replacements, case style, honorific/gender mismatch. Replaced contact details and identifiers: Australian phone formats (mobile, landline, 13/1300/1800, +61), email syntax, email local part derived from the new name and not the old one, postcode inside the state's Australia Post ranges (only when a replaced address carries its state and postcode; GT 0.2 street lines do not, because the client keeps the locality), Medicare check digit. Image-only outputs need the measurement OCR |
+| Pseudonyms | Replacement read from the output text layer at each GT name component: survived originals, value and entity consistency, collisions (one fake for a name component of two people with different names; one person written two ways, or two people who share a name such as a married couple's surname, may share a fake), collision with a real name in the document, near-identical replacements, case style, honorific/gender mismatch. Replaced contact details and identifiers: Australian phone formats (mobile, landline, 13/1300/1800, +61), email syntax, email local part derived from the new name and not the old one, postcode inside the state's Australia Post ranges (on a replaced locality, where GT 0.2 keeps an address's state and postcode and which policy 1.1.0 requires to be replaced, and on a replaced address that was not split; a street line carries neither), Medicare check digit. Image-only outputs need the measurement OCR |
 | Determinism | D0 bytes; D1 canonical artifacts (mentions as GT-word sets, clusters as partitions, plan as rasterised masks, pseudonym map, tokens); D2 rendered pages exact / tolerant and change-mask IoU; D3 per-mention verdicts, flip rate and unstable mentions |
 
 ## Attribution
