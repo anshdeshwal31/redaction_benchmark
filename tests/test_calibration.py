@@ -7,6 +7,7 @@ or over it), correct same-font fakes in place are not taken for the original, an
 pinned so that a change to them shows.
 """
 
+import time
 from collections import Counter
 
 import pytest
@@ -14,6 +15,8 @@ import pytest
 from benchmark.evaluate import SAFE, EvalConfig, evaluate_output
 from benchmark.evaluate.cells import PageCells, unit_flags
 from benchmark.evaluate.render import RenderCache, RenderConfig, match_shapes
+from benchmark.mocks import run_mock
+from benchmark.mocks.named import NAMED
 from tests import calib
 
 pytestmark = pytest.mark.calibration
@@ -200,3 +203,53 @@ def test_kept_locality_moved_by_a_longer_fake_street_is_a_leak():
     ev = _evaluate(calib.locality_kept_redrawn())
     m = ev.mention("addr1-loc")
     assert (m.status.value, m.visible_residual) == ("LEAK_VISIBLE", 1.0)
+
+
+# -- substitute fonts: the restyled search (holes 3 and 9) ---------------------------------------------
+
+
+@pytest.mark.parametrize("font, minimum", [("tiro", 20), ("hebo", 20), ("cour", 16)])
+def test_original_retypeset_in_another_font_in_a_raster_is_a_leak(font, minimum):
+    # Hole 3, raster part: each MUST original re-typeset in place in Times, Helvetica-Bold or Courier and
+    # rasterised at 300 DPI (no text layer): the restyled search finds it, a displaced original. Courier
+    # is the documented limit (measured 16 of 20).
+    ev = _evaluate(calib.retypeset_in_font(font, raster_dpi=300))
+    assert len(_not_safe(ev)) >= minimum, _not_safe(ev)
+
+
+def test_lines_retypeset_in_a_substitute_font_are_moved():
+    # Hole 9 (W4): the lines with fakes re-typeset in Times: their kept words are MOVED (restyled), not
+    # collateral (the 22 Oct plan: 35 collateral and 8 protected words damaged).
+    t0 = time.time()
+    ev = _evaluate(calib.lines_in_font("tiro"))
+    print(f"W4 evaluated at 200 DPI in {time.time() - t0:.1f} s")
+    s = ev.summary
+    assert s["collateral_real_words"] == 0 and s["protected_damaged"] == [], (s["collateral_real_words"],
+                                                                              s["protected_damaged"])
+    assert any(w.restyled for w in ev.words if w.status.value == "MOVED")
+
+
+def _restyled(ev) -> list[str]:
+    return [w.word_id for w in ev.words if w.restyled]
+
+
+@pytest.mark.parametrize("case", ["P1-vector", "P1-r300", "P1-r150", "K1", "C1", "C3", "D1", "D2", "D3", "D4", "D5",
+                                  "E1", "E2", "E3", "E4", "E5", "E6", "E7", "M1", "reference-replace"])
+def test_restyled_search_finds_no_fake(case):
+    # Fakes in the original's font, different words, erased, boxed and partly boxed words and the traps
+    # with repeated words: the restyled search finds nothing. The margin over the original's own image
+    # rejects M1's altered protected date '(07.02.2026)' and C1's one-letter garbles.
+    if case.startswith("P1"):
+        out = calib.same_font_fakes({"vector": None, "r300": 300, "r150": 150}[case.split("-")[1]])
+    elif case == "K1":
+        out = calib.shared_redraw()
+    elif case == "M1":
+        out = calib.lookalikes()
+    elif case == "reference-replace":
+        b = calib.base()
+        out = run_mock(b.pdf, b.gt, calib.V1, NAMED["reference-replace"]).pdf
+    elif case in ("C3", "D3", "D5", "E2", "E5", "E7"):
+        out = calib.moved_case(case)
+    else:
+        out = calib.damage_case(case)
+    assert _restyled(_evaluate(out)) == []

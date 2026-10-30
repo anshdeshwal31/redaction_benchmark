@@ -132,3 +132,17 @@ def test_no_mock_moves_a_word(fixture):
         far.update({(c.name, w.word_id): (w.dx_pt, w.dy_pt) for w in ev.words
                     if w.status.value == "MOVED" and math.hypot(w.dx_pt, w.dy_pt) > 1.0})
     assert far == {}, far
+
+
+def test_words_retypeset_in_a_substitute_font_are_moved():
+    # Every other kept word re-typeset at its place in Times (a substitute font): the original's own image
+    # is not there, the GT text typeset in Times is. The words are MOVED (restyled), not collateral.
+    ws = calib.words()
+    some = calib.kept_real_words()[::2]
+    ev = _evaluate(calib.build(word_ops={w: ("font", "tiro", None) for w in some}))
+    words = _statuses(ev)
+    assert {w: words[w].status.value for w in some if words[w].status.value not in ("PRESERVED", "MOVED")} == {}
+    restyled = [w for w in some if words[w].restyled]
+    assert len(restyled) >= 0.8 * len(some), (len(restyled), len(some))
+    assert ev.summary["collateral_real_words"] == 0
+    assert all(ws[w].text for w in restyled)

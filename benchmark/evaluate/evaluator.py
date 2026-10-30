@@ -30,7 +30,7 @@ from ..schemas import Action, GTDocument, PiiType, PolicyProfile, Requirement
 from .cells import PageCells, Unit, unit_flags
 from .config import EvalConfig
 from .document import document_findings
-from .moved import Found, find_moved
+from .moved import Found, find_moved, find_restyled
 from .layers import (
     PageText,
     find_at_place,
@@ -553,6 +553,9 @@ def evaluate_output(
             inplace[w.id] = (ws.value, frac)
     requirement = {w.id: res.words.get(w.id, Effective.ORDINARY).value for p in gt.pages for w in p.words}
     found, anchors = find_moved(gt, requirement, pcs, prim_pairs, inplace, unreliable, cfg, strict_words)
+    # Words still damaged or removed, looked for re-typeset in a substitute font.
+    found.update(find_restyled(gt, requirement, prim_pairs, inplace, found, anchors, unreliable, cfg, src_doc,
+                               src_geoms, out_doc))
     # A MUST or MAY word found away from its place is a displaced original: its characters are visible,
     # and its ink is never taken for replacement ink.
     displaced: set[tuple[int, Unit]] = set()

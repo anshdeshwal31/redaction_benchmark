@@ -151,6 +151,19 @@ class EvalConfig(BaseModel):
     moved_side_strip: tuple[float, float] = Field((0.02, 0.15), description="The strips beside the found box, "
                                                                            "from and to this many word heights "
                                                                            "along the reading direction")
+    # words re-typeset in a substitute font (docs/metrics.md, "Moved words")
+    restyle_match: float = Field(0.90, description="Template score of a word's GT text typeset in a candidate font "
+                                                   "where it is found (the right font scores at least 0.90 for "
+                                                   "Times and Helvetica-Bold words; any negative at most 0.827; "
+                                                   "docs/metrics.md)")
+    restyle_margin: float = Field(0.05, description="...and by how much it must beat the original's own image at "
+                                                    "the same transform (the original font is the moved search's)")
+    restyle_chars: float = Field(0.8, description="Share of the typeset characters that must correlate with the "
+                                                  "output there")
+    restyle_fonts: tuple[str, ...] = Field(("embedded", "Helvetica", "Times-Roman", "Courier", "Helvetica-Bold"),
+                                           description="Candidate fonts, in order: 'embedded' is the output page's "
+                                                       "own embedded fonts (when it has a text layer), the others "
+                                                       "base-14 families")
 
     # -- file-level survival (L2) ---------------------------------------------------
     layer_ncc: float = Field(0.6, description="Image-layer cell correlates with the original content")

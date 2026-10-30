@@ -631,3 +631,50 @@ def overextended_span(control: bool = False) -> tuple[bytes, list[str]]:
         post.append(dict(page=1, rect=None, x=fx, y=by, size=size, fake=ctrl if control else fake))
         kept.append(k)
     return build(word_ops=ops, post=post, spec=b.spec, key="ext"), kept
+
+
+# -- substitute fonts (eval-0.4 S13) ------------------------------------------------------------------
+
+SIM = {'a': 'o', 'o': 'a', 'e': 'c', 'c': 'e', 'n': 'u', 'u': 'n', 'r': 'n', 'i': 'l', 'l': 'i', 't': 'f', 'f': 't',
+       'h': 'b', 'b': 'h', 'm': 'n', 's': 'e', 'd': 'b', 'p': 'q', 'g': 'q', 'y': 'v', 'v': 'y', 'k': 'h', 'w': 'v',
+       'x': 'k', 'j': 'i', 'q': 'g', 'z': 's', '0': '8', '8': '0', '1': '7', '7': '1', '2': '3', '3': '2', '4': '9',
+       '9': '4', '5': '6', '6': '5'}
+
+
+def one_letter(t: str) -> str:
+    """The word with its middle letter or digit swapped for a look-alike (the moved study's C1)."""
+    idx = [i for i, ch in enumerate(t) if ch.isalnum()]
+    if not idx:
+        return t
+    i = idx[len(idx) // 2]
+    ch = t[i]
+    rep = SIM.get(ch.lower(), "x")
+    return t[:i] + (rep.upper() if ch.isupper() else rep) + t[i + 1:]
+
+
+def lines_in_font(fontname: str = "tiro", raster_dpi=None) -> bytes:
+    """W4: every line with a MUST word re-typeset with the realistic fakes in a substitute font."""
+    fk = realistic_fakes()
+    ls = lines()
+    return build(line_ops={ln: ("redraw", {w: fk[w] for w in ls[ln] if w in fk}, 1.0, 0.0, 0.0, fontname, 1.0)
+                           for ln in must_lines()}, raster_dpi=raster_dpi)
+
+
+def damage_case(name: str) -> bytes:
+    """The moved study's other negatives: C1 a one-letter look-alike at every kept word's place, D1 every
+    other kept word erased, D2 boxed, D4 boxed over 70% of its width, E1/E3/E4/E6 the remaining traps."""
+    ws = words()
+    every_other = kept_words()[::2]
+    p0 = {w.text: w.id for w in base().gt.pages[0].words if w.line == "p0l6"}
+    p1 = {w.text: w.id for w in base().gt.pages[1].words if w.line == "p1l4"}
+    ops = {
+        "C1": lambda: {w: ("text", one_letter(ws[w].text)) for w in kept_real_words()},
+        "D1": lambda: {w: ("erase",) for w in every_other},
+        "D2": lambda: {w: ("box",) for w in every_other},
+        "D4": lambda: {w: ("partial", 0.7) for w in every_other},
+        "E1": lambda: {p1["further"]: ("text", "is"), p1["is"]: ("erase",)},
+        "E3": lambda: {p0["a"]: ("erase",)},
+        "E4": lambda: {p0["a"]: ("erase",), p0["and"]: ("text", "or")},
+        "E6": lambda: {"p0w35": ("erase",), "p0w33": ("erase",), "p0w34": ("erase",)},
+    }[name]()
+    return build(word_ops=ops)

@@ -25,6 +25,9 @@ is still a leak.
 
 A MUST or MAY word found is a displaced original: the evaluator counts its characters visible. Words are
 looked for on the primary render pair (the first render configuration) of each evaluated page.
+
+A word still DAMAGED or REMOVED is then looked for re-typeset in a substitute font (:func:`find_restyled`):
+its GT text typeset in the output's embedded fonts and the base-14 families.
 """
 
 from __future__ import annotations
@@ -437,3 +440,234 @@ def find_moved(gt: GTDocument, requirement: Mapping[str, str], pcs: Mapping[int,
             out[wid] = Found(i, c["s"], c["tx"], c["ty"], tuple(c["box"]), round(c["dx_pt"], 2), round(c["dy_pt"], 2),
                              round(c["score"], 4), round(float(c["v"]), 4), req)
     return out, anchors_by_page
+
+
+# -- the restyled search (words re-typeset in a substitute font) ---------------------------------------------
+
+# The base-14 families of restyle_fonts, as PyMuPDF draws them.
+BASE14 = {"Helvetica": "helv", "Times-Roman": "tiro", "Courier": "cour", "Helvetica-Bold": "hebo"}
+# Without a source text layer: font size and baseline from the GT box height h (Helvetica's proportions).
+SIZE_PER_HEIGHT = 1.374
+BASELINE_ABOVE_BOTTOM = 0.21
+
+
+@dataclass
+class _Font:
+    name: str  # a restyle_fonts name, or 'embedded:<base font>'
+    base14: str | None = None
+    buffer: bytes | None = None
+    glyphs: object = None  # pymupdf.Font of an embedded font, to know which characters it has
+
+    def has(self, text: str) -> bool:
+        if self.glyphs is None:
+            return True
+        return all(ch.isspace() or self.glyphs.has_glyph(ord(ch)) for ch in text)
+
+
+def restyle_fonts(out_doc, page_index: int, cfg: EvalConfig, cache: dict) -> list[_Font]:
+    """The fonts tried on one output page, in restyle_fonts order; 'embedded' stands for the fonts the
+    output page embeds when it has a text layer (each once, by content)."""
+    import pymupdf
+
+    out: list[_Font] = []
+    for name in cfg.restyle_fonts:
+        if name != "embedded":
+            if name in BASE14:
+                out.append(_Font(name, base14=BASE14[name]))
+            continue
+        if out_doc is None or page_index >= out_doc.page_count:
+            continue
+        page = out_doc[page_index]
+        if not page.get_text("text").strip():
+            continue
+        for xref, *_rest in page.get_fonts(full=True):
+            if xref not in cache:
+                cache[xref] = None
+                try:
+                    basename, ext, _, buf = out_doc.extract_font(xref)
+                    if buf and ext not in ("n/a", ""):
+                        cache[xref] = _Font(f"embedded:{basename}", buffer=buf,
+                                            glyphs=pymupdf.Font(fontbuffer=buf))
+                except Exception:  # noqa: BLE001 - a font PyMuPDF cannot load is not tried
+                    cache[xref] = None
+            f = cache[xref]
+            if f is not None and all(g.buffer != f.buffer for g in out if g.buffer is not None):
+                out.append(f)
+    return out
+
+
+def source_glyphs(src_page, geom) -> np.ndarray:
+    """Every character of the source page's text layer: (centre x, centre y, font size, baseline y),
+    display pt."""
+    from ..geometry import Frame
+
+    rows = []
+    for b in src_page.get_text("rawdict")["blocks"]:
+        for ln in b.get("lines", []):
+            for sp in ln["spans"]:
+                for ch in sp["chars"]:
+                    x0, y0, x1, y1 = ch["bbox"]
+                    rows.append(((x0 + x1) / 2, (y0 + y1) / 2, sp["size"], ch["origin"][0], ch["origin"][1]))
+    if not rows:
+        return np.zeros((0, 4))
+    a = np.array(rows, float)
+    c = geom.transform(a[:, 0:2], Frame.UNROTATED_PT, Frame.DISPLAY_PT)
+    base = geom.transform(a[:, 3:5], Frame.UNROTATED_PT, Frame.DISPLAY_PT)
+    return np.column_stack([c, a[:, 2], base[:, 1]])
+
+
+def size_and_baseline(glyphs: np.ndarray, w) -> tuple[float, float]:
+    """The source's font size and baseline at the word (its characters in the source text layer); without
+    them, from the GT box height."""
+    x0, y0, x1, y1 = bbox(as_poly(w.poly))
+    if len(glyphs):
+        m = (glyphs[:, 0] >= x0) & (glyphs[:, 0] <= x1) & (glyphs[:, 1] >= y0) & (glyphs[:, 1] <= y1)
+        if m.any():
+            return float(np.median(glyphs[m, 2])), float(np.median(glyphs[m, 3]))
+    h = y1 - y0
+    return h / SIZE_PER_HEIGHT, y1 - BASELINE_ABOVE_BOTTOM * h
+
+
+def render_text(text: str, font: _Font, size: float, x0: float, baseline: float, page_w: float, page_h: float,
+                cfg: EvalConfig) -> dict | None:
+    """The GT text typeset in ``font`` at the source's size and baseline on a blank page of the source's
+    size, as a template (the moved search's margins) with its word box and character boxes in pixels."""
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=page_w, height=page_h)
+    if font.buffer is not None:
+        page.insert_font(fontname="rbrestyle", fontbuffer=font.buffer)
+        page.insert_text((x0, baseline), text, fontname="rbrestyle", fontsize=size)
+    else:
+        page.insert_text((x0, baseline), text, fontname=font.base14, fontsize=size)
+    chars = [ch["bbox"] for b in page.get_text("rawdict")["blocks"] for ln in b.get("lines", [])
+             for sp in ln["spans"] for ch in sp["chars"] if not ch["c"].isspace()]
+    if not chars:
+        return None
+    sc = cfg.dpi / 72.0
+    wx0, wy0 = min(c[0] for c in chars), min(c[1] for c in chars)
+    wx1, wy1 = max(c[2] for c in chars), max(c[3] for c in chars)
+    h = wy1 - wy0
+    c0 = int(math.floor((wx0 - cfg.moved_margin_along * h) * sc))
+    r0 = int(math.floor((wy0 - cfg.moved_margin_across * h) * sc))
+    c1 = int(math.ceil((wx1 + cfg.moved_margin_along * h) * sc))
+    r1 = int(math.ceil((wy1 + cfg.moved_margin_across * h) * sc))
+    pix = page.get_pixmap(dpi=int(round(cfg.dpi)), clip=pymupdf.Rect(c0 / sc, r0 / sc, c1 / sc, r1 / sc),
+                          colorspace=pymupdf.csGRAY, alpha=False)
+    t = np.frombuffer(pix.samples, np.uint8).reshape(pix.h, pix.w).astype(np.float32)
+    if t.std() < 1.0:
+        return None
+    return dict(t=t, c0=c0, r0=r0, c1=c0 + t.shape[1], r1=r0 + t.shape[0],
+                box=(wx0 * sc, wy0 * sc, wx1 * sc, wy1 * sc), chars=[tuple(v * sc for v in c) for c in chars])
+
+
+def char_check(tpl: dict, x: np.ndarray, s: float, tx: float, ty: float, cfg: EvalConfig) -> float:
+    """Share of the rendered characters whose pixels correlate with the output at the transform
+    (|NCC| >= cell_ncc with output contrast >= cell_min_visible_std)."""
+    from .cells import bilinear
+
+    t, c0, r0 = tpl["t"], tpl["c0"], tpl["r0"]
+    ok = n = 0
+    for a0, b0, a1, b1 in tpl["chars"]:
+        cc, rr = np.meshgrid(np.arange(int(a0), int(math.ceil(a1))), np.arange(int(b0), int(math.ceil(b1))))
+        cc, rr = cc.ravel(), rr.ravel()
+        inside = (rr - r0 >= 0) & (rr - r0 < t.shape[0]) & (cc - c0 >= 0) & (cc - c0 < t.shape[1])
+        cc, rr = cc[inside], rr[inside]
+        if cc.size < 8:
+            continue
+        o = t[rr - r0, cc - c0].astype(np.float64)
+        if o.std() < cfg.cell_min_orig_std:
+            continue
+        n += 1
+        xs = bilinear(x, s * cc + tx, s * rr + ty)
+        if xs.std() < cfg.cell_min_visible_std:
+            continue
+        ncc = float(np.mean((o - o.mean()) * (xs - xs.mean())) / (o.std() * xs.std()))
+        ok += abs(ncc) >= cfg.cell_ncc
+    return ok / n if n else 0.0
+
+
+def own_image_score(o: np.ndarray, x: np.ndarray, w, cfg: EvalConfig, s: float, tx: float, ty: float) -> float:
+    """Score of the word's original image (the moved search's template) at the same transform, within
+    JITTER_PX: a restyled match must beat it by restyle_margin, so the original font is left to the
+    moved search and its stricter checks."""
+    tpl = template(o, w, cfg)
+    if tpl is None:
+        return -1.0
+    t = tpl["t"].astype(np.float32)
+    th, tw = max(3, int(round(t.shape[0] * s))), max(3, int(round(t.shape[1] * s)))
+    t = cv2.resize(t, (tw, th), interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_LINEAR)
+    r0, c0 = int(round(s * tpl["r0"] + ty)) - JITTER_PX, int(round(s * tpl["c0"] + tx)) - JITTER_PX
+    hh, ww = x.shape
+    if r0 < 0 or c0 < 0 or r0 + th + 2 * JITTER_PX > hh or c0 + tw + 2 * JITTER_PX > ww:
+        return -1.0
+    win = x[r0:r0 + th + 2 * JITTER_PX, c0:c0 + tw + 2 * JITTER_PX].astype(np.float32)
+    return float(np.nan_to_num(cv2.matchTemplate(win, t, cv2.TM_CCOEFF_NORMED), nan=-1.0).max())
+
+
+def find_restyled(gt: GTDocument, requirement: Mapping[str, str], pairs: Mapping[int, tuple[np.ndarray, np.ndarray]],
+                  inplace: Mapping[str, tuple[str, float | None]], found: Mapping[str, Found],
+                  anchors_by_page: Mapping[int, dict], unreliable: set[int], cfg: EvalConfig, src_doc, src_geoms,
+                  out_doc) -> dict[str, Found]:
+    """Words still DAMAGED or REMOVED after :func:`find_moved` found re-typeset in a substitute font.
+
+    The GT text is typeset in each font of :func:`restyle_fonts` at the source's size and baseline and
+    looked for like a moved word (same window, scales and anchors, two positions per scale). A position
+    counts when it scores at least restyle_match, beats the original's own image at the same transform
+    by restyle_margin, has at least restyle_chars of its characters correlating with the output, and,
+    for a word that is not MUST, is a whole word. Horizontal words only. Assigned best score first,
+    never over an anchor or a box already taken."""
+    out: dict[str, Found] = {}
+    font_cache: dict = {}
+    for page in gt.pages:
+        i = page.index
+        if i in unreliable or i not in pairs:
+            continue
+        o, x = pairs[i]
+        anchors = anchors_by_page.get(i, {})
+        taken = list(anchors.values()) + [f.box for f in found.values() if f.page == i]
+        words = [w for w in page.words if w.id not in found
+                 and inplace.get(w.id, ("",))[0] in ("DAMAGED", "REMOVED")
+                 and any(ch.isalnum() for ch in w.text) and not _vertical(w.angle)]
+        if not words:
+            continue
+        fonts = restyle_fonts(out_doc, i, cfg, font_cache)
+        glyphs = source_glyphs(src_doc[i], src_geoms[i]) if src_doc is not None and i < src_doc.page_count \
+            else np.zeros((0, 4))
+        lines = page_lines(page)
+        paper = _paper(x)
+        best: dict[str, dict] = {}
+        for w in words:
+            lo, hi = gap(w, lines, anchors, cfg)
+            size, base = size_and_baseline(glyphs, w)
+            gx0 = bbox(as_poly(w.poly))[0]
+            hpt = word_frame(w)[0]
+            req = requirement.get(w.id, "ORDINARY")
+            for font in fonts:
+                if not font.has(w.text):
+                    continue
+                tpl = render_text(w.text, font, size, gx0, base, page.width_pt, page.height_pt, cfg)
+                if tpl is None:
+                    continue
+                tpl.update(hpt=hpt, ang=w.angle, vertical=False)
+                for c in candidates(o, x, w, cfg, lo, hi, taken, tpl=tpl, n_keep=2):
+                    if c["score"] < cfg.restyle_match:
+                        continue
+                    if c["score"] < own_image_score(o, x, w, cfg, c["s"], c["tx"], c["ty"]) + cfg.restyle_margin:
+                        continue
+                    v = char_check(tpl, x, c["s"], c["tx"], c["ty"], cfg)
+                    if v < cfg.restyle_chars:
+                        continue
+                    if req != "MUST" and inky_beside(x, c["box"], False, cfg, paper):
+                        continue
+                    if w.id not in best or c["score"] > best[w.id]["score"]:
+                        best[w.id] = dict(c, v=v, font=font.name)
+        for wid, c in sorted(best.items(), key=lambda kv: -kv[1]["score"]):
+            if any(overlap(c["box"], b) > cfg.moved_overlap or overlap(b, c["box"]) > cfg.moved_overlap for b in taken):
+                continue
+            taken.append(c["box"])
+            out[wid] = Found(i, c["s"], c["tx"], c["ty"], tuple(c["box"]), round(c["dx_pt"], 2), round(c["dy_pt"], 2),
+                             round(c["score"], 4), round(float(c["v"]), 4), requirement.get(wid, "ORDINARY"),
+                             restyled=True, font=c["font"])
+    return out
