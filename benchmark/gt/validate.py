@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import string
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,8 +11,19 @@ from pathlib import Path
 import numpy as np
 
 from ..geometry import area, as_poly
-from ..schemas import GTDocument, NameComponent, PiiType
-from .address_split import ADDRESS_LOCALITY, LOCALITY_SUBTYPE, PLACE_SUBTYPES
+from ..schemas import GTDocument, GTMention, NameComponent, PiiType
+from .address_split import (ADDRESS_LOCALITY, LOCALITY_SUBTYPE, PLACE_SUBTYPES, address_roles, address_unit_mentions,
+                            read_end, unit_words)
+
+# A place written with its postcode stays a place on its own only right after a label or phrase naming
+# its kind (owner ruling 2 of 2026-10-22); every other one is the locality of an address.
+PLACE_KINDS = "birth, injury, accident or incident, declaration"
+PLACE_KIND_WORDS = {"birth", "born", "birthplace", "injury", "injuries", "injured", "accident", "incident",
+                    "declaration", "declared"}
+_MONTHS = {"january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+           "november", "december", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov",
+           "dec"}
+_PLACE_KIND_WINDOW = 3  # words before the place on its line, dates not counted ('Date of accident: 12 June 2023,')
 
 
 @dataclass(frozen=True)
@@ -149,6 +161,8 @@ def validate_gt(gt: GTDocument, source_pdf: str | Path | None = None) -> list[Is
             if end not in entities:
                 err("unknown-entity", f"relation {rel.type} references missing entity {end}")
 
+    issues.extend(_address_issues(gt))
+
     # -- annotation-quality heuristics ---------------------------------------
     covered = {wid for m in gt.mentions for seg in m.segments for wid in seg.words}
     covered |= {wid for m in gt.mentions for wid in m.optional_words}
@@ -191,6 +205,101 @@ def validate_gt(gt: GTDocument, source_pdf: str | Path | None = None) -> list[Is
     # -- cross-check against the source PDF ------------------------------------
     if source_pdf is not None:
         issues.extend(_check_source(gt, Path(source_pdf)))
+    return issues
+
+
+def _bare(text: str) -> str:
+    return text.strip(string.punctuation + "‘’“”").casefold()
+
+
+def _address_issues(gt: GTDocument) -> list[Issue]:
+    """Review aids for address parts and places on their own (owner rulings 2 and 3 of 2026-10-22)."""
+    issues: list[Issue] = []
+    reading = {p.index: sorted(p.words, key=lambda w: w.order) for p in gt.pages}
+    at = {w.id: (page, k) for page, ws in reading.items() for k, w in enumerate(ws)}
+
+    def ends(m: GTMention) -> tuple[str | None, str | None]:
+        wids = [wid for seg in m.segments for wid in seg.words if wid in at]
+        return (wids[0], wids[-1]) if wids else (None, None)
+
+    def after_place_kind(wid: str) -> bool:
+        """A label or phrase naming the place's kind within a few words before it on its line, or on
+        the line above it in reading order."""
+        page, k = at[wid]
+        ws = reading[page]
+        j, counted = k - 1, 0
+        while j >= 0 and ws[j].line == ws[k].line and counted < _PLACE_KIND_WINDOW:
+            word = _bare(ws[j].text)
+            if word in PLACE_KIND_WORDS:
+                return True
+            counted += not (any(ch.isdigit() for ch in word) or word in _MONTHS)
+            j -= 1
+        j = k - 1
+        while j >= 0 and ws[j].line == ws[k].line:
+            j -= 1
+        above = ws[j].line if j >= 0 else None
+        while j >= 0 and ws[j].line == above:
+            if _bare(ws[j].text) in PLACE_KIND_WORDS:
+                return True
+            j -= 1
+        return False
+
+    def line_box(page: int, line: str | None) -> np.ndarray:
+        pts = np.vstack([as_poly(w.poly) for w in reading[page] if w.line == line])
+        return np.concatenate([pts.min(axis=0), pts.max(axis=0)])
+
+    def right_after_or_below(street: GTMention, place: GTMention) -> bool:
+        last, first = ends(street)[1], ends(place)[0]
+        if last is None or first is None or at[last][0] != at[first][0]:
+            return False
+        page, (ka, kb) = at[last][0], (at[last][1], at[first][1])
+        if kb == ka + 1:
+            return True
+        ws = reading[page]
+        if kb > 0 and ws[kb - 1].line == ws[kb].line:  # the place does not start its line
+            return False
+        s, p = line_box(page, ws[ka].line), line_box(page, ws[kb].line)
+        height = s[3] - s[1]
+        return s[1] < p[1] and p[1] - s[3] <= 1.5 * height and min(s[2], p[2]) > max(s[0], p[0])
+
+    for street, locality in address_unit_mentions(gt):
+        if street is None or locality is not None or "address_street_line" not in street.conditions:
+            continue
+        if any(wid not in at for seg in street.segments for wid in seg.words):
+            continue  # an unknown word, reported as an error
+        kinds = {r.role for r in address_roles(unit_words(gt, street, None))}
+        if kinds and (kinds <= {"dx", "dx_number", "dx_exchange"} or kinds <= {"box_kind", "box_number", "box_extra"}):
+            continue  # a DX line, or a box line with no place
+        issues.append(Issue("warning", "street-line-without-locality",
+                            f"mention {street.id}: a street line (condition address_street_line) with no locality "
+                            f"'{street.id}-loc' of the same entity; the place written with it is its locality "
+                            f"(LOCATION/{LOCALITY_SUBTYPE}, condition {ADDRESS_LOCALITY}), or drop the condition when "
+                            f"no place is written with it. A place right after a label or phrase naming {PLACE_KINDS} "
+                            "stays a place on its own only when no street line comes with it"))
+
+    words = gt.word_index()
+    streets = [m for m in gt.mentions if m.type is PiiType.ADDRESS and m.entity is not None]
+    for m in gt.mentions:
+        if m.type is not PiiType.LOCATION or m.subtype not in PLACE_SUBTYPES:
+            continue
+        first = ends(m)[0]
+        texts = [words[wid][1].text[seg.char_start:seg.char_end] if seg.char_start is not None else words[wid][1].text
+                 for seg in m.segments for wid in seg.words if wid in words]
+        end = read_end(texts)
+        if first is not None and end.state and end.postcode and not after_place_kind(first):
+            issues.append(Issue("warning", "place-with-postcode-not-after-place-kind",
+                                f"mention {m.id}: a place written with a state and postcode is the locality of an "
+                                f"address (LOCATION/{LOCALITY_SUBTYPE}, condition {ADDRESS_LOCALITY}) unless a label "
+                                f"or phrase naming {PLACE_KINDS} comes right before it; check its subtype "
+                                f"'{m.subtype}'"))
+        for street in streets:
+            if street.entity == m.entity and right_after_or_below(street, m):
+                issues.append(Issue("warning", "place-after-street-line",
+                                    f"mention {m.id}: a place right after or below the street line {street.id} of the "
+                                    f"same entity is that address's locality (LOCATION/{LOCALITY_SUBTYPE} "
+                                    f"'{street.id}-loc', condition {ADDRESS_LOCALITY}); a label or phrase naming "
+                                    f"{PLACE_KINDS} keeps only a place with no street line"))
+                break
     return issues
 
 

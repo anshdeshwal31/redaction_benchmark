@@ -5,13 +5,23 @@ import pytest
 from pydantic import ValidationError
 
 from benchmark.gt import Effective, load_policy, resolve, validate_gt
+from benchmark.gt.address_split import PLACE_SUBTYPES
 from benchmark.schemas import (
     EXPORTED,
     CandidateManifest,
+    EntityKind,
     GTDocument,
+    GTEntity,
+    GTMention,
+    GTPage,
+    GTWord,
     MentionsArtifact,
+    PiiType,
     PlanArtifact,
     Requirement,
+    Role,
+    Segment,
+    WordSource,
 )
 from benchmark.synth import digital
 
@@ -101,3 +111,97 @@ def test_exported_json_schemas_are_current():
         path = ROOT / "schemas" / filename
         assert path.exists(), f"run `rb schemas export` ({filename} missing)"
         assert json.loads(path.read_text(encoding="utf-8")) == model.model_json_schema(by_alias=True), filename
+
+
+# -- addresses and places on their own (owner rulings 2 and 3 of 2026-10-22) ----------------------
+
+PLACE_CODES = {"street-line-without-locality", "place-with-postcode-not-after-place-kind", "place-after-street-line"}
+
+
+def _gt(lines: list[str], mentions: list[tuple]) -> GTDocument:
+    """A fictional one-page GT: one line id per entry of ``lines``, 20 pt apart, and ``mentions`` as
+    (id, type, subtype, entity, conditions, line index, first word, last word)."""
+    words = []
+    for li, line in enumerate(lines):
+        x = 72.0
+        for wi, text in enumerate(line.split()):
+            w = 6.0 * len(text)
+            words.append(GTWord(id=f"w{li}_{wi}", text=text, poly=[(x, 100 + 20 * li), (x + w, 100 + 20 * li),
+                                                                     (x + w, 110 + 20 * li), (x, 110 + 20 * li)],
+                                order=len(words), line=f"l{li}", source=WordSource.TEXT_LAYER))
+            x += w + 4.0
+    out = []
+    for mid, kind, subtype, entity, conditions, li, a, b in mentions:
+        wids = [f"w{li}_{k}" for k in range(a, b + 1)]
+        out.append(GTMention(id=mid, type=kind, subtype=subtype, entity=entity, conditions=conditions,
+                             text=" ".join(lines[li].split()[a:b + 1]), segments=[Segment(page=0, words=wids)]))
+    return GTDocument(doc_id="d", source_sha256="0" * 64, gt_version="0.2", mentions=out,
+                      pages=[GTPage(index=0, width_pt=595, height_pt=842, words=words)],
+                      entities=[GTEntity(id="E1", kind=EntityKind.PERSON, role=Role.CLAIMANT)])
+
+
+def _place_issues(gt: GTDocument) -> dict[str, str]:
+    return {i.code: i.message for i in validate_gt(gt) if i.code in PLACE_CODES}
+
+
+@pytest.mark.parametrize("lines, place, warns", [
+    (["Place of birth: Penrith NSW 2750"], ("place_of_birth", 0, 3, 5), False),
+    (["Penrith NSW 2750"], ("place_of_birth", 0, 0, 2), True),
+    (["Date of accident: 12 June 2023, Penrith NSW 2750"], ("place_of_accident", 0, 6, 8), False),
+    (["Injured 12 June, Penrith NSW 2750"], ("place_of_injury", 0, 3, 5), False),
+    (["Place of incident:", "Kingswood NSW 2747"], ("place_of_incident", 1, 0, 2), False),
+    (["She resides in Penrith NSW 2750."], ("suburb", 0, 3, 5), True),
+    (["She resides in Penrith."], ("suburb", 0, 3, 3), False),  # no state or postcode
+    (["Declared at Penrith NSW 2750 on 3 May 2024"], ("place_of_declaration", 0, 2, 4), False),
+])
+def test_a_place_with_a_postcode_needs_a_place_kind_label(lines, place, warns):
+    subtype, li, a, b = place
+    gt = _gt(lines, [("p1", PiiType.LOCATION, subtype, None, [], li, a, b)])
+    issues = _place_issues(gt)
+    assert ("place-with-postcode-not-after-place-kind" in issues) is warns
+    if warns:
+        assert "birth, injury, accident or incident, declaration" in issues["place-with-postcode-not-after-place-kind"]
+
+
+def test_a_street_line_needs_its_locality():
+    lines = ["12 Smith Street, Penrith NSW 2750"]
+    street = ("a1", PiiType.ADDRESS, "residential", "E1", ["address_street_line"], 0, 0, 2)
+    issues = _place_issues(_gt(lines, [street]))
+    assert set(issues) == {"street-line-without-locality"}
+    assert "birth, injury, accident or incident, declaration" in issues["street-line-without-locality"]
+    loc = ("a1-loc", PiiType.LOCATION, "locality", "E1", ["address_locality"], 0, 3, 5)
+    assert _place_issues(_gt(lines, [street, loc])) == {}
+    # A DX line and a box line with no place stand alone.
+    for text, last in (("DX 1234 Sydney", 2), ("Locked Bag 7", 2)):
+        assert _place_issues(_gt([text], [("a1", PiiType.ADDRESS, "postal", "E1", ["address_street_line"],
+                                           0, 0, last)])) == {}
+
+
+def test_a_place_right_after_or_below_a_street_line_of_its_entity_is_flagged():
+    street = ("a1", PiiType.ADDRESS, "residential", "E1", [], 0, 0, 2)
+    for lines, place in ((["12 Smith Street, Penrith NSW 2750"], (0, 3, 5)),
+                         (["12 Smith Street", "Penrith NSW 2750"], (1, 0, 2))):
+        li, a, b = place
+        issues = _place_issues(_gt(lines, [street, ("p1", PiiType.LOCATION, "suburb", "E1", [], li, a, b)]))
+        assert "place-after-street-line" in issues
+        assert "birth, injury, accident or incident, declaration" in issues["place-after-street-line"]
+        issues = _place_issues(_gt(lines, [street, ("p1", PiiType.LOCATION, "suburb", None, [], li, a, b)]))
+        assert "place-after-street-line" not in issues  # not the same entity
+    # A labelled place on the next line is not right after the street line.
+    lines = ["12 Smith Street, Penrith NSW 2750", "Place of birth: Parramatta NSW 2150"]
+    gt = _gt(lines, [("a1", PiiType.ADDRESS, "residential", "E1", ["address_street_line"], 0, 0, 2),
+                     ("a1-loc", PiiType.LOCATION, "locality", "E1", ["address_locality"], 0, 3, 5),
+                     ("p1", PiiType.LOCATION, "place_of_birth", "E1", [], 1, 3, 5)])
+    assert _place_issues(gt) == {}
+
+
+def test_place_kind_and_street_subtypes_are_known_place_subtypes():
+    assert {"place_of_birth", "place_of_injury", "place_of_accident", "place_of_incident", "street"} <= \
+        set(PLACE_SUBTYPES)
+    gt = _gt(["Place of birth: Penrith NSW 2750", "She walks along Smith Street"],
+             [("p1", PiiType.LOCATION, "place_of_birth", None, [], 0, 3, 5),
+              ("p2", PiiType.LOCATION, "street", None, [], 1, 3, 4)])
+    assert [i for i in validate_gt(gt) if i.severity == "warning" and i.code != "orphan-entity"] == []
+    labelled = gt.model_copy(update={"mentions": [gt.mentions[0].model_copy(update={"subtype": "locality"})]})
+    message = next(i.message for i in validate_gt(labelled) if i.code == "locality-outside-address")
+    assert "place_of_birth" in message and "street" in message

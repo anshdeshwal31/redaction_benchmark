@@ -6,8 +6,9 @@ ADDRESS fact becomes two mentions of the same entity:
 - the street line (unit, number, street, PO box), still ``ADDRESS`` with its subtype;
 - the locality (suburb, state, postcode, country), ``LOCATION`` with subtype ``locality`` and the
   condition ``address_locality``. That subtype is reserved for this part of an address: a place
-  mentioned on its own takes ``suburb``, ``city``, ``region``, ``state``, ``country``, ``postcode`` or
-  ``place_of_declaration`` (``rb gt validate`` warns otherwise). Policy 1.1.0 and later replace the
+  mentioned on its own takes one of ``PLACE_SUBTYPES`` (``rb gt validate`` warns otherwise), such as
+  ``suburb``, ``place_of_birth`` after a label naming the place's kind, or ``street`` for a street
+  named in running text with no house number. Policy 1.1.0 and later replace the
   locality too (deviation ``whole-address``): the project owner decided on 2026-10-22 that tools 1
   and 2 replace whole addresses, and the scores hold every tool scored under the policy to that rule.
   A check of the splits does not end that; only the owner can.
@@ -73,7 +74,11 @@ POSTCODE = re.compile(r"^\d{4}$")
 GLUED = re.compile(r"^(n\.?s\.?w|vic|qld|tas|s\.?a|w\.?a|n\.?t|a\.?c\.?t)\.?(\d{4})$")  # 'NSW2750', 'N.S.W.2750'
 LOCALITY_SUBTYPE = "locality"
 ADDRESS_LOCALITY = "address_locality"  # condition of the locality part of a split address
-PLACE_SUBTYPES = ("suburb", "city", "region", "state", "country", "postcode", "place_of_declaration")
+# Subtypes of a place on its own. The place kinds name a place written right after a label or phrase
+# naming birth, injury, accident or incident, declaration (owner ruling 2): the place stays, postcode
+# included. 'street' is a street named in running text with no house number (owner ruling 3).
+PLACE_SUBTYPES = ("suburb", "city", "region", "state", "country", "postcode", "place_of_declaration", "place_of_birth",
+                  "place_of_injury", "place_of_accident", "place_of_incident", "street")
 
 # Australia Post postcode ranges by state/territory.
 POSTCODES = {
