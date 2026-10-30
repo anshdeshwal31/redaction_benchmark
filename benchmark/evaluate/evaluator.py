@@ -30,6 +30,7 @@ from ..schemas import Action, GTDocument, PiiType, PolicyProfile, Requirement
 from .cells import PageCells, Unit, unit_flags
 from .config import EvalConfig
 from .document import document_findings
+from .moved import Found, find_moved
 from .layers import (
     PageText,
     find_at_place,
@@ -233,19 +234,23 @@ def _line_heights(gt: GTDocument) -> dict[str, float]:
 
 
 def _searchable(gt: GTDocument, word_outcomes: list[WordOutcome], page_texts: dict[int, PageText],
-                shift_pt: dict[int, tuple[float, float]], line_h: dict[str, float], cfg: EvalConfig
-                ) -> tuple[dict[str, bool], dict]:
+                shift_pt: dict[int, tuple[float, float]], line_h: dict[str, float], cfg: EvalConfig,
+                found: dict[str, Found] | None = None) -> tuple[dict[str, bool], dict]:
     """Kept words found in the text layer at their displayed place (client Q11), and the text layer's
     alignment and word breaks, which are reported and never fail a document.
 
-    Counted: PRESERVED kept words (ORDINARY, MUST_NOT) with a letter or digit, looked for at the GT
-    polygon plus the page's registration shift with :func:`find_at_place` (searchable_band across,
-    L/2 + searchable_margin x H along). A word not found is misplaced when it is on its own line further
-    along, else missing. Word breaks: of every two consecutive GT words of a line both found, whether
-    the extracted text separates them (a space or a line break), runs them together (glued) or puts the
-    second first (out of order); examples name word ids only."""
+    Counted: PRESERVED and MOVED kept words (ORDINARY, MUST_NOT) with a letter or digit, looked for at
+    their displayed place plus the page's registration shift with :func:`find_at_place`
+    (searchable_band across, L/2 + searchable_margin x H along): the GT polygon, or for a MOVED word
+    the polygon at its found transform (owner, 2026-10-29). A word not found is misplaced when it is on
+    its own line further along, else missing. Word breaks: of every two consecutive GT words of a line
+    both found, whether the extracted text separates them (a space or a line break), runs them together
+    (glued) or puts the second first (out of order); examples name word ids only."""
+    found = found or {}
+    scale = cfg.dpi / 72.0
     status = {wo.word_id: wo for wo in word_outcomes}
     searchable: dict[str, bool] = {}
+    moved: dict[str, bool] = {}
     runs: dict[str, tuple[int, object]] = {}
     misplaced = missing = 0
     empty = PageText()
@@ -254,20 +259,28 @@ def _searchable(gt: GTDocument, word_outcomes: list[WordOutcome], page_texts: di
         shift = shift_pt.get(page.index, (0.0, 0.0))
         for w in page.words:
             wo = status.get(w.id)
-            if not (wo and wo.status is WordStatus.PRESERVED and _has_alnum(w.text)
+            if not (wo and wo.status in PRESENT and _has_alnum(w.text)
                     and wo.requirement in (Effective.ORDINARY.value, Effective.MUST_NOT.value)):
                 continue
-            run = find_at_place(w.poly, w.text, chars, shift, line_h.get(w.id), cfg.searchable_band,
-                                cfg.searchable_margin, cfg.text_ratio)
+            poly, h = w.poly, line_h.get(w.id)
+            if wo.status is WordStatus.MOVED:
+                if w.id not in found:
+                    continue
+                poly, h = found[w.id].poly(w.poly, scale), (h * found[w.id].s if h else None)
+            run = find_at_place(poly, w.text, chars, shift, h, cfg.searchable_band, cfg.searchable_margin,
+                                cfg.text_ratio)
             searchable[w.id] = run is not None
+            if wo.status is WordStatus.MOVED:
+                moved[w.id] = run is not None
             if run is not None:
                 runs[w.id] = (page.index, run)
                 wo.text_offset_pt = round(float(np.hypot(run.along, run.across)), 2)
-            elif find_at_place(w.poly, w.text, chars, shift, line_h.get(w.id), cfg.searchable_band, None,
+            elif find_at_place(poly, w.text, chars, shift, h, cfg.searchable_band, None,
                                cfg.text_ratio) is not None:
                 misplaced += 1
             else:
                 missing += 1
+    preserved = {wid: v for wid, v in searchable.items() if wid not in moved}
     pairs = glued = out_of_order = 0
     examples: list[str] = []
     for page in gt.pages:
@@ -292,7 +305,9 @@ def _searchable(gt: GTDocument, word_outcomes: list[WordOutcome], page_texts: di
         return round(float(np.percentile(a, p)), 2) if a.size else None
 
     return searchable, {
-        "searchable_preserved_rate": round(sum(searchable.values()) / len(searchable), 4) if searchable else None,
+        "searchable_preserved_rate": round(sum(preserved.values()) / len(preserved), 4) if preserved else None,
+        "searchable_moved_words": len(moved),
+        "searchable_moved_rate": round(sum(moved.values()) / len(moved), 4) if moved else None,
         "searchable_misplaced_words": misplaced,
         "searchable_missing_words": missing,
         "text_offset_median_pt": q(off, 50),
@@ -522,18 +537,57 @@ def evaluate_output(
                           if p.registration_shift_px else (0.0, 0.0)) for p in page_outcomes}
     line_h = _line_heights(gt)
 
+    # -- moved words and displaced originals (eval-0.4) --------------------------------------------
+    # The in-place test on the primary render configuration, which the word statuses report.
+    inplace: dict[str, tuple[str, float | None]] = {}
+    for page in gt.pages:
+        prim_units = vis_by_cfg[page.index][labels[0]]
+        for w in page.words:
+            units = [u for u in ((w.id, k) for k in range(len(w.text))) if u in prim_units]
+            if not units or page.index in unreliable:
+                inplace[w.id] = (WordStatus.NOT_EVALUATED.value, None)
+                continue
+            frac = _fraction([prim_units[u] for u in units])
+            ws = (WordStatus.PRESERVED if frac >= cfg.word_preserved_fraction
+                  else WordStatus.REMOVED if frac <= cfg.word_removed_fraction else WordStatus.DAMAGED)
+            inplace[w.id] = (ws.value, frac)
+    requirement = {w.id: res.words.get(w.id, Effective.ORDINARY).value for p in gt.pages for w in p.words}
+    found, anchors = find_moved(gt, requirement, pcs, prim_pairs, inplace, unreliable, cfg, strict_words)
+    # A MUST or MAY word found away from its place is a displaced original: its characters are visible,
+    # and its ink is never taken for replacement ink.
+    displaced: set[tuple[int, Unit]] = set()
+    for wid, f in found.items():
+        if f.requirement not in (Effective.MUST.value, Effective.MAY.value):
+            continue
+        for k in range(len(words[wid][1].text)):
+            u = (wid, k)
+            if u in informative.get(f.page, set()):
+                if not vis[f.page].get(u, False):
+                    displaced.add((f.page, u))
+                vis[f.page][u] = True
+                vis_by_cfg[f.page][labels[0]][u] = True
+        if f.page in primary_out:
+            x0, y0, x1, y1 = (int(round(v * scale)) for v in f.box)
+            primary_out[f.page][max(y0 - 1, 0):max(y1 + 2, 0), max(x0 - 1, 0):max(x1 + 2, 0)] = 255
+
     def text_leaked(pg: int, wid: str, needle: str) -> bool:
         """The original token in the output's text: in the 1 pt zone of its word or, with text_place_leak,
         at its displayed place (the GT polygon plus the page's registration shift, the searchable
-        tolerance)."""
+        tolerance), and for a displaced original also at its found place."""
         whole = wid in whole_token_words
         if whole and token_leaks(needle, zone_tokens.get(pg, {}).get(wid, []), cfg):
             return True
         if not whole and text_leaks(needle, texts.get(pg, {}).get(wid), cfg):
             return True
-        return cfg.text_place_leak and find_at_place(
-            words[wid][1].poly, needle, page_texts.get(pg, PageText()), shift_pt.get(pg, (0.0, 0.0)),
-            line_h.get(wid), cfg.searchable_band, cfg.searchable_margin, cfg.text_ratio, whole_token=whole) is not None
+        if not cfg.text_place_leak:
+            return False
+        places = [(words[wid][1].poly, line_h.get(wid))]
+        f = found.get(wid)
+        if f is not None and f.requirement in (Effective.MUST.value, Effective.MAY.value):
+            places.append((f.poly(words[wid][1].poly, scale), line_h[wid] * f.s if line_h.get(wid) else None))
+        return any(find_at_place(poly, needle, page_texts.get(pg, PageText()), shift_pt.get(pg, (0.0, 0.0)), h,
+                                 cfg.searchable_band, cfg.searchable_margin, cfg.text_ratio,
+                                 whole_token=whole) is not None for poly, h in places)
 
     def rev_text_leaked(pg: int, wid: str, needle: str) -> bool:
         if wid in whole_token_words:
@@ -554,6 +608,7 @@ def evaluate_output(
         units = [(pg, u) for pg, u in units if u in informative.get(pg, set())]
         pages = sorted({seg.page for seg in m.segments})
         f_vis = _fraction([vis[pg].get(u, False) for pg, u in units])
+        f_disp = _fraction([(pg, u) in displaced for pg, u in units])
         f_lat = _fraction([lat[pg].get(u, False) for pg, u in units])
         f_img = _fraction([img.get(pg, {}).get(u, False) for pg, u in units])
         f_img_lat = _fraction([img_lat.get(pg, {}).get(u, False) for pg, u in units])
@@ -618,30 +673,27 @@ def evaluate_output(
             worst_config=worst_cfg, latent_residual=round(f_lat, 4), text_residual=round(f_text, 4),
             image_residual=round(f_img, 4), image_latent_residual=round(f_img_lat, 4),
             vector_residual=round(f_vec, 4), revision_residual=round(f_rev, 4), replaced=replaced,
-            l2_sources=l2, status=status))
+            l2_sources=l2, status=status, displaced_residual=round(f_disp, 4)))
 
-    # -- words ---------------------------------------------------------------------------------
+    # -- words: the in-place test, or MOVED where the word was found away from its place ------------
     word_outcomes: list[WordOutcome] = []
     for page in gt.pages:
-        prim_units = vis_by_cfg[page.index][labels[0]]
         for w in page.words:
             eff = res.words.get(w.id, Effective.ORDINARY)
-            units = [u for u in ((w.id, k) for k in range(len(w.text))) if u in prim_units]
-            if not units or page.index in unreliable:
+            st, frac = inplace[w.id]
+            if st == WordStatus.NOT_EVALUATED.value:
                 word_outcomes.append(WordOutcome(w.id, page.index, eff.value, None, WordStatus.NOT_EVALUATED))
-                continue
-            frac = _fraction([prim_units[u] for u in units])
-            if frac >= cfg.word_preserved_fraction:
-                ws = WordStatus.PRESERVED
-            elif frac <= cfg.word_removed_fraction:
-                ws = WordStatus.REMOVED
+            elif w.id in found:
+                f = found[w.id]
+                word_outcomes.append(WordOutcome(
+                    w.id, page.index, eff.value, f.v, WordStatus.MOVED, in_place_fraction=round(frac, 4),
+                    dx_pt=f.dx_pt, dy_pt=f.dy_pt, scale=f.s, match_score=f.score, restyled=f.restyled))
             else:
-                ws = WordStatus.DAMAGED
-            word_outcomes.append(WordOutcome(w.id, page.index, eff.value, round(frac, 4), ws))
+                word_outcomes.append(WordOutcome(w.id, page.index, eff.value, round(frac, 4), WordStatus(st)))
 
     # -- searchable text (client Q11): kept words found in the text layer at their displayed place ---
     word_text = {w.id: w.text for p in gt.pages for w in p.words}
-    searchable, text_info = _searchable(gt, word_outcomes, page_texts, shift_pt, line_h, cfg)
+    searchable, text_info = _searchable(gt, word_outcomes, page_texts, shift_pt, line_h, cfg, found)
 
     summary = _summarise(outcomes, word_outcomes, findings, surfaces, integrity, page_outcomes,
                          word_text=word_text, searchable=searchable, cfg=cfg)
@@ -691,6 +743,7 @@ def _summarise(mentions, words, findings, surfaces, integrity, pages, word_text:
     recall = tp / (tp + fn) if tp + fn else None
     f1 = (2 * precision * recall / (precision + recall)) if precision and recall else None
     must_surface_leaks = [s.surface_id for s in surfaces if s.leaked and s.requirement is Requirement.MUST]
+    moved = [w for w in done if w.status is WordStatus.MOVED]
     l1_l2 = [m for m in evaluated if m.status in L1_L2_LEAKS]
     may = [m for m in mentions if m.requirement == Requirement.MAY.value]
 
@@ -722,6 +775,14 @@ def _summarise(mentions, words, findings, surfaces, integrity, pages, word_text:
         "searchable_ok": searchable_ok,
         "protected_words": len(protected),
         "protected_damaged": [w.word_id for w in protected_damage],
+        # eval-0.4: words found away from their place (content intact), and MUST words found so
+        # (displaced originals, which count as visible for their mention)
+        "moved_words": sum(1 for w in moved if w.requirement == Effective.ORDINARY.value),
+        "moved_real_words": sum(1 for w in moved if w.requirement == Effective.ORDINARY.value
+                                and _has_alnum(word_text.get(w.word_id, "x" * cfg.collateral_min_chars),
+                                               cfg.collateral_min_chars)),
+        "protected_moved": sum(1 for w in moved if w.requirement == Effective.MUST_NOT.value),
+        "must_words_displaced": sorted(w.word_id for w in moved if w.requirement == Effective.MUST.value),
         "effective_token_precision": round(precision, 4) if precision is not None else None,
         "effective_token_recall": round(recall, 4) if recall is not None else None,
         "effective_token_f1": round(f1, 4) if f1 is not None else None,

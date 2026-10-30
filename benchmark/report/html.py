@@ -113,8 +113,8 @@ code{font-size:12px}.wrap{overflow-x:auto}
 <h2>Components</h2><div class="wrap"><table><tr><th>stage</th><th>metric</th><th>value</th></tr>
 {% for row in components %}<tr><td>{{ row[0] }}</td><td>{{ row[1] }}</td><td>{{ row[2] }}</td></tr>{% endfor %}</table></div>
 
-<h2>Documents</h2><div class="wrap"><table><tr><th>doc</th><th>rep</th><th>required</th><th>safe</th><th>not replaced</th><th>partial</th><th>visible</th><th>recoverable</th><th>latent</th><th>collateral</th><th>protected dmg</th><th>searchable</th><th>findings</th><th>clean</th><th>integrity</th></tr>
-{% for d in docs %}<tr><td>{{ d.doc_id }}</td><td>{{ d.repeat }}</td><td>{{ d.must }}</td><td>{{ d.safe }}</td><td>{{ d.not_replaced }}</td><td>{{ d.partial }}</td><td>{{ d.visible }}</td><td>{{ d.recoverable }}</td><td>{{ d.latent }}</td><td>{{ d.collateral }}</td><td>{{ d.protected }}</td><td>{{ d.searchable }}</td><td>{{ d.findings }}</td><td class="{{ 'ok' if d.clean else 'bad' }}">{{ d.clean }}</td><td>{{ d.integrity }}</td></tr>{% endfor %}</table></div>
+<h2>Documents</h2><div class="wrap"><table><tr><th>doc</th><th>rep</th><th>required</th><th>safe</th><th>not replaced</th><th>partial</th><th>visible</th><th>recoverable</th><th>latent</th><th>collateral</th><th>protected dmg</th><th>moved</th><th>displaced</th><th>searchable</th><th>findings</th><th>clean</th><th>integrity</th></tr>
+{% for d in docs %}<tr><td>{{ d.doc_id }}</td><td>{{ d.repeat }}</td><td>{{ d.must }}</td><td>{{ d.safe }}</td><td>{{ d.not_replaced }}</td><td>{{ d.partial }}</td><td>{{ d.visible }}</td><td>{{ d.recoverable }}</td><td>{{ d.latent }}</td><td>{{ d.collateral }}</td><td>{{ d.protected }}</td><td>{{ d.moved }}</td><td>{{ d.displaced }}</td><td>{{ d.searchable }}</td><td>{{ d.findings }}</td><td class="{{ 'ok' if d.clean else 'bad' }}">{{ d.clean }}</td><td>{{ d.integrity }}</td></tr>{% endfor %}</table></div>
 
 {% for title, rows in breakdowns %}<h2>{{ title }}</h2><table><tr><th>slice</th><th>required mentions</th><th>leaking</th><th>leak rate</th></tr>
 {% for r in rows %}<tr><td>{{ r[0] }}</td><td>{{ r[1] }}</td><td>{{ r[2] }}</td><td>{{ r[3] }}</td></tr>{% endfor %}</table>{% endfor %}
@@ -249,6 +249,10 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
                      "searchable": _fmt(d.get("searchable_rate"), True), "partial": st["PARTIAL"],
                      "visible": st["LEAK_VISIBLE"], "recoverable": st["LEAK_RECOVERABLE"], "latent": st["LEAK_LATENT"],
                      "collateral": d.get("collateral_words"), "protected": len([x for x in str(d.get("protected_damaged") or "").split(",") if x]),
+                     # eval-0.4: kept words found away from their place; MUST words found so (displaced originals)
+                     "moved": "n/a" if d.get("moved_words") is None else d["moved_words"],
+                     "displaced": "n/a" if d.get("moved_words") is None
+                     else len([x for x in str(d.get("must_words_displaced") or "").split(",") if x]),
                      "findings": d.get("document_findings"), "clean": bool(d.get("clean_document")),
                      "integrity": "ok" if d.get("integrity_ok") else "FAILED"})
 

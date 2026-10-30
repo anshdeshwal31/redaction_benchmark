@@ -458,3 +458,176 @@ def render_pair(source: bytes, output: bytes, page: int, cfg: EvalConfig) -> tup
         if _global_ncc(o, moved) > _global_ncc(o, x) + 0.02:
             x = _translate(x, -round(dx, 2), -round(dy, 2))
     return o, x
+
+
+# -- the moved study's cases (eval-0.4 S12): planted moves, different words, erasures, traps --------------
+
+
+def kept_words() -> list[str]:
+    req = requirements()
+    return [w for w in words() if req[w] in ("ORDINARY", "MUST_NOT", "MAY")]
+
+
+def kept_real_words() -> list[str]:
+    ws = words()
+    return [w for w in kept_words() if sum(ch.isalnum() for ch in ws[w].text) >= 2]
+
+
+def last_kept_of_lines() -> list[str]:
+    """The last word of each line when it is a kept word (the isolated moves move these)."""
+    req = requirements()
+    out = []
+    for ids in lines().values():
+        ks = [i for i in ids if req[i] in ("ORDINARY", "MUST_NOT", "MAY")]
+        if ks and ids[-1] == ks[-1]:
+            out.append(ks[-1])
+    return out
+
+
+OTHER = {2: ["um", "ox", "ew", "yo"], 3: ["owl", "mug", "zip", "elk"], 4: ["lamp", "wove", "mint", "buck"],
+         5: ["plumb", "vixen", "quirk", "mango"], 6: ["walrus", "hiccup", "zenith", "bounty"],
+         7: ["quantum", "gazelle", "trolley", "biscuit"], 8: ["mahogany", "quixotic", "envelope", "seashell"],
+         9: ["porcupine", "vineyards", "quarterly", "blueberry"],
+         10: ["lighthouse", "watermelon", "kingfisher", "background"]}
+
+
+def other_word(t: str, k: int) -> str:
+    """A different word of about the same length, in the original's case and trailing punctuation."""
+    core = t.strip(".,;:()|")
+    trail = t[len(t.rstrip(".,;:()")):]
+    n = len(core)
+    w = OTHER.get(min(max(n, 2), 10), OTHER[10])[k % 4]
+    if n > 10:
+        w = (w * 2)[:n]
+    if core[:1].isupper():
+        w = w.capitalize()
+    return w + trail
+
+
+# Redrawn lines (like tool 2): (scale, dy, dx0) of the moved study's A1, A2 and A5.
+REDRAW = {"A1": (1.04, 0.0, 0.0), "A2": (1.04, 0.5, 1.0), "A5": (1.12, 0.0, 0.5)}
+# Isolated moves of the last kept word of each line: (dx, dy, s) of B4, B9, B11 and B12.
+ISOLATED = {"B4": (58, 0, 1), "B9": (8, 8, 1), "B11": (0.5, 0, 1), "B12": (1.0, 0.3, 1.02)}
+
+
+def moved_case(name: str, raster_dpi=None, truth: dict | None = None) -> bytes:
+    """The moved study's fictional outputs: A* redrawn lines with fakes, B* isolated moves, C3 a different
+    word at every kept word's place, D3 and D5 a box over half of / shifted 7 pt below every other kept
+    word, E2/E5/E7 traps with repeated words."""
+    if name in REDRAW:
+        s, dy, dx0 = REDRAW[name]
+        return build(line_ops=redraw(fakes(), s, dy, dx0), raster_dpi=raster_dpi, truth=truth)
+    if name in ISOLATED:
+        dx, dy, s = ISOLATED[name]
+        return build(word_ops={w: ("move", dx, dy, s) for w in last_kept_of_lines()}, raster_dpi=raster_dpi,
+                     truth=truth)
+    ws = words()
+    every_other = kept_words()[::2]
+    p1 = {w.text: w.id for w in base().gt.pages[1].words if w.line == "p1l4"}
+    ops = {
+        "C3": lambda: {w: ("text", other_word(ws[w].text, k)) for k, w in enumerate(kept_real_words())},
+        "D3": lambda: {w: ("partial", 0.5) for w in every_other},
+        "D5": lambda: {w: ("shiftbox", 7.0) for w in every_other},
+        # 'is' erased, 'further' replaced by 'is', and the anchor 'treatment' erased too
+        "E2": lambda: {p1["further"]: ("text", "is"), p1["is"]: ("erase",), p1["treatment"]: ("erase",)},
+        # the protected word 'strong' erased while the surname 'Strong' stays 73 pt to its left
+        "E5": lambda: {"p0w35": ("erase",)},
+        # no anchors left and the surname 'Strong' redrawn 40 pt right, 33 pt from where 'strong' was
+        "E7": lambda: {"p0w35": ("erase",), "p0w33": ("erase",), "p0w34": ("erase",), "p0w32": ("move", 40.0, 0.0, 1.0)},
+    }[name]()
+    return build(word_ops=ops, raster_dpi=raster_dpi, truth=truth)
+
+
+def keep(fk: dict[str, str], ids: list[str]) -> dict[str, str]:
+    """The fakes with the originals of ``ids`` kept."""
+    ws = words()
+    return {**fk, **{w: ws[w].text for w in ids}}
+
+
+def originals_redrawn(raster_dpi=300) -> bytes:
+    """K0c: every line with a MUST word re-typeset with its originals (1.04x, 0.3 pt down, 1 pt right)."""
+    return build(line_ops={ln: ("redraw", {}, 1.04, 0.3, 1.0) for ln in must_lines()}, raster_dpi=raster_dpi)
+
+
+def locality_kept_redrawn(raster_dpi=None) -> bytes:
+    """K2: K1 with the original locality kept; the longer fake street moves it along the line."""
+    return build(line_ops=redraw(keep(shared_fakes(), mention_words("addr1-loc"))), raster_dpi=raster_dpi)
+
+
+def realistic_fakes() -> dict[str, str]:
+    """The challenge's REAL fakes: K1's with another street number and name."""
+    fk = fakes()
+    fk.update(zip(mention_words("addr1"), ["83", "Harbour", "Street,"]))
+    fk.update(zip(mention_words("addr1-loc"), ["Bundall", "QLD", "4217"]))
+    fk.update(zip(mention_words("org1"), ["Jabiru", "", "Pty", "Ltd"]))
+    return fk
+
+
+def same_city_postcode() -> bytes:
+    """W1: realistic fakes in place, the locality faked as 'Newstead QLD 4006' for 'Faketown QLD 4000'."""
+    fk = realistic_fakes()
+    fk.update(zip(mention_words("addr1-loc"), ["Newstead", "QLD", "4006"]))
+    return build(word_ops=in_place(fk))
+
+
+def ext_spec():
+    """The medico-legal spec with four lines of names whose fakes an over-extended span (the NER span
+    took the kept word after the name) replaces (the challenge's M2)."""
+    from benchmark.schemas import PiiType
+    from benchmark.synth.spec import L, MentionSpec, T
+
+    spec = medico_legal_spec()
+    spec.pages[1] = list(spec.pages[1]) + [
+        L(72, 400, 11, T("Review"), T("by"), T("Dr", "opt:m10"), T("Lee", "m:m10:given"), T("Hart", "m:m10:surname"),
+          T("on"), T("3"), T("May"), T("was"), T("normal.")),
+        L(72, 420, 11, T("The"), T("claimant"), T("Ms", "opt:m11"), T("Kay", "m:m11:given"),
+          T("Ross", "m:m11:surname"), T("is"), T("well"), T("today.")),
+        L(72, 440, 11, T("She"), T("saw"), T("Dr", "opt:m12"), T("Ian", "m:m12:given"), T("Lam", "m:m12:surname"),
+          T("in"), T("clinic"), T("today.")),
+        L(72, 460, 11, T("Seen"), T("with"), T("Ms", "opt:m13"), T("Sue", "m:m13:given"), T("Tan", "m:m13:surname"),
+          T("and"), T("her"), T("son.")),
+    ]
+    for m in ("m10", "m11", "m12", "m13"):
+        spec.mentions[m] = MentionSpec(PiiType.PERSON_NAME, None, form="Given Surname")
+    return spec
+
+
+_EXT: list = []
+
+
+def ext_base() -> Base:
+    if not _EXT:
+        _EXT.append(base(ext_spec(), "ext"))
+    return _EXT[0]
+
+
+OVER = [  # (baseline, MUST words, the kept word the span over-extends to, fake, control fake without it)
+    (400, ["Lee", "Hart"], "on", "Ann Wilson", "Ann Wilby"),
+    (420, ["Kay", "Ross"], "is", "Ruth Harris", "Ruth Hardy"),
+    (440, ["Ian", "Lam"], "in", "Ken Martin", "Ken Marsh"),
+    (460, ["Sue", "Tan"], "and", "Sandra Lee", "Sophie Lee"),
+]
+
+
+def _ext_id(page: int, baseline: float, text: str) -> str:
+    for wid, (pg, t, _, b, _, _) in ext_base().layout.items():
+        if pg == page and abs(b - baseline) < 0.5 and t == text:
+            return wid
+    raise KeyError(text)
+
+
+def overextended_span(control: bool = False) -> tuple[bytes, list[str]]:
+    """M2 (M2c with ``control``): the names and the kept word after them erased, one fake typeset over the
+    span; the fake contains the kept word ('on' in 'Wilson'), the control's does not. Returns the output
+    and the kept words' ids."""
+    b = ext_base()
+    ops, post, kept = {}, [], []
+    for y, names, word, fake, ctrl in OVER:
+        ids = [_ext_id(1, y, t) for t in names]
+        k = _ext_id(1, y, word)
+        for w in ids + [k]:
+            ops[w] = ("erase",)
+        _, _, fx, by, size, _ = b.layout[ids[0]]
+        post.append(dict(page=1, rect=None, x=fx, y=by, size=size, fake=ctrl if control else fake))
+        kept.append(k)
+    return build(word_ops=ops, post=post, spec=b.spec, key="ext"), kept

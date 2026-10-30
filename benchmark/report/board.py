@@ -165,6 +165,9 @@ def scorecard(runs: list[RunData]) -> list[dict]:
             "collateral": (sum(w["status"] not in PRESENT_VALUES for w in ordinary) / len(ordinary)) if ordinary
             else None,
             "protected": sum(w["status"] not in PRESENT_VALUES for w in protected),
+            # eval-0.4: kept words found away from their place, and MUST words found so (displaced originals)
+            "moved": sum(w["status"] == "MOVED" for w in ordinary + protected),
+            "displaced": sum(w["status"] == "MOVED" for w in must_w),
             "precision": tp / (tp + fp) if tp + fp else None, "recall": tp / len(must_w) if must_w else None,
             "flip": float(np.mean(flips)) if flips else None,
         })
@@ -396,7 +399,7 @@ def build_board(run_ids: list[str], out: Path, title: str = "Candidate compariso
                  "<th>policy</th><th>docs</th><th>required</th><th>leak (strict)</th><th>95% CI</th>"
                  "<th>leak (completed)</th>"
                  "<th>visible/recoverable</th><th>not replaced</th><th>failure</th><th>clean docs</th>"
-                 "<th>collateral</th><th>protected dmg</th><th>searchable</th>"
+                 "<th>collateral</th><th>protected dmg</th><th>moved kept / displaced required</th><th>searchable</th>"
                  "<th>token P / R</th><th>flip rate</th><th>same fake across matter</th>"
                  "<th>tool's own safety check</th></tr>" + "".join(
                      f"<tr><td>{_esc(x['candidate'])} <span class=mut>{_esc(x['version'])}</span></td>"
@@ -406,7 +409,8 @@ def build_board(run_ids: list[str], out: Path, title: str = "Candidate compariso
                      f"<td>{_pct(x['leak'])}</td><td>{_ci(x['ci'])}</td>"
                      f"<td>{_pct(x['leak_completed'])}</td><td>{_pct(x['l12'])}</td>"
                      f"<td>{_pct(x['not_replaced'])}</td><td>{_pct(x['fail'])}</td><td>{x['clean']}</td>"
-                     f"<td>{_pct(x['collateral'])}</td><td>{x['protected']}</td><td>{_pct(x['searchable'])}</td>"
+                     f"<td>{_pct(x['collateral'])}</td><td>{x['protected']}</td>"
+                     f"<td>{x['moved']} / {x['displaced']}</td><td>{_pct(x['searchable'])}</td>"
                      f"<td>{_pct(x['precision'])} / {_pct(x['recall'])}</td><td>{_pct(x['flip'])}</td>"
                      f"<td>{x['matter'][0]}/{x['matter'][1] if x['matter'][1] else 'N/A'}</td>"
                      f"<td>{_esc(_verdicts(x['self_check']))}</td></tr>"

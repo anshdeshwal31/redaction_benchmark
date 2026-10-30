@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -310,6 +311,76 @@ class PageCells:
                 lat[i], new_ink[i] = True, False
         return CellStats(st.informative, vis, lat, new_ink, st.ncc, st.amp)
 
+    # -- a word at another place (eval-0.4: moved words) --------------------------------------
+
+    def word_fraction_at(self, word_id: str, original: np.ndarray, output: np.ndarray, s: float, tx: float,
+                         ty: float, cfg: EvalConfig, gated: bool = False, strict_words=None) -> float | None:
+        """Share of the word's characters the band test finds when the output is read at
+        output_px = s * original_px + (tx, ty), sampled bilinearly (None: no informative character).
+
+        With ``gated`` the character identity gate of :meth:`stats` judges the flagged characters too
+        (``strict_words`` as there), on the output resampled to the original's grid around the word.
+        At the identity transform the band-only share equals the in-place test's."""
+        idxs = self.word_cells.get(word_id, [])
+        if not idxs:
+            return None
+        vals = [bilinear(output, s * self.cols[i] + tx, s * self.rows[i] + ty) for i in idxs]
+        inf = np.zeros(len(idxs), bool)
+        vis = np.zeros(len(idxs), bool)
+        for j, i in enumerate(idxs):
+            rr, cc = self.rows[i], self.cols[i]
+            if rr.size < 4:
+                continue
+            o = original[rr, cc].astype(np.float64)
+            x = vals[j]
+            so, sx = o.std(), x.std()
+            if so < cfg.cell_min_orig_std:
+                continue
+            inf[j] = True
+            ncc = 0.0 if sx < 1e-6 else float(np.mean((o - o.mean()) * (x - x.mean())) / (so * sx))
+            vis[j] = abs(ncc) >= cfg.cell_ncc and sx / so >= cfg.cell_amp_visible and sx >= cfg.cell_min_visible_std
+        if gated and vis.any():
+            vis = vis & ~self._gate_at(word_id, idxs, original, output, s, tx, ty, inf, vis, cfg, strict_words)
+        sub = SimpleNamespace(cells=[self.cells[i] for i in idxs])
+        flags = unit_flags(sub, inf, vis)
+        units = [u for u in flags if u[0] == word_id]
+        return sum(flags[u] for u in units) / len(units) if units else None
+
+    def _gate_at(self, word_id: str, idxs: list[int], original: np.ndarray, output: np.ndarray, s: float,
+                 tx: float, ty: float, inf: np.ndarray, vis: np.ndarray, cfg: EvalConfig, strict_words
+                 ) -> np.ndarray:
+        """Cells (of ``idxs``) of the characters the identity gate drops at the transform."""
+        paper = self._cache.get(("paper", id(output)))
+        if paper is None:
+            paper = _paper(output)
+            self._cache[("paper", id(output))] = paper
+        kb = max(3, int(round(cfg.identity_box_pt * self.dpi / 72.0)))
+        m = kb + int(cfg.identity_offset_px) + int(cfg.identity_ink_dilate_px) + 2
+        rr = np.concatenate([self.rows[i] for i in idxs])
+        cc = np.concatenate([self.cols[i] for i in idxs])
+        h, w = self.shape
+        r0, r1 = max(int(rr.min()) - m, 0), min(int(rr.max()) + m + 1, h)
+        c0, c1 = max(int(cc.min()) - m, 0), min(int(cc.max()) + m + 1, w)
+        yy, xx = np.mgrid[r0:r1, c0:c1]
+        crop = bilinear(output, s * xx + tx, s * yy + ty).astype(np.float32)
+        virtual = np.full(self.shape, paper, np.float32)
+        virtual[r0:r1, c0:c1] = crop
+        local = _OutputMasks.of(crop, self.dpi, cfg, paper=paper)
+        box = np.zeros(self.shape, bool)
+        ink = np.zeros(self.shape, bool)
+        box[r0:r1, c0:c1] = local.box
+        ink[r0:r1, c0:c1] = local.ink
+        informative = np.zeros(len(self.cells), bool)
+        informative[idxs] = inf
+        flagged: dict[Unit, set[int]] = {}
+        for j, i in enumerate(idxs):
+            if vis[j]:
+                flagged.setdefault((word_id, self.cells[i].index), set()).add(self.cells[i].band)
+        ci = self.character_identity(original, virtual, informative, cfg, words={word_id},
+                                     masks=_OutputMasks(paper, box, ink))
+        gate = self.gate(ci, flagged, strict_words, cfg)
+        return np.array([gate.get((word_id, self.cells[i].index), "x") == "" for i in idxs], bool)
+
     # -- character identity -------------------------------------------------------------------
 
     def _identity_index(self) -> _IdentityIndex:
@@ -581,8 +652,8 @@ class _OutputMasks:
     ink: np.ndarray  # near-black pixels (below identity_ink_level x paper), dilated
 
     @classmethod
-    def of(cls, output: np.ndarray, dpi: float, cfg: EvalConfig) -> "_OutputMasks":
-        paper = _paper(output)
+    def of(cls, output: np.ndarray, dpi: float, cfg: EvalConfig, paper: float | None = None) -> "_OutputMasks":
+        paper = _paper(output) if paper is None else paper
         kb = max(3, int(round(cfg.identity_box_pt * dpi / 72.0)))
         dark = (output < paper / 2).astype(np.uint8)
         box = cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((kb, kb), np.uint8)).astype(bool)
@@ -612,6 +683,21 @@ def _best_offset(original: np.ndarray, output: np.ndarray, rr: np.ndarray, cc: n
     mn, mx, lmn, lmx = cv2.minMaxLoc(res)
     loc = lmx if abs(mx) >= abs(mn) else lmn
     return int(loc[0] + sc0 - c0), int(loc[1] + sr0 - r0)
+
+
+def bilinear(img: np.ndarray, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+    """``img`` sampled at fractional pixel coordinates (x a column, y a row); paper white (255)
+    outside."""
+    h, w = img.shape
+    x0 = np.floor(xs).astype(np.int64)
+    y0 = np.floor(ys).astype(np.int64)
+    fx, fy = xs - x0, ys - y0
+    out = np.full(np.shape(xs), 255.0)
+    ok = (x0 >= 0) & (y0 >= 0) & (x0 + 1 < w) & (y0 + 1 < h)
+    a, b, fa, fb = x0[ok], y0[ok], fx[ok], fy[ok]
+    out[ok] = (img[b, a] * (1 - fa) * (1 - fb) + img[b, a + 1] * fa * (1 - fb)
+               + img[b + 1, a] * (1 - fa) * fb + img[b + 1, a + 1] * fa * fb)
+    return out
 
 
 def run_needed(word_length: int) -> int:

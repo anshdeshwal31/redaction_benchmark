@@ -146,3 +146,57 @@ def test_lookalike_digit_in_protected_word_is_a_known_limit():
     for wid in ("p0w16", "p0w45", "p0w48", "p0w69"):  # 12/08/1970, 60mg, 04/06/2021., (01.02.2028)
         assert words[wid].status.value == "PRESERVED", wid
     assert (words["p1w39"].status.value, words["p1w39"].visible_fraction) == ("DAMAGED", 0.75)  # (07.02.2026)
+
+
+# -- moved words and displaced originals (holes 4 and 5) ---------------------------------------------
+
+
+def test_kept_word_inside_a_fake_is_not_moved():
+    # Hole 4 (M2): a name and the kept word after it ('on', 'is', 'in', 'and') erased by an over-extended
+    # span and one fake typeset over it that happens to contain the kept word ('Ann Wilson'). The kept word
+    # is not found inside the fake (it is not a whole word there): REMOVED, the same collateral as the
+    # control whose fakes do not contain it (M2c).
+    b = calib.ext_base()
+    out, kept = calib.overextended_span()
+    ev = evaluate_output(b.pdf, out, b.gt, calib.V1, CFG)
+    words = {w.word_id: w.status.value for w in ev.words}
+    assert [words[k] for k in kept] == ["REMOVED"] * 4
+    ctrl, _ = calib.overextended_span(control=True)
+    ev_c = evaluate_output(b.pdf, ctrl, b.gt, calib.V1, CFG)
+    assert ev.summary["collateral_real_words"] == ev_c.summary["collateral_real_words"] == 4
+
+
+def test_altered_word_in_place_is_not_moved():
+    # Hole 5: a match at the GT place must pass the identity gate there. M1's 'far' typeset over 'for' stays
+    # damage (REMOVED: its 'f' and 'r' are not a run), not MOVED; W1's same-state fake postcode '4006' is
+    # not a displaced '4000'; B11's moves of 0.5 pt are real and stay MOVED (every moved word PRESERVED
+    # or MOVED, none damaged).
+    ev = _evaluate(calib.lookalikes())
+    w = {x.word_id: x for x in ev.words}
+    assert calib.words()["p1w13"].text == "for" and w["p1w13"].status.value in ("DAMAGED", "REMOVED")
+    ev = _evaluate(calib.same_city_postcode())
+    postcode = calib.mention_words("addr1-loc")[2]
+    assert {x.word_id: x.status.value for x in ev.words}[postcode] != "MOVED"
+    assert ev.summary["must_words_displaced"] == []
+    truth: dict = {}
+    ev = _evaluate(calib.moved_case("B11", truth=truth))
+    st = {x.word_id: x.status.value for x in ev.words}
+    assert {st[k] for k in truth} <= {"PRESERVED", "MOVED"} and "MOVED" in {st[k] for k in truth}, st
+
+
+def test_displaced_originals_are_leaks():
+    # K0c: every line with a MUST word re-typeset with its originals (1.04x, 0.3 pt down, 1 pt right),
+    # rasterised at 300 DPI: the originals are found away from their place and every MUST text mention is
+    # a visible leak.
+    ev = _evaluate(calib.originals_redrawn())
+    assert Counter(m.status.value for m in ev.mentions if m.mention_id in calib.must_text_mentions()) == {
+        "LEAK_VISIBLE": 20}
+    assert all(m.displaced_residual > 0 for m in ev.mentions if m.mention_id in calib.must_text_mentions())
+
+
+def test_kept_locality_moved_by_a_longer_fake_street_is_a_leak():
+    # K2: the redrawn address line keeps the original locality, which the longer fake street pushes along
+    # the line: a displaced original, LEAK_VISIBLE in full.
+    ev = _evaluate(calib.locality_kept_redrawn())
+    m = ev.mention("addr1-loc")
+    assert (m.status.value, m.visible_residual) == ("LEAK_VISIBLE", 1.0)

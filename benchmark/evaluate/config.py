@@ -118,6 +118,40 @@ class EvalConfig(BaseModel):
                                                    "the searchable tolerance is a text-layer leak, besides the "
                                                    "1 pt zone of its GT box (docs/metrics.md)")
 
+    # -- moved words and displaced originals (eval-0.4; docs/metrics.md, "Moved words") ----------
+    moved_match: float = Field(0.83, description="Template score a word's original image needs where it is found "
+                                                 "away from its place (true moves score at least 0.845, different "
+                                                 "words at most 0.814; docs/metrics.md)")
+    moved_anchor: float = Field(0.85, description="Template score within 2 px of its place that makes a word found "
+                                                  "in place an anchor: it bounds its neighbours' search and claims "
+                                                  "its ink")
+    moved_across: float = Field(0.5, description="Search window across the line, in word heights")
+    moved_along: float = Field(8.0, description="Search window along the line, in word heights (clipped to the "
+                                                "anchors on the word's GT line)")
+    moved_gap: float = Field(0.15, description="Anchors bound the window this many word heights beyond their box")
+    moved_scale_min: float = Field(0.86, description="Smallest size of a moved word relative to the original")
+    moved_scale_max: float = Field(1.18, description="Largest size of a moved word relative to the original")
+    moved_scale_step: float = Field(0.02, description="Scale step of the search")
+    moved_overlap: float = Field(0.25, description="A found box may overlap an anchor or a taken box by at most "
+                                                   "this share of its area")
+    moved_lambda: float = Field(0.02, description="Assignment order: score minus this times the displacement in "
+                                                  "word heights")
+    moved_candidates: int = Field(4, ge=1, description="Positions kept per scale and per word after suppression")
+    moved_floor: float = Field(0.5, description="Positions scoring less are not candidates")
+    moved_nms: float = Field(0.5, description="Overlap at which two positions are the same one")
+    moved_margin_along: float = Field(0.15, description="The template is the GT box grown this many word heights "
+                                                        "along the line...")
+    moved_margin_across: float = Field(0.10, description="...and this many across it")
+    moved_zero_px: float = Field(1.5, description="A match at scale 1 within this many pixels of the GT place must "
+                                                  "pass the character identity gate there (an altered word in "
+                                                  "place is not moved; docs/metrics.md)")
+    moved_side_ink: float = Field(0.02, description="A kept word is moved only as a whole word: at most this share "
+                                                    "of the pixels beside the found box may be ink "
+                                                    "(docs/metrics.md)")
+    moved_side_strip: tuple[float, float] = Field((0.02, 0.15), description="The strips beside the found box, "
+                                                                           "from and to this many word heights "
+                                                                           "along the reading direction")
+
     # -- file-level survival (L2) ---------------------------------------------------
     layer_ncc: float = Field(0.6, description="Image-layer cell correlates with the original content")
     layer_amp: float = Field(0.25, description="Image-layer contrast ratio for recoverable (else latent)")
