@@ -65,6 +65,22 @@ def test_redrawn_lines_are_moved_not_removed(case, raster_dpi):
         expected
 
 
+def test_a_fake_sharing_characters_with_its_original_is_no_displaced_original():
+    # Found by the re-typeset self-check (S17): a re-typeset line whose fake mobile keeps the shared '04'
+    # ('0400' -> '04xx') was taken for the original moved along the line. A MUST or MAY word found away from
+    # its place passes the character identity gate there before it counts as a displaced original.
+    from benchmark.mocks.named import NAMED
+
+    fx = digital()
+    out = run_mock(fx.pdf, fx.gt, calib.V1_SHARED, NAMED["retypeset"])
+    fake = {r.mention.split(":")[1]: r.replacement for r in out.pseudonyms.mentions}
+    first = next(m for m in fx.gt.mentions if m.id == "ph1").segments[0].words[0]
+    assert fake[first].startswith("04")
+    ev = evaluate_output(fx.pdf, out.pdf, fx.gt, calib.V1_SHARED, EvalConfig(dpi=150, renderers=("mupdf",)))
+    # (the shared words the line keeps as written, 'Street,', 'Pty' and 'Ltd', are found moved, and excused)
+    assert first not in ev.summary["must_words_displaced"] and ev.mention("ph1").status.value == "SAFE_REPLACED"
+
+
 @pytest.mark.parametrize("case", ["B4", "B12"])
 def test_isolated_moves_are_found(case):
     # The last kept word of each line moved on its own: 58 pt along the line (B4), or 1 pt along and 0.3 pt
@@ -123,11 +139,14 @@ FIXTURES = {"digital": digital, "mrc": mrc, "rotated_content": rotated_content}
 
 @pytest.mark.parametrize("fixture", sorted(FIXTURES))
 def test_no_mock_moves_a_word(fixture):
-    # The self-check's mocks redact in place: any word they leave MOVED is within 1 pt of its place.
+    # The self-check's mocks redact in place: any word they leave MOVED is within 1 pt of its place. The
+    # eval-0.4 mocks that move words on purpose (re-typeset lines, a kept locality moved) are left out.
     fx = FIXTURES[fixture]()
     cfg = EvalConfig(dpi=150, renderers=("mupdf",))
     far = {}
     for c in CHECKS:
+        if c.name in ("retypeset", "retypeset-keep", "keeps-locality-moved"):
+            continue
         spec = c.spec
         if c.name == "shift-half-line":
             spec = MockSpec("shift", method="rasterize", shift_pt=half_line_shift(fx.gt))

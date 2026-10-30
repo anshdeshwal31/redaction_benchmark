@@ -21,6 +21,15 @@ A mock follows the policy it is given: it targets the mentions that policy requi
 rules ask for (a fake of the right kind for every required item, a drawn stand-in for every
 signature or image, a searchable text layer), which makes it the ceiling a real tool is
 compared against.
+
+Fakes follow the address case table's constraints (docs/address_cases.md): no fake word equals,
+begins with or holds an identifying word of an address of the document, every digit of a number
+changes at its position, and the shared structure the policy enables stays as written (the state
+with a same-state postcode keeping its prefix, a street type, box and unit words, an organisation's
+legal form, an email domain, an identifier's prefix); a mobile keeps its '04'. The eval-0.4
+self-checks draw fakes the way tools do: in the original's font, size and place, over or beside
+the original, re-typeset lines, and addresses faked as units (``fakes_in_place`` and the options
+after it).
 """
 
 from __future__ import annotations
@@ -41,11 +50,13 @@ import cv2
 import numpy as np
 import pikepdf
 import pymupdf
+import shapely
 from rapidfuzz import fuzz
 
 from ..geometry import Frame, PageGeometry, as_poly, bbox, dilate, geometry_from_pikepdf_page, rect_poly, to_shapely
-from ..gt.address_split import STATES, STREET_TYPES
+from ..gt.address_split import STATES, STREET_TYPES, address_unit_mentions, read_end
 from ..gt.policy import resolve
+from ..gt.shared_roles import PREFIX, SharedUnits, document_shared_units
 from ..metrics.pseudonyms import POSTCODES
 from ..schemas import (
     Cluster,
@@ -115,6 +126,21 @@ class MockSpec:
     stand_ins: bool = False  # signatures, marks and images: paper-white plus drawn pen strokes, not a box
     redacted_text_layer: bool = False  # rasterize: fakes set as visible text, kept words as invisible text
     raster_dpi: float = 150
+    # Fakes drawn the way tools draw them (eval-0.4 self-checks), each in the original's font (a base-14
+    # stand-in of its family) and size, at its word's origin, unless said otherwise:
+    fakes_in_place: bool = False  # true redaction, each fake left-aligned where its word started
+    retypeset: bool = False  # true redaction, then every line holding a fake re-typeset at 1.02-1.04x from
+    #                          its first word, kept words moving with it, one text object per word
+    retypeset_keep: bool = False  # the same with the originals re-typeset instead of fakes (a leak)
+    overprint: bool = False  # the fake drawn over the original, which stays
+    veil: float = 0.0  # a white box of this opacity over the original, the fake on top
+    shift_white: float = 0.0  # a white box shifted this share of the word's height across the line, the
+    #                           fake inside it
+    text_next_line: bool = False  # rasterize: the text layer one line pitch below the words it stands for
+    address_whole: bool = False  # one flowing fake per address unit, per line, from its first word
+    keeps_locality_moved: Literal["", "line", "next_line"] = ""  # a fake street line of another length with
+    #   the original locality kept after it on the line, or the original locality pushed to the next line
+    erases_locality: bool = False  # a fake street line, the locality erased with no fake
     seed: int | None = 0  # None = fresh randomness on every run (nondeterministic tool)
 
 
@@ -209,9 +235,10 @@ def _candidates(pool: list[str], start: int):
 
 
 def _free(v: str, slot: tuple[str, str], originals, real_names: frozenset[str]) -> bool:
-    """A fake value may be used: it resembles none of the person's originals, and it is no real name
-    (equal, or alike for names of three letters or more)."""
-    return (all(_unlike(o, v) for o in originals)
+    """A fake value may be used: it resembles none of the person's originals, puts no letter over the same
+    or a look-alike letter of one of them when drawn where it was (eval-0.4: that glyph would be the
+    original's), and it is no real name (equal, or alike for names of three letters or more)."""
+    return (all(_unlike(o, v) and not _same_place(_core(o), v) for o in originals)
             and all(r != slot[1] and (len(r) < 3 or _unlike(r, v)) for r in real_names))
 
 
@@ -284,6 +311,9 @@ class _Pseudonymiser:
         self.gender_of, self.mode, self.rng = gender_of, mode, rng
         self.keyed, self.salt, self.real_names = keyed, salt, real_names
         self.table: dict[tuple[str, str], str] = dict(assigned or {})
+        # With fakes drawn in place: a value whose letters would sit over the same or a look-alike letter
+        # of the original is passed over (that glyph would be the original's).
+        self.in_place = False
         # (component, value) -> key that has it
         self.owner: dict[tuple[str, str], tuple[str, str]] = {(c, v.casefold()): (e, c)
                                                               for (e, c), v in self.table.items()}
@@ -302,13 +332,20 @@ class _Pseudonymiser:
             else:
                 i = len(self.table)
                 if component in (NameComponent.GIVEN, NameComponent.MIDDLE):
-                    v = _GIVEN[g][i % len(_GIVEN[g])]
+                    pool = _GIVEN[g]
                 elif component is NameComponent.NICKNAME:
-                    v = _NICK[g][i % len(_NICK[g])]
+                    pool = _NICK[g]
                 elif component is NameComponent.INITIALS:
+                    pool = None
+                else:
+                    pool = _SURNAMES
+                if pool is None:
                     v = "".join(self.rng.choice("BCDFGHKLMNPRST") for _ in range(max(1, len(original))))
                 else:
-                    v = _SURNAMES[i % len(_SURNAMES)]
+                    v = pool[i % len(pool)]
+                    if self.in_place:
+                        v = next((x for x in _candidates(pool, i % len(pool))
+                                  if not _same_place(_core(original), x) and _fits(_core(original), x)), v)
             self.table[key] = v
         return self.table[key]
 
@@ -466,6 +503,11 @@ def _word_region(word, seg_start, seg_end, partial: float) -> np.ndarray:
 OTHER_VALUES = {"PHONE", "EMAIL", "ADDRESS", "ID_GOVERNMENT"}
 
 
+def _is_other(m) -> bool:
+    """Contact details and identifiers the replace_other mocks fake, and an address's locality."""
+    return m.type.value in OTHER_VALUES or (m.type is PiiType.LOCATION and (m.subtype or "") == "locality")
+
+
 def _medicare(first8: str, valid: bool, irn: str = "2") -> str:
     check = sum(int(x) * w for x, w in zip(first8, (1, 3, 7, 9, 1, 3, 7, 9))) % 10
     if not valid:
@@ -484,6 +526,10 @@ def _other_value(m, kind: str, pseud: "_Pseudonymiser", cluster: str) -> str:
         given = pseud.value(cluster, NameComponent.GIVEN, "").casefold()
         surname = pseud.value(cluster, NameComponent.SURNAME, "").casefold()
         return f"{given}.{surname}@mail.test" if valid else f"{given}.{surname} at mail"
+    if t == "ADDRESS" and "address_street_line" in m.conditions:  # the street line of a split address
+        return "27 Banksia Road,"
+    if t == "LOCATION":  # its locality
+        return "Oakvale NSW " + ("2150" if valid else "4150")
     if t == "ADDRESS":
         return "27 Banksia Road, Oakvale NSW " + ("2150" if valid else "4150")
     if t == "ID_GOVERNMENT" and (m.subtype or "") == "medicare":
@@ -562,50 +608,169 @@ def _fit(tokens: list[str], n: int) -> list[str]:
     return toks
 
 
-def _postcode(state: str, original: str, rng: random.Random) -> str:
-    """A postcode inside the state's Australia Post ranges, differing from the original in
-    every position."""
+def _postcode(state: str, original: str, rng: random.Random, keep: int = 0) -> str:
+    """A postcode inside the state's Australia Post ranges, keeping the original's first ``keep``
+    digits (the state's shared prefix) and differing from it at every later position."""
     pc = original
-    for _ in range(200):
+    for _ in range(400):
         lo, hi = rng.choice(POSTCODES[state])
         pc = f"{rng.randint(lo, hi):04d}"
-        if all(a != b for a, b in zip(pc, original)):
+        if pc[:keep] == original[:keep] and all(a != b for a, b in zip(pc[keep:], original[keep:])):
             break
     return pc
 
 
-def _place_tokens(originals: list[str], h: int, street: bool) -> list[str]:
+# Letters (and tabular digits) that pass for one another in the same font at the same place: the identity
+# gate tells most other pairs apart (docs/metrics.md, "Character identity").
+_ALIKE = ("iljI1|!", "38", "56", "68")
+
+
+def _xs(text: str) -> list[tuple[float, float]]:
+    out, x = [], 0.0
+    for c in text:
+        w = _helv().text_length(c, fontsize=1)
+        out.append((x, x + w))
+        x += w
+    return out
+
+
+def _same_place(original: str, fake: str, kept: frozenset[int] = frozenset()) -> bool:
+    """Would a letter or digit of a fake drawn at the original's origin (in a font of Helvetica's widths) sit
+    over the same or a look-alike character of the original? ``kept``: indices kept on purpose (shared
+    structure)."""
+    a, b = _xs(original), _xs(fake)
+    for i, c in enumerate(fake):
+        if i in kept or not c.isalnum():
+            continue
+        for j, o in enumerate(original):
+            lo, hi = max(a[j][0], b[i][0]), min(a[j][1], b[i][1])
+            if hi - lo <= 0.3 * min(a[j][1] - a[j][0], b[i][1] - b[i][0]):
+                continue
+            if c.casefold() == o.casefold() or any(c in g and o in g for g in _ALIKE):
+                return True
+    return False
+
+
+def _fits(original: str, fake: str) -> bool:
+    """Is a fake no wider than the original word (in a font of Helvetica's widths), give or take 0.05 em?"""
+    return _helv().text_length(fake, fontsize=1) <= _helv().text_length(original, fontsize=1) + 0.05
+
+
+def _drawable(originals: list[str], fakes: list[str], in_place: bool) -> bool:
+    """Fakes a careful tool draws: no changed word holds an original word of its mention (text is also read
+    as a substring), and, drawn at the original's origin and size (``in_place``), none is wider than its
+    original or puts a character over the same or a look-alike one. Words kept on purpose (shared
+    structure) are the original."""
+    kept = {_alnum(o) for o, f in zip(originals, fakes) if f == o}
+    words = [x for x in (_alnum(o) for o in originals) if x and x not in kept]
+    for o, f in zip(originals, fakes):
+        if not f or f == o:
+            continue
+        if any(x in _alnum(f) for x in words):
+            return False
+        same = frozenset(i for i in range(min(len(o), len(f))) if o[i] == f[i])
+        if in_place and (not _fits(o, f) or _same_place(o, f, same)):
+            return False
+    return True
+
+
+def _banned(fake: str, banned: frozenset[str], numbers: frozenset[str]) -> bool:
+    """Does a fake word equal, begin with or (3 letters or more) hold an identifying address word of the
+    document, or a number of it equal one of its identifying numbers (whole digit runs)?"""
+    n = _alnum(fake)
+    if any(r in numbers for r in re.findall(r"\d+", n)):
+        return True
+    letters = "".join(ch for ch in n if ch.isalpha())
+    return any(letters == w or (len(w) >= 3 and (letters.startswith(w) or w in letters)) for w in banned)
+
+
+def _place_tokens(originals: list[str], h: int, street: bool, su: SharedUnits | None = None,
+                  wids: list[str] | None = None, banned: frozenset[str] = frozenset(),
+                  numbers: frozenset[str] = frozenset()) -> list[str]:
     """A street line (``street``) or a locality, word by word: numbers keep their shape, a street
-    type stays a street type, a state is followed by a postcode valid for the fake state."""
+    type stays a street type, a state is followed by a postcode valid for the fake state. The shared
+    structure (``su``: the policy's shared roles for this mention, by word id ``wids``) stays as
+    written; a shared state keeps a same-state fake: the postcode keeps the state's prefix and changes
+    every later digit. No fake word repeats an identifying address word or number (``banned``,
+    ``numbers``)."""
     rng = random.Random(h)
     norm = [_core(w).casefold() for w in originals]
+    wids = wids or [""] * len(originals)
+    su = su or SharedUnits()
+    kept_state = next((_STATE_NAMES.get(n, n) for n, w in zip(norm, wids) if n in STATES and w in su.full), None)
     real_states = {_STATE_NAMES.get(n, n) for n in norm}
-    state = rng.choice([s for s in _FAKE_STATES if s.casefold() not in real_states])
+    state = kept_state.upper() if kept_state else rng.choice([s for s in _FAKE_STATES
+                                                              if s.casefold() not in real_states])
     names = _STREETS if street else _SUBURBS
     out = []
-    for k, (word, n) in enumerate(zip(originals, norm)):
-        if n in STATES:
+    for k, (word, n, wid) in enumerate(zip(originals, norm, wids)):
+        if wid in su.full:
+            out.append(word)
+        elif any((wid, i) in su.chars for i in range(len(word))) and re.search(r"\d", n):
+            # characters shared inside a word: a glued 'NSW2750' or a postcode's prefix; the rest changes
+            keep = sorted(i for i in range(len(word)) if (wid, i) in su.chars)
+            digits = "".join(ch for ch in word if ch.isdigit())
+            lead = len(word) - len(digits)
+            code = read_end([word]).state_code or state  # a glued word names its own state
+            if re.fullmatch(r"\d{4}", digits) and code in POSTCODES:
+                pc = _postcode(code, digits, rng, keep=sum(1 for i in keep if i >= lead))
+                out.append(word[:lead] + pc)
+            else:
+                fake = _fake_chars(word, rng.getrandbits(32))
+                out.append("".join(word[i] if i in keep else fake[i] for i in range(len(word))))
+        elif n in STATES:
             out.append(_style(word, state))
         elif re.fullmatch(r"\d{4}", n) and k > 0 and norm[k - 1] in STATES:
             out.append(_style(word, _postcode(state, n, rng)))
         elif not n or any(ch.isdigit() for ch in n):
-            out.append(_fake_id(word, rng.getrandbits(32)))
+            fake = _fake_id(word, rng.getrandbits(32))
+            for _ in range(8):
+                if not _banned(fake, banned, numbers):
+                    break
+                fake = _fake_id(word, rng.getrandbits(32))
+            out.append(fake)
         elif n in STREET_TYPES:
-            out.append(_style(word, rng.choice([t for t in _FAKE_STREET_TYPES if _unlike(n, t)])))
+            out.append(_style(word, rng.choice([t for t in _FAKE_STREET_TYPES if _unlike(n, t)
+                                                and not _banned(t, banned, frozenset())] or _FAKE_STREET_TYPES)))
         else:
-            out.append(_style(word, rng.choice([x for x in names if _unlike(n, x)] or names)))
+            out.append(_style(word, rng.choice([x for x in names
+                                                if _unlike(n, x) and not _banned(x, banned, frozenset())] or names)))
     return out
 
 
-def _org_tokens(originals: list[str], h: int) -> list[str]:
+def _address_words(gt: GTDocument) -> tuple[frozenset[str], frozenset[str]]:
+    """The identifying words (letters, case folded) and numbers of every address unit of the document, any
+    role (the case table's structure roles and street types left out)."""
+    from ..gt.address_split import address_roles, unit_words
+
+    structure = {"designator", "box_kind", "corner", "via", "dx", "state", "country", "capital_city_phrase",
+                 "street_type"}
+    words = gt.word_index()
+    letters, numbers = set(), set()
+    for street, loc in address_unit_mentions(gt):
+        for r in address_roles(unit_words(gt, street, loc)):
+            if r.role in structure:
+                continue
+            n = _alnum(words[r.wid][1].text)
+            numbers.update(re.findall(r"\d+", n))
+            a = "".join(ch for ch in n if ch.isalpha())
+            if a and r.role not in ("postcode", "state+postcode"):
+                letters.add(a)
+    return frozenset(letters), frozenset(numbers)
+
+
+def _org_tokens(originals: list[str], h: int, kept: frozenset[int] = frozenset()) -> list[str]:
+    """An organisation's fake word by word; the words at ``kept`` (a shared legal form) stay as written."""
     rng = random.Random(h)
-    n = len(originals)
+    n = len(originals) - len(kept)
     for base in rng.sample(_ORGS, len(_ORGS)):
         toks = base.split()[:n]
         toks += [_ORG_FILL[k % len(_ORG_FILL)] for k in range(n - len(toks))]
-        if all(_unlike(o, t) for o, t in zip(originals, toks)):
-            return [_style(o, t) for o, t in zip(originals, toks)]
-    return [_fake_id(o, h + k) for k, o in enumerate(originals)]
+        it = iter(toks)
+        full = [originals[k] if k in kept else next(it) for k in range(len(originals))]
+        if all(_unlike(o, t) for k, (o, t) in enumerate(zip(originals, full)) if k not in kept):
+            return [o if k in kept else _style(o, t) for k, (o, t) in enumerate(zip(originals, full))]
+    return [o if k in kept else _fake_id(o, h + k) for k, o in enumerate(originals)]
 
 
 def _url_tokens(originals: list[str], h: int) -> list[str]:
@@ -703,13 +868,14 @@ def _fit_groups(groups: list[str], n: int) -> list[str]:
     return _fit(toks, n)
 
 
-def _fake_phone(originals: list[str], h: int) -> list[str]:
+def _fake_phone(originals: list[str], h: int, keep_mobile: bool = True) -> list[str]:
     """A phone number, its own for each person and number, written in the original's word layout, of
     the same kind where that layout allows it. No fake word may share recognisable text with its
     original word, since the evaluator reads such a word as the original left in place; so a layout
     that gives the kind's prefix a word of its own ("04 1234 5678") cannot keep it, and the number
     becomes a landline. A +61 number is written in national form over the same words, its bracketed
-    area code in one word ("+61 (0)4..." included)."""
+    area code in one word ("+61 (0)4..." included). ``keep_mobile`` False: a mobile becomes a landline
+    too (its '04' drawn where it was is the original's, unless the policy shares the prefix)."""
     joined = " ".join(originals)
     digits = "".join(c for c in joined if c.isdigit())
     international = joined.lstrip().startswith("+")
@@ -718,7 +884,8 @@ def _fake_phone(originals: list[str], h: int) -> list[str]:
         national = digits[2:] if digits.startswith("610") else "0" + digits[2:]  # "+61 (0)4..." has its 0
     for attempt in range(16):
         rng = random.Random(h + attempt)
-        new = _phone_digits(national, rng, "same" if attempt < 8 else "landline")
+        mobile = national.startswith("04") and len(national) == 10
+        new = _phone_digits(national, rng, "same" if attempt < 8 and (keep_mobile or not mobile) else "landline")
         if new is None:
             break
         if international or len(new) != len(digits):  # +61: written in national form over the same words
@@ -747,22 +914,43 @@ def _fake_medicare(originals: list[str], h: int) -> list[str]:
     return [_fake_id(o, h + k) for k, o in enumerate(originals)]
 
 
-def _fake_tokens(m, originals: list[str], kind: str, pseud: "_Pseudonymiser", key: str) -> list[str]:
+def _fake_tokens(m, originals: list[str], kind: str, pseud: "_Pseudonymiser", key: str,
+                 su: SharedUnits | None = None, wids: list[str] | None = None,
+                 address_words: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset()),
+                 attempt: int = 0, keep_mobile: bool = True) -> list[str]:
     """One fake per word of a required mention that is not a name (replace_all), of the same kind:
     a phone or Medicare number of its own for each person and value, an email from the person's
-    fake name; any other identifier keeps its format with every letter and digit changed."""
+    fake name; any other identifier keeps its format with every letter and digit changed. The shared
+    structure the policy enables (``su``, by word id ``wids``) stays as written: an address's state,
+    street type and box words, a legal form, an email domain, an identifier's prefix."""
     t, sub = m.type.value, m.subtype or ""
-    h = _stable(pseud.salt, key, t, " ".join(originals))
+    h = _stable(pseud.salt, key, t, " ".join(originals), *([attempt] if attempt else []))
+    su = su or SharedUnits()
+    wids = wids or [""] * len(originals)
     if kind == "valid" and t == "PHONE":
-        return _fake_phone(originals, h)
+        return _fake_phone(originals, h, keep_mobile)
     if kind == "valid" and t == "ID_GOVERNMENT" and sub == "medicare":
         return _fake_medicare(originals, h)
+    if kind == "valid" and t == "EMAIL" and su.needle_cut and len(originals) == 1:
+        a, b = su.needle_cut.get(wids[0], (0, len(originals[0])))
+        local = _other_value(m, kind, pseud, key).split("@")[0]
+        return [originals[0][:a] + local + originals[0][b:]]
     if t in ("PHONE", "EMAIL") or (t == "ID_GOVERNMENT" and sub == "medicare"):
         return _fit(_other_value(m, kind, pseud, key).split(), len(originals))
     if t in ("ADDRESS", "LOCATION"):  # a street line; a locality, suburb, town or other place
-        return _place_tokens(originals, h, street=t == "ADDRESS")
+        return _place_tokens(originals, h, street=t == "ADDRESS", su=su, wids=wids, banned=address_words[0],
+                             numbers=address_words[1])
     if t == "ORGANISATION":
-        return _org_tokens(originals, h)
+        return _org_tokens(originals, h, frozenset(k for k, w in enumerate(wids) if w in su.full))
+    if su.chars or su.full:  # an identifier's shared prefix stays; every other letter and digit changes
+        out = []
+        for k, (o, w) in enumerate(zip(originals, wids)):
+            if w in su.full:
+                out.append(o)
+                continue
+            fake = _fake_id(o, h + k)
+            out.append("".join(o[i] if (w, i) in su.chars else fake[i] if i < len(fake) else "" for i in range(len(o))))
+        return out
     if t == "URL":
         return _url_tokens(originals, h)
     if t == "FILE_PATH":
@@ -795,8 +983,10 @@ def _stand_in_strokes(poly, h: int) -> list[np.ndarray]:
 
 
 def _plan_stage(gt: GTDocument, dets: list[_Det], cluster_of: dict[str, str], spec: MockSpec,
-                rng: random.Random, matter_gts: list[GTDocument] | None = None
-                ) -> tuple[list[PlanRegion], dict[str, str]]:
+                rng: random.Random, matter_gts: list[GTDocument] | None = None,
+                policy: PolicyProfile | None = None) -> tuple[list[PlanRegion], dict[str, str], dict]:
+    """The plan regions, the fakes by detection and word (``"<det>:<word>"``), and each region's word and
+    character span (region id -> (word id, span))."""
     words = gt.word_index()
     regions_idx = gt.region_index()
     mentions = {m.id: m for m in gt.mentions}
@@ -829,8 +1019,19 @@ def _plan_stage(gt: GTDocument, dets: list[_Det], cluster_of: dict[str, str], sp
         real_names |= people[2]
     pseud = _Pseudonymiser(gender_of, mode, rng, keyed=by_entity, salt=gt.matter or "", real_names=real_names,
                            assigned=assigned) if (names or other_kind != "none") else None
+    careful = spec.fakes_in_place or spec.retypeset or spec.redacted_text_layer
+    # A fake mobile keeps its '04' where the policy shares the phone prefix (owner, 2026-10-29), in the in-place
+    # self-check, which shows what the prefix does without it, and in the ceiling, which draws a fake it may not
+    # line up with the original centred and smaller; a re-typesetting mock makes it a landline otherwise.
+    keep_mobile = spec.fakes_in_place or spec.redacted_text_layer or any(
+        PiiType.PHONE in e.types and "phone_prefix" in e.roles for e in (policy.shared_roles if policy else []))
+    if pseud is not None:  # names drawn where the original was (re-typeset lines start where they did)
+        pseud.in_place = spec.fakes_in_place or spec.retypeset
+    shared = document_shared_units(gt, policy) if policy is not None else {}
+    addr_words = _address_words(gt)
     plan: list[PlanRegion] = []
     replacements: dict[str, str] = {}
+    word_of: dict[str, tuple[str, tuple[int, int] | None]] = {}
     for d in dets:
         m = mentions.get(d.gt_mention) if d.gt_mention else None
         comp_of = {wid: c for c, wids in (m.components.items() if m else []) for wid in wids}
@@ -838,8 +1039,20 @@ def _plan_stage(gt: GTDocument, dets: list[_Det], cluster_of: dict[str, str], sp
                  for _, wid, span in d.parts]
         other = None
         if m is not None and m.type is not PiiType.PERSON_NAME and spec.replace_all:
-            other = _fake_tokens(m, texts, other_kind, pseud, key_of(d, m))
-        elif spec.replace_other != "none" and m is not None and m.type.value in OTHER_VALUES:
+            wids = [wid for _, wid, _ in d.parts]
+            su = shared.get(m.id)
+            first = None
+            for attempt in range(24):
+                other = _fake_tokens(m, texts, other_kind, pseud, key_of(d, m), su, wids, addr_words, attempt,
+                                     keep_mobile or not careful)
+                first = first or other
+                # A fake drawn at the original's origin and size (in place, or the ceiling's text) must not
+                # show the original's glyphs, nor hold one of its words: draw another.
+                if not careful or _drawable(texts, other, spec.fakes_in_place or spec.redacted_text_layer):
+                    break
+            else:
+                other = first
+        elif spec.replace_other != "none" and m is not None and _is_other(m):
             other = _distribute(_other_value(m, spec.replace_other, pseud, cluster_of[d.id]), len(d.parts))
         if m is not None and m.type is PiiType.PERSON_NAME and spec.replace_all:
             unlabelled = [(wid, text) for (_, wid, _), text in zip(d.parts, texts) if wid not in comp_of]
@@ -847,6 +1060,9 @@ def _plan_stage(gt: GTDocument, dets: list[_Det], cluster_of: dict[str, str], sp
                 comp_of[wid] = _name_component(k, len(unlabelled), text)
         for k, (page, wid, span) in enumerate(d.parts):
             w = words[wid][1]
+            if other is not None and other[k] and other[k] == texts[k] and m is not None and (
+                    wid in shared.get(m.id, SharedUnits()).full):
+                continue  # shared structure the fake keeps as written: left where it is
             poly = _word_region(w, span[0] if span else None, span[1] if span else None, spec.partial)
             repl = None
             if other is not None and other[k]:
@@ -858,6 +1074,7 @@ def _plan_stage(gt: GTDocument, dets: list[_Det], cluster_of: dict[str, str], sp
                 replacements[f"{d.id}:{wid}"] = repl
             plan.append(PlanRegion(id=f"{d.id}-{k}", page=page, poly=poly.tolist(),
                                    action="replace" if repl else "remove", replacement=repl, mentions=[d.id]))
+            word_of[f"{d.id}-{k}"] = (wid, span)
         if m is not None and spec.pseudonyms == "gender_flip":
             # A gender-flipping pseudonymiser also swaps the honorific in front of the name.
             for k2, wid in enumerate(m.optional_words):
@@ -872,7 +1089,7 @@ def _plan_stage(gt: GTDocument, dets: list[_Det], cluster_of: dict[str, str], sp
                     # With stand_ins a signature, mark or image is replaced by drawn strokes (no text).
                     plan.append(PlanRegion(id=f"{d.id}-r{rid}", page=seg.page, poly=regions_idx[rid][1].poly,
                                            action="replace" if spec.stand_ins else "remove", mentions=[d.id]))
-    return plan, replacements
+    return plan, replacements, word_of
 
 
 def _mentions_artifact(gt: GTDocument, dets: list[_Det], token_of: dict[str, str] | None) -> MentionsArtifact:
@@ -968,7 +1185,7 @@ def target_regions(gt: GTDocument, policy: PolicyProfile, spec: MockSpec,
     _, read, _ = _text_stage(gt, spec, rng)
     dets = _detect_stage(gt, policy, spec, read, rng)
     _, cluster_of = _resolve_stage(gt, dets, spec)
-    plan, replacements = _plan_stage(gt, dets, cluster_of, spec, rng, matter_gts)
+    plan, replacements, _ = _plan_stage(gt, dets, cluster_of, spec, rng, matter_gts, policy)
     return plan, [d.gt_mention for d in dets if d.gt_mention], replacements
 
 
@@ -1086,7 +1303,7 @@ def _annotation(source: bytes, plan: list[PlanRegion], geoms) -> pymupdf.Documen
 
 def _rasterize(source: bytes, plan: list[PlanRegion], geoms, spec: MockSpec, blur: bool = False,
                keep_text: bool = False, gt: GTDocument | None = None,
-               stand_ins: frozenset[str] = frozenset()) -> pymupdf.Document:
+               stand_ins: frozenset[str] = frozenset(), aligned: frozenset[str] = frozenset()) -> pymupdf.Document:
     src = pymupdf.open("pdf", source)
     out = pymupdf.open()
     s = spec.raster_dpi / 72.0
@@ -1121,7 +1338,8 @@ def _rasterize(source: bytes, plan: list[PlanRegion], geoms, spec: MockSpec, blu
             for wd in page.get_text("words"):
                 newp.insert_text((wd[0], wd[3] - 2), wd[4], fontsize=max(4, (wd[3] - wd[1]) * 0.8), render_mode=3)
         if text_layer:
-            _redacted_text_layer(newp, gt, i, [r for r in plan if r.page == i])
+            _redacted_text_layer(newp, gt, i, [r for r in plan if r.page == i],
+                                 _line_pitch(gt.page(i)) if spec.text_next_line else 0.0, aligned)
     return out
 
 
@@ -1151,10 +1369,11 @@ def _angle_at(page: GTPage, poly) -> float:
     return round(angle / 90) * 90 % 360
 
 
-def _place(poly, text: str, angle: float, scale: float) -> tuple[np.ndarray, float] | None:
+def _place(poly, text: str, angle: float, scale: float | None) -> tuple[np.ndarray, float] | None:
     """Baseline start and font size that put every character's centre inside ``poly``: the text
     reads along ``angle`` (clockwise, a multiple of 90), is centred, ``scale`` of the polygon's line
-    height and at most 90% of its length."""
+    height and at most 90% of its length. ``scale`` None: from the polygon's start at the line's size
+    (Helvetica's proportions), smaller only where the text would run past the polygon's end."""
     p = as_poly(poly)
     a = math.radians(angle)
     d = np.array([math.cos(a), math.sin(a)])  # reading direction (display_pt, y down)
@@ -1164,22 +1383,50 @@ def _place(poly, text: str, angle: float, scale: float) -> tuple[np.ndarray, flo
     unit = _helv().text_length(text, fontsize=1)
     if not text.strip() or unit <= 0 or length <= 0 or height <= 0:
         return None
+    if scale is None:
+        size = min(height / _HELV_LINE, length / unit)
+        start = d * along.min() + u * (across.min() + across.max()) / 2
+        return start - u * (_HELV_MID * size), size
     size = min(height / _HELV_LINE * scale, 0.9 * length / unit)
     centre = d * (along.min() + along.max()) / 2 + u * (across.min() + across.max()) / 2
     return centre - d * (unit * size / 2) - u * (_HELV_MID * size), size
 
 
-def _redacted_text_layer(page: pymupdf.Page, gt: GTDocument, index: int, plan: list[PlanRegion]) -> None:
+def _across(poly, angle: float, d: float) -> np.ndarray:
+    """A polygon moved ``d`` pt across the reading direction ``angle`` (down the page for angle 0)."""
+    a = math.radians(angle)
+    return as_poly(poly) + d * np.array([-math.sin(a), math.cos(a)])
+
+
+def _line_pitch(page: GTPage) -> float:
+    """The page's line pitch: the median distance between consecutive GT lines, across them."""
+    lines: dict = defaultdict(list)
+    for w in page.words:
+        a = math.radians(w.angle)
+        lines[w.line or w.id].append(float(as_poly(w.poly).mean(axis=0) @ np.array([-math.sin(a), math.cos(a)])))
+    centres = sorted(float(np.median(v)) for v in lines.values())
+    steps = [b - a for a, b in zip(centres, centres[1:]) if b - a > 2.0]
+    return float(np.median(steps)) if steps else 14.0
+
+
+def _redacted_text_layer(page: pymupdf.Page, gt: GTDocument, index: int, plan: list[PlanRegion],
+                         offset: float = 0.0, aligned: frozenset[str] = frozenset()) -> None:
     """What an OCR'd scan carries: invisible text (render mode 3) for every GT word left on the
-    page, at its place, and each replacement as visible text in its erased region."""
+    page, at its place, and each replacement as visible text in its erased region: from the region's
+    start at the original size where it may line up with the original (``aligned``), else centred and
+    a little smaller."""
     try:
         gp = gt.page(index)
     except KeyError:
         return
     removed = _covered_words(gt, {index: [r.poly for r in plan]}) if plan else set()
     items = [(w.poly, w.text, round(w.angle / 90) * 90 % 360, 3, 1.0) for w in gp.words if w.id not in removed]
-    # Fakes a little smaller than the line, so their strokes do not line up with the original glyphs.
-    items += [(r.poly, r.replacement, _angle_at(gp, r.poly), 0, 0.8) for r in plan if r.replacement]
+    # Fakes from the word's start at the original size (eval-0.4: the character identity gate tells a fake
+    # from the original glyphs; eval-0.3.1 needed them centred and a little smaller than the line).
+    items += [(r.poly, r.replacement, _angle_at(gp, r.poly), 0, None if r.id in aligned else 0.8)
+              for r in plan if r.replacement]
+    if offset:  # the text layer drawn one line pitch below the words it stands for
+        items = [(_across(poly, angle, offset), text, angle, mode, scale) for poly, text, angle, mode, scale in items]
     font = _helv()
     flat = {0: pymupdf.TextWriter(page.rect), 3: pymupdf.TextWriter(page.rect)}
     used = set()
@@ -1218,6 +1465,313 @@ def _incremental(source: bytes, plan: list[PlanRegion], geoms) -> bytes:
         doc.close()
         with open(path, "rb") as f:
             return f.read()
+
+
+# -- fakes drawn the way tools draw them (eval-0.4 self-checks) -----------------------------------------------
+
+
+def _draws_fakes(spec: MockSpec) -> bool:
+    return bool(spec.fakes_in_place or spec.retypeset or spec.retypeset_keep or spec.overprint or spec.veil
+                or spec.shift_white or spec.address_whole or spec.keeps_locality_moved or spec.erases_locality)
+
+
+_BASE14 = (("courier", "cour", "cobo"), ("times", "tiro", "tibo"), ("helvetica", "helv", "hebo"),
+           ("arial", "helv", "hebo"))
+
+
+@lru_cache(maxsize=None)
+def _font(name: str) -> pymupdf.Font:
+    return pymupdf.Font(name)
+
+
+def _base14(span_font: str) -> str:
+    """A base-14 stand-in of a text span's font family (Helvetica when it is none of them)."""
+    f = span_font.casefold()
+    bold = "bold" in f
+    for key, regular, heavy in _BASE14:
+        if key in f:
+            return heavy if bold else regular
+    return "hebo" if bold else "helv"
+
+
+@dataclass(frozen=True)
+class _Style:
+    origin: tuple[float, float]  # where the word's baseline starts, display pt
+    size: float
+    angle: float  # reading direction, degrees clockwise in display pt
+    font: str  # a base-14 PyMuPDF font name
+
+    def at(self, along: float = 0.0, across: float = 0.0) -> tuple[float, float]:
+        a = math.radians(self.angle)
+        return (self.origin[0] + along * math.cos(a) - across * math.sin(a),
+                self.origin[1] + along * math.sin(a) + across * math.cos(a))
+
+
+def _styles(src: pymupdf.Document, gt: GTDocument, geoms) -> dict[str, _Style]:
+    """Each GT word's font, size and baseline origin: from the source's text layer, else from its box (size
+    = height / 1.374, baseline 0.21 of the height above its bottom, Helvetica)."""
+    out: dict[str, _Style] = {}
+    for page in gt.pages:
+        if page.index >= src.page_count:
+            continue
+        geom = geoms[page.index]
+        chars = [((x0 + x1) / 2, (y0 + y1) / 2, ch["origin"][0], ch["origin"][1], sp["size"], sp["font"])
+                 for b in src[page.index].get_text("rawdict")["blocks"] for ln in b.get("lines", [])
+                 for sp in ln["spans"] for ch in sp["chars"] for x0, y0, x1, y1 in [ch["bbox"]]
+                 if not ch["c"].isspace()]
+        if chars:
+            a = np.array([c[:4] for c in chars], float)
+            cen = geom.transform(a[:, 0:2], Frame.UNROTATED_PT, Frame.DISPLAY_PT)
+            org = geom.transform(a[:, 2:4], Frame.UNROTATED_PT, Frame.DISPLAY_PT)
+        for w in page.words:
+            angle = round(w.angle / 90) * 90 % 360
+            p = as_poly(w.poly)
+            style = None
+            if chars:
+                inside = shapely.contains_xy(to_shapely(dilate(p, 0.5)), cen[:, 0], cen[:, 1])
+                if inside.any():
+                    idx = np.flatnonzero(inside)
+                    u = np.array([math.cos(math.radians(angle)), math.sin(math.radians(angle))])
+                    first = idx[int(np.argmin(cen[idx] @ u))]
+                    style = _Style((float(org[first][0]), float(org[first][1])),
+                                   float(np.median([chars[i][4] for i in idx])), angle, _base14(chars[first][5]))
+            if style is None:
+                h = float(np.hypot(*(p[3] - p[0])))
+                base = p[3] + 0.21 * (p[0] - p[3])
+                style = _Style((float(base[0]), float(base[1])), h / _HELV_LINE, angle, "helv")
+            out[w.id] = style
+    return out
+
+
+def _write(page: pymupdf.Page, geom: PageGeometry, origin, angle: float, text: str, size: float, font: str) -> None:
+    """``text`` from a baseline origin (display pt) along ``angle``, in a page of any rotation."""
+    if not text:
+        return
+    a = math.radians(angle)
+    pts = geom.transform(np.array([origin, (origin[0] + math.cos(a), origin[1] + math.sin(a))], float),
+                         Frame.DISPLAY_PT, Frame.UNROTATED_PT)
+    ang = math.degrees(math.atan2(pts[1][1] - pts[0][1], pts[1][0] - pts[0][0]))
+    tw = pymupdf.TextWriter(page.rect)
+    tw.append(tuple(pts[0]), text, font=_font(font), fontsize=size)
+    if abs(ang) < 0.01:
+        tw.write_text(page, color=(0, 0, 0))
+    else:
+        tw.write_text(page, color=(0, 0, 0), morph=(pymupdf.Point(*pts[0]), pymupdf.Matrix(-ang)))
+
+
+def _over_original(ws, texts: list[str], styles: dict, fake_of: dict, s: float) -> bool:
+    """Would a line re-typeset at ``s`` from its first word put a letter of a fake over the same or a look-alike
+    letter of the original it replaces (along the line, characters overlapping by more than 30%)?"""
+    first = styles[ws[0].id]
+    a = math.radians(first.angle)
+    u = np.array([math.cos(a), math.sin(a)])
+    x = 0.0
+    for w, text in zip(ws, texts):
+        st = styles[w.id]
+        font = _font(st.font)
+        if fake_of.get(w.id) is not None:
+            o0 = float((np.asarray(st.origin) - np.asarray(first.origin)) @ u)
+            orig = [(o0 + font.text_length(w.text[:j], fontsize=st.size),
+                     o0 + font.text_length(w.text[:j + 1], fontsize=st.size)) for j in range(len(w.text))]
+            for i, c in enumerate(text):
+                if not c.isalnum():
+                    continue
+                lo = x + font.text_length(text[:i], fontsize=st.size * s)
+                hi = x + font.text_length(text[:i + 1], fontsize=st.size * s)
+                for (p, q), o in zip(orig, w.text):
+                    if min(hi, q) - max(lo, p) > 0.3 * min(hi - lo, q - p) and (
+                            c.casefold() == o.casefold() or any(c in g and o in g for g in _ALIKE)):
+                        return True
+        x += font.text_length(text + " ", fontsize=st.size * s)
+    return False
+
+
+def _draw_fakes(source: bytes, plan: list[PlanRegion], word_of: dict, geoms, gt: GTDocument, spec: MockSpec,
+                stand_ins: frozenset[str] = frozenset()) -> pymupdf.Document:
+    """Fakes drawn the way tools draw them, each in its word's font and size from its origin: in place after
+    true redaction (``fakes_in_place``), with every line holding one re-typeset (``retypeset``, or the
+    originals with ``retypeset_keep``), over the original (``overprint``), on a translucent white box
+    (``veil``) or in a white box shifted across the line (``shift_white``); addresses as units
+    (``address_whole``, ``keeps_locality_moved``, ``erases_locality``). Regions with no fake are removed as
+    with true redaction."""
+    src = pymupdf.open("pdf", source)
+    styles = _styles(src, gt, geoms)
+    words = gt.word_index()
+    doc = pymupdf.open("pdf", source)
+    erase: list[tuple[int, object, tuple]] = []  # (page, display polygon, fill) truly redacted
+    boxes: list[tuple[int, object, float]] = []  # (page, display polygon, opacity) white boxes drawn
+    draws: list[tuple[int, tuple, float, float, str, str]] = []  # (page, origin, angle, size, font, text)
+
+    def text_of(r: PlanRegion) -> tuple[str, str, int]:
+        wid, span = word_of[r.id]
+        return wid, r.replacement, span[0] if span else 0
+
+    def draw_at(wid: str, text: str, along: float = 0.0, across: float = 0.0, scale: float = 1.0) -> None:
+        st = styles[wid]
+        draws.append((words[wid][0], st.at(along, across), st.angle, st.size * scale, st.font, text))
+
+    def width(wid: str, text: str, scale: float = 1.0) -> float:
+        st = styles[wid]
+        return _font(st.font).text_length(text, fontsize=st.size * scale)
+
+    fakes = [r for r in plan if r.replacement and r.id in word_of]
+    fake_of = {word_of[r.id][0]: r for r in fakes}
+    done: set[str] = set()  # word ids an address mode has drawn already
+    removed = {word_of[r.id][0] for r in plan if r.id in word_of and not r.replacement}
+    white, black = (1, 1, 1), (0, 0, 0)
+    for r in plan:
+        if not (r.replacement and r.id in word_of) and not spec.retypeset_keep:
+            # removed (a box), or a signature's stand-in (strokes after); a tool keeping its originals keeps these
+            erase.append((r.page, r.poly, white if r.id in stand_ins else black))
+
+    # -- addresses as units ----------------------------------------------------------------------------
+    address = spec.address_whole or spec.keeps_locality_moved or spec.erases_locality
+    for street, loc in (address_unit_mentions(gt) if address else []):
+        s_ids = [w for seg in street.segments for w in seg.words] if street is not None else []
+        l_ids = [w for seg in loc.segments for w in seg.words] if loc is not None else []
+        # a part the tool does not replace (the policy does not require it) stays as it is
+        s_ids = s_ids if any(w in fake_of or w in removed for w in s_ids) else []
+        l_ids = l_ids if any(w in fake_of or w in removed for w in l_ids) else []
+        if not any(w in fake_of for w in s_ids + l_ids):
+            continue
+        if spec.address_whole or (spec.keeps_locality_moved == "line" and s_ids):
+            by_line: dict = {}
+            for w in s_ids + l_ids:
+                by_line.setdefault((words[w][0], words[w][1].line or w), []).append(w)
+            for ws in by_line.values():
+                keep_loc = spec.keeps_locality_moved == "line" and any(w in s_ids for w in ws)
+                if spec.keeps_locality_moved == "line" and not keep_loc:
+                    continue  # a locality on its own line stays as it is
+                # a word with no fake is shared structure kept as written (or a word removed with none)
+                text = " ".join(words[w][1].text if (keep_loc and w in l_ids) else
+                                fake_of[w].replacement if w in fake_of else "" if w in removed else
+                                words[w][1].text for w in ws)
+                for w in ws:
+                    erase.append((words[w][0], words[w][1].poly, white))
+                    done.add(w)
+                draw_at(ws[0], " ".join(text.split()))
+            if spec.keeps_locality_moved == "line":
+                done.update(l_ids)  # kept where they are, or moved along with the line
+            continue
+        if spec.keeps_locality_moved == "next_line" or spec.erases_locality:
+            for w in l_ids:
+                erase.append((words[w][0], words[w][1].poly, white))
+                done.add(w)
+            if spec.keeps_locality_moved == "next_line" and l_ids:
+                draw_at(l_ids[0], " ".join(words[w][1].text for w in l_ids),
+                        across=_line_pitch(gt.page(words[l_ids[0]][0])))
+
+    # -- every other fake ------------------------------------------------------------------------------
+    rest = [r for r in fakes if word_of[r.id][0] not in done]
+    lines: dict = {}
+    if spec.retypeset or spec.retypeset_keep:
+        for r in rest:
+            wid = word_of[r.id][0]
+            lines.setdefault((words[wid][0], words[wid][1].line or wid), set()).add(wid)
+        rng = random.Random(_stable("retypeset", gt.doc_id))
+        for (pg, line), _ in sorted(lines.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
+            ws = sorted((w for w in gt.page(pg).words if (w.line or w.id) == line), key=lambda w: w.order)
+            texts = [w.text if (fake_of.get(w.id) is None or spec.retypeset_keep) else fake_of[w.id].replacement
+                     for w in ws]
+            first = styles[ws[0].id]
+            # A size in 1.02-1.04x whose fakes put no letter over the same or a look-alike letter of an
+            # original they replace (that glyph would be the original's: a chance any re-typesetting tool runs).
+            sizes = [rng.uniform(1.02, 1.04)] + [1.02 + 0.0025 * k for k in range(9)]
+            s = next((x for x in sizes if spec.retypeset_keep or not _over_original(ws, texts, styles, fake_of, x)),
+                     sizes[0])
+            x = 0.0
+            for w, text in zip(ws, texts):
+                erase.append((pg, w.poly, white))
+                if fake_of.get(w.id) is None and w.id in removed:
+                    continue  # removed with no fake
+                st = styles[w.id]
+                draws.append((pg, first.at(x), first.angle, st.size * s, st.font, text))
+                x += _font(st.font).text_length(text + " ", fontsize=st.size * s)
+    else:
+        for r in rest:
+            wid, text, k0 = text_of(r)
+            lead = width(wid, words[wid][1].text[:k0]) if k0 else 0.0
+            if spec.overprint:
+                draw_at(wid, text, lead)
+            elif spec.veil:
+                boxes.append((r.page, r.poly, spec.veil))
+                draw_at(wid, text, lead)
+            elif spec.shift_white:
+                p = as_poly(r.poly)
+                h = float(np.hypot(*(p[3] - p[0])))
+                boxes.append((r.page, _across(p, styles[wid].angle, spec.shift_white * h), 1.0))
+                draw_at(wid, text, lead, spec.shift_white * h)
+            else:
+                erase.append((r.page, r.poly, white))
+                draw_at(wid, text, lead)
+
+    for pg, poly, fill in erase:
+        doc[pg].add_redact_annot(_unrotated_rect(geoms[pg], poly), fill=fill)
+    for page in doc:
+        page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS,
+                              graphics=(pymupdf.PDF_REDACT_LINE_ART_NONE if spec.retypeset_keep
+                                        else pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED),
+                              text=pymupdf.PDF_REDACT_TEXT_REMOVE)
+    for r in plan:
+        if r.id in stand_ins:
+            for stroke in _stand_in_strokes(r.poly, _stable(r.id)):
+                pts = geoms[r.page].transform(stroke, Frame.DISPLAY_PT, Frame.UNROTATED_PT)
+                doc[r.page].draw_polyline([tuple(p) for p in pts.tolist()], color=(0, 0, 0), width=1.0)
+    for pg, poly, opacity in boxes:
+        doc[pg].draw_rect(_unrotated_rect(geoms[pg], poly), color=None, fill=(1, 1, 1), fill_opacity=opacity)
+    for pg, origin, angle, size, font, text in draws:
+        _write(doc[pg], geoms[pg], origin, angle, text, size, font)
+    if spec.retypeset or spec.retypeset_keep:
+        # A scanned page has no text layer: the tool OCRs it, so the words it did not re-typeset get invisible
+        # text at their place, as the ceiling's scans do.
+        drawn = {w.id for p in gt.pages for w in p.words if (p.index, w.line or w.id) in lines}
+        for p in gt.pages:
+            if p.index < src.page_count and not src[p.index].get_text().strip():
+                for w in p.words:
+                    placed = _place(w.poly, w.text, round(w.angle / 90) * 90 % 360, 1.0) if w.id not in drawn else None
+                    if placed is not None:
+                        _write_invisible(doc[p.index], geoms[p.index], placed[0], round(w.angle / 90) * 90 % 360,
+                                         w.text, placed[1])
+    return doc
+
+
+def _write_invisible(page: pymupdf.Page, geom: PageGeometry, origin, angle: float, text: str, size: float) -> None:
+    """Invisible text (render mode 3) from a baseline origin (display pt) along ``angle``."""
+    a = math.radians(angle)
+    pts = geom.transform(np.array([origin, (origin[0] + math.cos(a), origin[1] + math.sin(a))], float),
+                         Frame.DISPLAY_PT, Frame.UNROTATED_PT)
+    ang = math.degrees(math.atan2(pts[1][1] - pts[0][1], pts[1][0] - pts[0][0]))
+    tw = pymupdf.TextWriter(page.rect)
+    tw.append(tuple(pts[0]), text, font=_helv(), fontsize=size)
+    if abs(ang) < 0.01:
+        tw.write_text(page, render_mode=3, color=(0, 0, 0))
+    else:
+        tw.write_text(page, render_mode=3, color=(0, 0, 0), morph=(pymupdf.Point(*pts[0]), pymupdf.Matrix(-ang)))
+
+
+def _aligned(plan: list[PlanRegion], word_of: dict, gt: GTDocument, policy: PolicyProfile) -> frozenset[str]:
+    """Regions whose fake may be drawn from the word's start at the original size: every character it has in
+    common with the original at the same index is shared structure the policy allows (a fake that keeps a
+    mobile's '04' or a landline's leading '0' where the policy does not share it would show the original's
+    glyphs there, so it is drawn centred and smaller, as before eval-0.4). A number keeping no shared digit is
+    drawn that way too: same-font digit groups of a phone or card number look alike, and the moved search can
+    take a neighbouring fake group for its original moved (measured on the fixtures: '485' for '456')."""
+    shared = document_shared_units(gt, policy)
+    words = gt.word_index()
+    owner = {wid: m.id for m in gt.mentions for seg in m.segments for wid in seg.words}
+    out = set()
+    for r in plan:
+        if not r.replacement or r.id not in word_of:
+            continue
+        wid, span = word_of[r.id]
+        k0 = span[0] if span else 0
+        text = words[wid][1].text[k0:span[1]] if span else words[wid][1].text
+        su = shared.get(owner.get(wid, ""), SharedUnits())
+        same = {i for i, (a, b) in enumerate(zip(text, r.replacement)) if a == b and a.isalnum()}
+        number = not any(ch.isalpha() for ch in r.replacement)
+        if all(wid in su.full or (wid, i + k0) in su.chars for i in same) and (same or not number):
+            out.add(r.id)
+    return frozenset(out)
 
 
 def _clean(spec: MockSpec, **overrides) -> MockSpec:
@@ -1273,7 +1827,7 @@ def run_mock(source: bytes, gt: GTDocument, policy: PolicyProfile, spec: MockSpe
     else:
         spec_r = spec_d
     entities, cluster_of = _resolve_stage(gt, dets, spec_r)
-    plan, replacements = _plan_stage(gt, dets, cluster_of, spec_r, rng, matter_gts)
+    plan, replacements, word_of = _plan_stage(gt, dets, cluster_of, spec_r, rng, matter_gts, policy)
     if "regions" in injected:
         own = plan
         plan = list(injected["regions"].regions)
@@ -1300,12 +1854,15 @@ def run_mock(source: bytes, gt: GTDocument, policy: PolicyProfile, spec: MockSpe
     elif m in ("overlay", "translucent"):
         data = _overlay(source, plan, geoms, opacity=0.9 if m == "translucent" else 1.0)
     else:
-        if m == "true":
+        if m == "true" and _draws_fakes(spec):
+            doc = _draw_fakes(source, plan, word_of, geoms, gt, spec, stand_ins)
+        elif m == "true":
             doc = _true_redact(source, plan, geoms, stand_ins)
         elif m == "annotation":
             doc = _annotation(source, plan, geoms)
         elif m in ("rasterize", "blur"):
             doc = _rasterize(source, plan, geoms, spec, blur=(m == "blur"), keep_text=spec.keep_text_layer, gt=gt,
+                             aligned=_aligned(plan, word_of, gt, policy),
                              stand_ins=stand_ins)
         else:
             raise ValueError(f"unknown method {m}")

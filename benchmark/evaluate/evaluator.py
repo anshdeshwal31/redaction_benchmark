@@ -576,7 +576,12 @@ def evaluate_output(
                   else WordStatus.REMOVED if frac <= cfg.word_removed_fraction else WordStatus.DAMAGED)
             inplace[w.id] = (ws.value, frac)
     requirement = {w.id: res.words.get(w.id, Effective.ORDINARY).value for p in gt.pages for w in p.words}
-    found, anchors = find_moved(gt, requirement, pcs, prim_pairs, inplace, unreliable, cfg, strict_words)
+    # -- shared structure (eval-0.4): what a realistic fake may keep, for the roles the policy enables ---
+    shared: dict[str, SharedUnits] = document_shared_units(gt, policy)
+    # A word with shared characters is found away from its place only where its glyphs pass the identity gate:
+    # a fake keeping those characters (a mobile's '04', a postcode's prefix) is not the original moved.
+    gated = frozenset(wid for su in shared.values() for wid, _ in su.chars)
+    found, anchors = find_moved(gt, requirement, pcs, prim_pairs, inplace, unreliable, cfg, strict_words, gated)
     # Words still damaged or removed, looked for re-typeset in a substitute font.
     found.update(find_restyled(gt, requirement, prim_pairs, inplace, found, anchors, unreliable, cfg, src_doc,
                                src_geoms, out_doc))
@@ -597,8 +602,6 @@ def evaluate_output(
             x0, y0, x1, y1 = (int(round(v * scale)) for v in f.box)
             primary_out[f.page][max(y0 - 1, 0):max(y1 + 2, 0), max(x0 - 1, 0):max(x1 + 2, 0)] = 255
 
-    # -- shared structure (eval-0.4): what a realistic fake may keep, for the roles the policy enables ---
-    shared: dict[str, SharedUnits] = document_shared_units(gt, policy)
     # The identifying slice of a MUST word with shared characters (an email's local part, an identifier's
     # digits) is looked for on its own: a changed domain or prefix cannot hide a kept slice it pushed along.
     must_cut = {wid: cut for mid, su in shared.items() if res.mentions[mid].requirement is Requirement.MUST
@@ -751,14 +754,17 @@ def evaluate_output(
                 survived |= hit
         return survived, suspected
 
-    def e1(m, unit: AddressUnit, ident: dict[tuple[int, str], list[int]]) -> tuple[bool, str | None, list[str]]:
+    def e1(m, unit: AddressUnit, ident: dict[tuple[int, str], list[int]], kept: dict[str, str]
+           ) -> tuple[bool, str | None, list[str]]:
         """E1: is this part of an address replaced? (replaced, locality shape, review flags). ``ident`` maps
         each identifying word to its identifying character indices."""
         rb = readback[unit.key]
         flags: list[str] = []
+        # A state kept as shared structure has passed its pair check: the text layer need not hold it.
+        state_kept = any(unit.roles.get(w) in ("state", "state+postcode") for w in kept)
         if m.type is PiiType.LOCATION:
             if rb:
-                holds, shape = locality_shape([t.text for t in rb], *locality_roles(unit, gt))
+                holds, shape = locality_shape([t.text for t in rb], *locality_roles(unit, gt), state_kept=state_kept)
                 return holds, shape, flags
             ok = bool(ident)
             for (pg, wid), ks in ident.items():
@@ -780,7 +786,7 @@ def evaluate_output(
                 # The measurement OCR may only ask for a review: it never changes the verdict.
                 read = unit_readback(unit, gt, {pg: ocr_page_tokens(pg) for pg in pages_}, kept_place, shift_pt,
                                      line_h, cfg, lines)
-                if not locality_shape([t.text for t in read], *locality_roles(unit, gt))[0]:
+                if not locality_shape([t.text for t in read], *locality_roles(unit, gt), state_kept=state_kept)[0]:
                     flags.append("LOCALITY_SHAPE_UNCONFIRMED")
             return ok, "no_text_at_unit", flags
         for (pg, wid), ks in ident.items():
@@ -931,7 +937,7 @@ def evaluate_output(
         shape = None
         if unit is not None and ident:
             # E1: an address part is judged by its identifying words and the unit's read-back.
-            replaced, shape, more = e1(m, unit, ident)
+            replaced, shape, more = e1(m, unit, ident, su.full)
             review_flags += more
         else:
             new_text = any(got_new(pg, wid, t) for (pg, wid), t in req_all.items())

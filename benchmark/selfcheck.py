@@ -32,6 +32,8 @@ class Check:
     expect: str
     test: Callable[[DocumentEvaluation, dict], tuple[bool, str]]
     needs_text_layer: bool = False
+    # More mock specs the same expectation must hold for (each run on its own; the check passes when all do).
+    variants: tuple[MockSpec, ...] = ()
 
 
 @dataclass
@@ -122,6 +124,86 @@ def _replace_all(ev, _):
                                           f"{ev.summary.get('searchable_rate')} ({'ok' if searchable else 'FAIL'})")
 
 
+def _replace_in_place(ev, context):
+    """Fakes typeset in place in the original's font and size, after true redaction: every required mention
+    replaced. A fake mobile keeping its '04' at the same place shows the original's glyphs there: PARTIAL,
+    unless the policy shares the phone prefix (owner, 2026-10-29)."""
+    ms = _must(ev)
+    if not ms:
+        return None, "no required mentions evaluated: not applicable"
+    kept = context.get("mobile_prefix_kept", set())
+    shared = context.get("phone_prefix", False)
+    bad = [m.mention_id for m in ms if m.status is not (
+        MentionStatus.PARTIAL if (m.mention_id in kept and not shared) else MentionStatus.SAFE_REPLACED)]
+    coll = ev.summary.get("collateral_rate") or 0.0
+    return not bad and coll <= 0.02, (f"{len(bad)}/{len(ms)} not as expected (SAFE_REPLACED; PARTIAL for "
+                                      f"{0 if shared else len(kept)} mobile(s) keeping '04' unshared): {bad[:8]}; "
+                                      f"collateral {coll:.3f}")
+
+
+def _retypeset(ev, _):
+    """Lines holding a fake re-typeset like tool 2's: the kept words moved, not damaged, and searchable."""
+    ms = _must(ev)
+    if not ms:
+        return None, "no required mentions evaluated: not applicable"
+    bad = [m.mention_id for m in ms if m.status is not MentionStatus.SAFE_REPLACED]
+    s = ev.summary
+    ok = not bad and bool(s.get("collateral_ok")) and bool(s.get("searchable_ok"))
+    return ok, (f"{len(bad)}/{len(ms)} not SAFE_REPLACED: {bad[:8]}; collateral {s.get('collateral_real_rate')}; "
+                f"searchable {s.get('searchable_rate')}; moved {s.get('moved_words')}")
+
+
+def _text_off_a_line(ev, _):
+    s = ev.summary
+    if not s.get("searchable_words"):
+        return None, "no kept words to search: not applicable"
+    return s.get("searchable_ok") is False, f"searchable {s.get('searchable_rate')} (must fail)"
+
+
+def _address_parts(ev, kind: str | None = None):
+    """Required address parts: street lines and localities (``kind`` 'locality' for localities only)."""
+    return [m for m in _must(ev) if m.address_unit and (kind is None or m.type == PiiType.LOCATION.value)]
+
+
+def _whole_address(ev, _):
+    parts = _address_parts(ev)
+    if not parts:
+        return None, "no required address parts: not applicable"
+    bad = [m.mention_id for m in parts if m.status is not MentionStatus.SAFE_REPLACED]
+    return not bad, f"{len(bad)}/{len(parts)} address parts not SAFE_REPLACED: {bad[:8]}"
+
+
+def _locality_kept(ev, _):
+    parts = _address_parts(ev, "locality")
+    if not parts:
+        return None, "no required localities: not applicable"
+    safe = [m.mention_id for m in parts if m.status in SAFE]
+    return not safe, f"{len(safe)}/{len(parts)} kept localities judged safe: {safe[:8]}"
+
+
+def _locality_erased(ev, context):
+    required = context.get("replace_required", set())
+    parts = [m for m in _address_parts(ev, "locality") if m.mention_id in required]
+    if not parts:
+        return None, "no locality the policy requires a fake for: not applicable"
+    bad = [m.mention_id for m in parts if m.status is not MentionStatus.NOT_REPLACED]
+    return not bad, f"{len(bad)}/{len(parts)} erased localities not NOT_REPLACED: {bad[:8]}"
+
+
+def _mobiles_keeping_prefix(gt: GTDocument, mock) -> set[str]:
+    """Phone mentions whose original and fake both start with a mobile's '04' (the mock's fakes)."""
+    words = gt.word_index()
+    fake = {r.mention.split(":", 1)[1]: r.replacement for r in (mock.pseudonyms.mentions if mock.pseudonyms else [])}
+    out = set()
+    for m in gt.mentions:
+        if m.type is not PiiType.PHONE or not m.segments or not m.segments[0].words:
+            continue
+        first = m.segments[0].words[0]
+        if words[first][1].text.startswith("04") and (fake.get(first) or "").startswith("04"):
+            out.add(m.id)
+    return out
+
+
 def _remove_only(ev, context):
     """True removal without fakes gets the verdict the policy implies for every required mention:
     NOT_REPLACED where a fake is required, SAFE_REMOVED where removal is allowed. A leak fails."""
@@ -157,6 +239,27 @@ CHECKS = [
     Check("replace-all", NAMED["reference-replace"], "all SAFE_REPLACED and searchable", _replace_all),
     Check("remove-only", MockSpec("remove-only"), "NOT_REPLACED where the policy requires a fake, SAFE_REMOVED "
           "where it allows removal", _remove_only),
+    # eval-0.4: fakes drawn the way tools draw them (docs/metrics.md, "Character identity", "Moved words",
+    # "Address units"). Correct ones pass; an original left under, beside or behind its fake does not.
+    Check("replace-in-place", NAMED["replace-in-place"], "all SAFE_REPLACED (a mobile keeping '04' PARTIAL unless "
+          "the policy shares the phone prefix), collateral <= 2%", _replace_in_place),
+    Check("retypeset", NAMED["retypeset"], "all SAFE_REPLACED, kept words moved not damaged, searchable",
+          _retypeset),
+    Check("retypeset-keep", NAMED["retypeset-keep"], "none judged safe (originals re-typeset)", _none_safe),
+    Check("overprint", NAMED["overprint"], ">= 80% not safe", _share_not_safe(0.8)),
+    Check("overprint-veil", NAMED["overprint-veil"], ">= 80% not safe under 30% and 60% white boxes",
+          _share_not_safe(0.8), variants=(MockSpec("overprint-veil-60", replace_all=True, stand_ins=True, veil=0.6),)),
+    Check("shift-white", NAMED["shift-white"], ">= 80% not safe with the white box half a line down or up",
+          _share_not_safe(0.8), variants=(MockSpec("shift-white-up", replace_all=True, stand_ins=True,
+                                                   shift_white=-0.5),)),
+    Check("text-next-line", NAMED["text-next-line"], "not searchable (text layer one line off)", _text_off_a_line),
+    Check("whole-address", NAMED["whole-address-replace"], "address parts SAFE_REPLACED", _whole_address),
+    Check("keeps-locality-moved", NAMED["keeps-locality-moved"], "the kept locality not safe, moved along its "
+          "line or to the next line", _locality_kept,
+          variants=(MockSpec("keeps-locality-next-line", replace_all=True, stand_ins=True, fakes_in_place=True,
+                             keeps_locality_moved="next_line"),)),
+    Check("erases-locality", NAMED["erases-locality"], "the erased locality NOT_REPLACED where the policy requires "
+          "a fake", _locality_erased),
 ]
 
 
@@ -191,6 +294,7 @@ def selfcheck(source: bytes, gt: GTDocument, policy: PolicyProfile, config: Eval
     res = resolve(gt, policy)
     replace_required = {mid for mid, r in res.mentions.items()
                         if r.requirement is Requirement.MUST and r.action is Action.REPLACE}
+    phone_prefix = any(PiiType.PHONE in e.types and "phone_prefix" in e.roles for e in policy.shared_roles)
     _WITH_COMPONENTS.clear()
     _WITH_COMPONENTS.update(m.id for m in gt.mentions if m.components)
     has_text = any(p.get_text().strip() for p in pymupdf.open("pdf", source))
@@ -205,18 +309,23 @@ def selfcheck(source: bytes, gt: GTDocument, policy: PolicyProfile, config: Eval
             continue
         t0 = time.time()
         try:
-            mock = run_mock(source, gt, policy, c.spec)
-            ev = evaluate_output(source, mock.pdf, gt, policy, cfg)
-            extra = {}
-            if c.name == "dpi-scale":
-                index = index or InkIndex.build(gt, source, 100)
-                extra["diagnosis"] = evaluate_plan(mock.plan, gt, res, index).document_diagnosis
-            passed, observed = c.test(ev, dict(extra, replace_required=replace_required))
+            results, statuses, extra = [], Counter(), {}
+            for spec in (c.spec, *c.variants):
+                mock = run_mock(source, gt, policy, spec)
+                ev = evaluate_output(source, mock.pdf, gt, policy, cfg)
+                if c.name == "dpi-scale":
+                    index = index or InkIndex.build(gt, source, 100)
+                    extra["diagnosis"] = evaluate_plan(mock.plan, gt, res, index).document_diagnosis
+                results.append(c.test(ev, dict(extra, replace_required=replace_required, phone_prefix=phone_prefix,
+                                               mobile_prefix_kept=_mobiles_keeping_prefix(gt, mock))))
+                statuses.update(m.status.value for m in ev.mentions if m.requirement == "MUST")
         except Exception as exc:  # noqa: BLE001 - a check that breaks fails; the other checks still run
             out.append(error_result(c.name, c.expect, exc, round(time.time() - t0, 1)))
             continue
-        statuses = dict(Counter(m.status.value for m in ev.mentions if m.requirement == "MUST"))
-        out.append(CheckResult(c.name, c.expect, passed, observed, statuses, round(time.time() - t0, 1), extra))
+        verdicts = [p for p, _ in results]
+        passed = None if all(p is None for p in verdicts) else all(p is not False for p in verdicts)
+        observed = " | ".join(o for _, o in results) if len(results) > 1 else results[0][1]
+        out.append(CheckResult(c.name, c.expect, passed, observed, dict(statuses), round(time.time() - t0, 1), extra))
     return out
 
 

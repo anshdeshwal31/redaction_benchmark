@@ -212,14 +212,16 @@ def _suburb_word(text: str, comma_ok: bool) -> bool:
     return comma_ok or not (text.rstrip().endswith(",") and canonical_street_type(core) is not None)
 
 
-def locality_shape(texts: list[str], roles: list[str], comma_ok: bool = False) -> tuple[bool, str]:
+def locality_shape(texts: list[str], roles: list[str], comma_ok: bool = False, state_kept: bool = False
+                   ) -> tuple[bool, str]:
     """Does a read-back end in a locality like the original's? Read from the end with the GT end reader
     (abbreviated, dotted, spelled-out, doubled and glued states, a 4-digit postcode, a country, 'IN YOUR
     CAPITAL CITY'): a suburb word right before the state (or the postcode), plus a state where the
     original locality had one and a postcode where it had one. ``roles`` are the original locality
-    words' roles; ``comma_ok`` says the original suburb ended with a comma. Returns (holds, the parts found
-    joined by '+', or 'none')."""
-    had_state = any(r in _STATE_ROLES for r in roles)
+    words' roles; ``comma_ok`` says the original suburb ended with a comma; ``state_kept``: the original
+    state is kept as shared structure, its pair checked (in the pixels of a page whose text layer may lack
+    it), so the read-back need not hold it. Returns (holds, the parts found joined by '+', or 'none')."""
+    had_state = any(r in _STATE_ROLES for r in roles) and not state_kept
     had_postcode = any(r in _POSTCODE_ROLES for r in roles)
     had_suburb = "suburb" in roles
     r = read_end(texts, overseas=True) if texts else None

@@ -566,6 +566,34 @@ def test_reference_replace_makes_valid_fakes_of_every_kind():
     assert [x.replacement for x in regions if x.id.endswith("sig1")] == [None]
 
 
+@pytest.mark.parametrize("shared", [True, False])
+def test_the_ceilings_locality_fake_follows_the_state_rule_of_the_policy(shared):
+    # eval-0.4: where the policy shares the state (policy 1.2.0's roles), the ceiling's fake locality is in the
+    # same state: the state as written, a postcode of that state keeping its prefix ('4' for QLD) with every
+    # later digit changed. Otherwise it is another state's, every digit changed.
+    from benchmark.gt.address_split import postcode_in_state
+    from tests import calib
+
+    policy = calib.V1_SHARED if shared else V1
+    fx = fixture("digital")
+    out = run_mock(fx.pdf, fx.gt, policy, REFERENCE)
+    words = fx.gt.word_index()
+    loc = next(m for m in fx.gt.mentions if m.id == "addr1-loc")
+    wids = [w for seg in loc.segments for w in seg.words]
+    fake = {k.split(":")[1]: v for k, v in
+            {r.mention: r.replacement for r in out.pseudonyms.mentions}.items() if k.split(":")[1] in wids}
+    original = [words[w][1].text for w in wids]
+    # shared structure the fake keeps as written is left where it is: no region, no fake drawn over it
+    suburb, state, pc = (fake.get(w, words[w][1].text) for w in wids)
+    assert (wids[1] not in fake) is shared
+    assert suburb != original[0] and len(pc) == 4 and pc.isdigit()
+    if shared:
+        assert state == original[1] == "QLD" and pc[0] == original[2][0] and postcode_in_state("QLD", pc)
+        assert all(a != b for a, b in zip(pc[1:], original[2][1:]))
+    else:
+        assert state != "QLD" and postcode_in_state(state, pc) and all(a != b for a, b in zip(pc, original[2]))
+
+
 def test_entity_keyed_fakes_are_the_same_in_every_document_of_a_matter():
     fx = fixture("digital")
     reordered = fx.gt.model_copy(update={"mentions": list(reversed(fx.gt.mentions))})

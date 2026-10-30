@@ -141,7 +141,7 @@ def draw(fx: Fixture, ops: list[tuple]) -> bytes:
         p = fx.origin[op[1]][0]
         doc[p].add_redact_annot(_rect(fx, op[1]), fill=(1, 1, 1))
     for page in doc:
-        page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE)
+        page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS)
     for op in ops:
         if op[0] == "replace" and op[2]:
             p, x, y = fx.origin[op[1]]
@@ -151,8 +151,8 @@ def draw(fx: Fixture, ops: list[tuple]) -> bytes:
                                    render_mode=3 if op[0] == "hidden" else 0)
         elif op[0] == "image":
             png, w, h = _picture(op[4])
-            doc[op[1]].insert_image(pymupdf.Rect(op[2] - 1, op[3] - SIZE * 1.075, op[2] - 1 + w, op[3] - SIZE * 1.075 + h),
-                                    stream=png)
+            top = op[3] - SIZE * 1.075
+            doc[op[1]].insert_image(pymupdf.Rect(op[2] - 1, top, op[2] - 1 + w, top + h), stream=png)
     return doc.tobytes(garbage=4, deflate=True)
 
 

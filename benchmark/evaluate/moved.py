@@ -380,11 +380,13 @@ def inky_beside(x: np.ndarray, box, vertical: bool, cfg: EvalConfig, paper: floa
 
 
 def _keep(w, c: dict, pc: PageCells, o: np.ndarray, x: np.ndarray, requirement: str, cfg: EvalConfig,
-          strict_words, paper: float) -> bool:
-    """The two filters after assignment: the identity gate for a match at the GT place, the whole-word
-    check for a word that is not MUST."""
+          strict_words, paper: float, gated: frozenset[str] = frozenset()) -> bool:
+    """The filters after assignment: the identity gate for a match at the GT place, and anywhere for a word
+    with shared characters (``gated``: a fake that keeps them, such as a re-typeset mobile keeping its '04',
+    is not the original moved), the whole-word check for a word that is not MUST."""
     scale = cfg.dpi / 72.0
-    if abs(c["s"] - 1.0) < 1e-6 and math.hypot(c["dx_pt"], c["dy_pt"]) * scale <= cfg.moved_zero_px:
+    at_place = abs(c["s"] - 1.0) < 1e-6 and math.hypot(c["dx_pt"], c["dy_pt"]) * scale <= cfg.moved_zero_px
+    if at_place or w.id in gated:
         v = pc.word_fraction_at(w.id, o, x, c["s"], c["tx"], c["ty"], cfg, gated=True, strict_words=strict_words)
         if v is None or v < cfg.word_preserved_fraction:
             return False
@@ -398,11 +400,13 @@ def _keep(w, c: dict, pc: PageCells, o: np.ndarray, x: np.ndarray, requirement: 
 
 def find_moved(gt: GTDocument, requirement: Mapping[str, str], pcs: Mapping[int, PageCells],
                pairs: Mapping[int, tuple[np.ndarray, np.ndarray]], inplace: Mapping[str, tuple[str, float | None]],
-               unreliable: set[int], cfg: EvalConfig, strict_words=None) -> tuple[dict[str, Found], dict]:
+               unreliable: set[int], cfg: EvalConfig, strict_words=None, gated: frozenset[str] = frozenset()
+               ) -> tuple[dict[str, Found], dict]:
     """Words the in-place test judged DAMAGED or REMOVED (any requirement) found intact near their place.
 
     requirement: word id -> effective requirement value; inplace: word id -> (status, visible fraction)
-    of the in-place test on the primary render. Returns (word id -> :class:`Found`, page -> anchors)."""
+    of the in-place test on the primary render; gated: words with shared characters, found only where they
+    pass the character identity gate. Returns (word id -> :class:`Found`, page -> anchors)."""
     out: dict[str, Found] = {}
     anchors_by_page: dict[int, dict] = {}
     for page in gt.pages:
@@ -435,7 +439,7 @@ def find_moved(gt: GTDocument, requirement: Mapping[str, str], pcs: Mapping[int,
                 c["v"] = pc.word_fraction_at(wid, o, x, c["s"], c["tx"], c["ty"], cfg)
                 if c["v"] is None or c["v"] < cfg.word_preserved_fraction:
                     continue
-            if not _keep(words[wid], c, pc, o, x, req, cfg, strict_words, paper):
+            if not _keep(words[wid], c, pc, o, x, req, cfg, strict_words, paper, gated):
                 continue
             out[wid] = Found(i, c["s"], c["tx"], c["ty"], tuple(c["box"]), round(c["dx_pt"], 2), round(c["dy_pt"], 2),
                              round(c["score"], 4), round(float(c["v"]), 4), req)

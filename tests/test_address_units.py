@@ -87,6 +87,19 @@ def test_a_locality_with_no_text_at_the_unit_is_not_replaced():
     assert st == {"A1": "SAFE_REPLACED", "A1-loc": "NOT_REPLACED"}
 
 
+def test_a_kept_state_need_not_be_in_the_text_of_a_scan():
+    # A scan with no text layer: a tool keeps the state in its pixels (shared, its pair checked there) and writes
+    # its fake suburb and postcode as text. The text at the unit holds no state, and the locality is replaced.
+    import dataclasses
+
+    fx = af.render(ONE_LINE)
+    scan = dataclasses.replace(fx, pdf=af.raster(fx.pdf))
+    ev = _ev(scan, af.draw(scan, af.correct(scan, P)))
+    assert _st(ev) == {"A1": "SAFE_REPLACED", "A1-loc": "SAFE_REPLACED"}
+    assert ev.mention("A1-loc").locality_shape == "suburb+postcode" and ev.mention("A1-loc").shared_pairs == [
+        ["w1_5", True]]
+
+
 # -- E3: token survival in the text layer --------------------------------------------------------------------
 
 
