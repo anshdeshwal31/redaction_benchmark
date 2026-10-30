@@ -22,14 +22,32 @@ import cv2
 import numpy as np
 import pikepdf
 import pymupdf
+import shapely
 
+from .. import ocr
 from ..forensics.inspect import revision_prefixes
-from ..geometry import as_poly, dilate, geometry_from_pikepdf_page, rasterize
+from ..geometry import as_poly, dilate, geometry_from_pikepdf_page, rasterize, to_shapely
 from ..gt.policy import Effective, resolve
 from ..gt.shared_roles import STRIP as SHARED_STRIP
 from ..gt.shared_roles import SharedUnits, document_shared_units
 from ..schemas import Action, GTDocument, PiiType, PolicyProfile, Requirement
-from .cells import PageCells, Unit, unit_flags
+from .addresses import (
+    AddressUnit,
+    Token,
+    at_place,
+    is_new_text,
+    locality_roles,
+    locality_shape,
+    ocr_tokens,
+    page_lines,
+    page_tokens,
+    token_survivals,
+    unit_readback,
+    unit_regions,
+    units_of,
+    widened,
+)
+from .cells import CellStats, PageCells, Unit, unit_flags
 from .config import EvalConfig
 from .document import document_findings
 from .moved import Found, find_moved, find_restyled, find_slices, refine_chars
@@ -381,6 +399,8 @@ def evaluate_output(
     # (original, registered output) of the first render configuration per page, for the searches
     # that run after the page loop (moved words, displaced originals)
     prim_pairs: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    prim_stats: dict[int, CellStats] = {}  # the band test of the first render configuration, for E1's new ink
+    text_scale: dict[int, tuple[float, float]] = {}  # source / output page size, for the OCR's words
     page_outcomes: list[PageOutcome] = []
     unreliable: set[int] = set()
 
@@ -453,6 +473,7 @@ def evaluate_output(
                 primary_out[i] = masked
 
         prim = band_stats[labels[0]]
+        prim_stats[i] = prim
         vis_by_cfg[i] = {lb: unit_flags(pc, band_stats[lb].informative, band_stats[lb].visible) for lb in labels}
         informative[i] = set(vis_by_cfg[i][labels[0]])
         vis[i] = {u: any(vis_by_cfg[i][lb].get(u, False) for lb in labels) for u in informative[i]}
@@ -467,7 +488,8 @@ def evaluate_output(
             centres, chars = page_chars(out_page, out_geom)
             texts[i] = text_in_words(page, centres, chars, mention_words)
             (sw, sh), (ow, oh) = src_geoms[i].display_size, out_geom.display_size
-            page_texts[i] = page_text(out_page, out_geom, (sw / ow, sh / oh))
+            text_scale[i] = (sw / ow, sh / oh)
+            page_texts[i] = page_text(out_page, out_geom, text_scale[i])
             zone_tokens[i] = {w.id: tokens_in_zone(w.poly, page_texts[i]) for w in page.words
                               if w.id in whole_token_words}
             mention_cells = [ci for ci, c in enumerate(pc.cells)
@@ -645,6 +667,139 @@ def evaluate_output(
             return token_leaks(needle, rev_tokens.get(pg, {}).get(wid, []), cfg)
         return text_leaks(needle, rev_texts.get(pg, {}).get(wid), cfg)
 
+    # -- address units (eval-0.4: E1, E3, E4; docs/metrics.md, "Address units") -----------------------------
+    addr_units = units_of(gt)
+    unit_of: dict[str, AddressUnit] = {m.id: u for u in addr_units for m in u.mentions}
+    lines = page_lines(gt, line_h)
+    tokens_by_page = {pg: page_tokens(pt, pg) for pg, pt in page_texts.items()}
+    # Words the output still shows (PRESERVED in place, or MOVED), and the kept ones at their displayed place:
+    # the anchors that bound a unit's read-back.
+    present: set[str] = set()
+    kept_place: dict[str, np.ndarray] = {}
+    for page in gt.pages:
+        for w in page.words:
+            if w.id in found or inplace[w.id][0] == WordStatus.PRESERVED.value:
+                present.add(w.id)
+                if requirement[w.id] in (Effective.ORDINARY.value, Effective.MUST_NOT.value):
+                    kept_place[w.id] = found[w.id].poly(w.poly, scale) if w.id in found else as_poly(w.poly)
+    readback = {u.key: unit_readback(u, gt, tokens_by_page, kept_place, shift_pt, line_h, cfg, lines)
+                for u in addr_units}
+    regions = {u.key: unit_regions(u, lines, cfg) for u in addr_units}
+    # E3 leaves out the tokens at the displayed place of words a kept (MUST_NOT) or optional (MAY) rule
+    # decides, and such words never raise the allowance either.
+    keep_zones: dict[int, list] = defaultdict(list)
+    for page in gt.pages:
+        sh = np.asarray(shift_pt.get(page.index, (0.0, 0.0)))
+        for w in page.words:
+            if requirement[w.id] in (Effective.MUST_NOT.value, Effective.MAY.value):
+                poly = found[w.id].poly(w.poly, scale) if w.id in found else as_poly(w.poly)
+                keep_zones[page.index].append(to_shapely(dilate(poly + sh, 1.0)))
+    ocr_cache: dict[int, list[Token]] = {}
+
+    def ocr_page_tokens(pg: int) -> list[Token]:
+        """Words the measurement OCR reads on an output page with no text layer (review flags only)."""
+        if pg not in ocr_cache:
+            got = None
+            if integrity.opens and out_doc is not None and pg < out_doc.page_count and ocr.available():
+                try:
+                    got = ocr.ocr_page(output, pg)
+                except RuntimeError:
+                    got = None
+            ocr_cache[pg] = ocr_tokens(got, pg, text_scale.get(pg, (1.0, 1.0)))
+        return ocr_cache[pg]
+
+    new_ink_cache: dict[int, np.ndarray] = {}
+
+    def new_ink(pg: int) -> np.ndarray:
+        """New ink per band of the primary configuration, read on the output with the visible original
+        bands and the boxes of displaced originals blanked: their ink is never the replacement."""
+        if pg not in new_ink_cache:
+            st, pc, x = prim_stats[pg], pcs[pg], primary_out[pg]
+            arr = np.zeros(len(pc.cells), bool)
+            for ci in np.flatnonzero(st.new_ink):
+                rr, cc = pc.rows[ci], pc.cols[ci]
+                arr[ci] = rr.size >= 4 and float(x[rr, cc].std()) >= cfg.cell_min_visible_std
+            new_ink_cache[pg] = arr
+        return new_ink_cache[pg]
+
+    def e3(unit: AddressUnit, needles: dict[str, str]) -> tuple[set[str], bool]:
+        """E3: the identifying words (word id -> whole-token needle) that survive in the text layer of the
+        unit's region, and whether the measurement OCR suspects one on a page with no text layer."""
+        survived: set[str] = set()
+        suspected = False
+        others = {(t.page, t.index) for k, rb in readback.items() if k != unit.key for t in rb}
+        for reg in regions[unit.key]:
+            pg = reg.page
+            toks, by_ocr = tokens_by_page.get(pg), False
+            if not toks:
+                if pg in unreliable or pg not in primary_out:
+                    continue
+                toks, by_ocr = ocr_page_tokens(pg), True
+            if not toks:
+                continue
+            shift = shift_pt.get(pg, (0.0, 0.0))
+            zones = keep_zones.get(pg, [])
+            out_toks = [t for t in toks if reg.contains(t.centre, shift) and (t.page, t.index) not in others
+                        and not any(z.contains(shapely.Point(t.centre)) for z in zones)]
+            allow = [w.text for w in gt.page(pg).words
+                     if requirement[w.id] == Effective.ORDINARY.value and w.id in present
+                     and reg.contains(as_poly(w.poly).mean(axis=0))]
+            hit = token_survivals(needles, out_toks, allow)
+            if by_ocr:
+                suspected |= bool(hit)
+            else:
+                survived |= hit
+        return survived, suspected
+
+    def e1(m, unit: AddressUnit, ident: dict[tuple[int, str], list[int]]) -> tuple[bool, str | None, list[str]]:
+        """E1: is this part of an address replaced? (replaced, locality shape, review flags). ``ident`` maps
+        each identifying word to its identifying character indices."""
+        rb = readback[unit.key]
+        flags: list[str] = []
+        if m.type is PiiType.LOCATION:
+            if rb:
+                holds, shape = locality_shape([t.text for t in rb], *locality_roles(unit, gt))
+                return holds, shape, flags
+            ok = bool(ident)
+            for (pg, wid), ks in ident.items():
+                if pg not in primary_out:
+                    ok = False
+                    break
+                chars = unit_flags(pcs[pg], prim_stats[pg].informative, new_ink(pg))
+                if not any(chars.get((wid, k), False) for k in ks):
+                    ok = False
+                    break
+            if not ok:
+                polys: dict[int, list[np.ndarray]] = defaultdict(list)
+                for (pg, wid) in ident:
+                    w = words[wid][1]
+                    polys[pg].append(widened(w.poly, w.angle, 0.5 * (line_h.get(wid) or 0.0)))
+                ok = any(_text_like_ink(primary_out[pg], ps, scale) for pg, ps in polys.items() if pg in primary_out)
+            pages_ = {pg for pg, _ in ident}
+            if pages_ and ocr.available() and not any(tokens_by_page.get(pg) for pg in pages_):
+                # The measurement OCR may only ask for a review: it never changes the verdict.
+                read = unit_readback(unit, gt, {pg: ocr_page_tokens(pg) for pg in pages_}, kept_place, shift_pt,
+                                     line_h, cfg, lines)
+                if not locality_shape([t.text for t in read], *locality_roles(unit, gt))[0]:
+                    flags.append("LOCALITY_SHAPE_UNCONFIRMED")
+            return ok, "no_text_at_unit", flags
+        for (pg, wid), ks in ident.items():
+            w = words[wid][1]
+            h = line_h.get(wid) or float(np.hypot(*(as_poly(w.poly)[3] - as_poly(w.poly)[0])))
+            sh = shift_pt.get(pg, (0.0, 0.0))
+            if any(t.page == pg and at_place(t, w.poly, h, sh, cfg) and is_new_text(w.text, t.text) for t in rb):
+                return True, None, flags
+            if pg in primary_out:
+                st, pc = prim_stats[pg], pcs[pg]
+                cells = [ci for ci in pc.word_cells.get(wid, []) if pc.cells[ci].index in ks and st.informative[ci]]
+                if cells and np.mean(new_ink(pg)[cells]) >= cfg.address_new_ink_fraction:
+                    return True, None, flags
+        polys = defaultdict(list)
+        for (pg, wid) in ident:
+            polys[pg].append(as_poly(words[wid][1].poly))
+        return any(_text_like_ink(primary_out[pg], ps, scale) for pg, ps in polys.items() if pg in primary_out), \
+            None, flags
+
     # -- mentions ----------------------------------------------------------------------------
     outcomes: list[MentionOutcome] = []
     excused_words: set[str] = set()  # whole words excused as shared structure (pairs that held)
@@ -674,13 +829,50 @@ def evaluate_output(
         shared_units = [(pg, u) for pg, u in units if su.shared(u)]
         units = [(pg, u) for pg, u in units if not su.shared(u)]
         excused_words.update(su.full)
-        f_vis = _fraction([vis[pg].get(u, False) for pg, u in units])
-        f_disp = _fraction([(pg, u) in displaced for pg, u in units])
-        f_lat = _fraction([lat[pg].get(u, False) for pg, u in units])
-        f_img = _fraction([img.get(pg, {}).get(u, False) for pg, u in units])
-        f_img_lat = _fraction([img_lat.get(pg, {}).get(u, False) for pg, u in units])
-        f_rev_px = _fraction([rev.get(pg, {}).get(u, False) for pg, u in units])
         req_all = _required_text(m, words)
+        unit = unit_of.get(m.id)
+        # The identifying words of an address part (shared words left out) and their identifying characters.
+        ident: dict[tuple[int, str], list[int]] = {}
+        if unit is not None:
+            for seg in m.segments:
+                for wid in seg.words:
+                    if wid in su.full:
+                        continue
+                    lo, hi = (seg.char_start, seg.char_end) if seg.char_start is not None \
+                        else (0, len(words[wid][1].text))
+                    ks = [k for k in range(lo, hi) if (wid, k) not in su.chars]
+                    if ks:
+                        ident[(seg.page, wid)] = ks
+        # E4: in an address part a word of at most address_short_chars letters or digits counts in a channel
+        # only when all its characters do there ('14' with only its '1' seen counts nothing).
+        short = {wid for (pg, wid), t in req_all.items() if (pg, wid) in ident
+                 and sum(ch.isalnum() for ch in t) <= cfg.address_short_chars}
+        short_at: dict[str, list[int]] = defaultdict(list)
+        for k_, (pg, u) in enumerate(units):
+            if u[0] in short:
+                short_at[u[0]].append(k_)
+
+        def flags_of(get) -> list[bool]:
+            vals = [bool(get(pg, u)) for pg, u in units]
+            for ks_ in short_at.values():
+                if not all(vals[k_] for k_ in ks_):
+                    for k_ in ks_:
+                        vals[k_] = False
+            return vals
+
+        vis_flags = flags_of(lambda pg, u: vis[pg].get(u, False))
+        f_vis = _fraction(vis_flags)
+        f_disp = _fraction(flags_of(lambda pg, u: (pg, u) in displaced))
+        f_lat = _fraction(flags_of(lambda pg, u: lat[pg].get(u, False)))
+        f_img = _fraction(flags_of(lambda pg, u: img.get(pg, {}).get(u, False)))
+        f_img_lat = _fraction(flags_of(lambda pg, u: img_lat.get(pg, {}).get(u, False)))
+        f_rev_px = _fraction(flags_of(lambda pg, u: rev.get(pg, {}).get(u, False)))
+        # ...and a fully visible identifying word makes the part at least PARTIAL, whatever its residual.
+        seen_word: dict[str, list[bool]] = defaultdict(list)
+        for (pg, u), v in zip(units, vis_flags):
+            if (pg, u[0]) in ident:
+                seen_word[u[0]].append(v)
+        word_seen = any(vs and all(vs) for vs in seen_word.values())
         # In the text layer a shared word is left out and a word with shared characters is looked for by
         # its identifying slice (an email's local part, an identifier's digits).
         req_text = {}
@@ -693,7 +885,17 @@ def evaluate_output(
             if t:
                 req_text[(pg, wid)] = t
         total_chars = sum(len(t) for t in req_text.values())
-        hit = sum(len(t) for (pg, wid), t in req_text.items() if text_leaked(pg, wid, t))
+        leaked_words = {k for k, t in req_text.items() if text_leaked(k[0], k[1], t)}
+        review_flags: list[str] = []
+        if unit is not None:
+            # E3: an identifying word of the unit found more often in the unit's region than the input kept it
+            # there is a surviving original wherever it was drawn.
+            needles = {wid: req_all[(pg, wid)] for (pg, wid) in ident if req_all.get((pg, wid))}
+            survived, suspected = e3(unit, needles)
+            leaked_words |= {k for k in req_text if k[1] in survived}
+            if suspected:
+                review_flags.append("LEAK_SUSPECTED")
+        hit = sum(len(t) for k, t in req_text.items() if k in leaked_words)
         rev_hit = sum(len(t) for (pg, wid), t in req_text.items() if rev_text_leaked(pg, wid, t))
         f_text = hit / total_chars if total_chars else 0.0
         f_rev = max(f_rev_px, rev_hit / total_chars if total_chars else 0.0)
@@ -703,7 +905,7 @@ def evaluate_output(
             if o_s:
                 vec_orig, vec_surv = vec_orig + o_s[0], vec_surv + o_s[1]
         f_vec = vec_surv / vec_orig if vec_orig else 0.0
-        per_cfg = {lb: _fraction([vis_by_cfg[pg][lb].get(u, False) for pg, u in units]) for lb in labels}
+        per_cfg = {lb: _fraction(flags_of(lambda pg, u, lb=lb: vis_by_cfg[pg][lb].get(u, False))) for lb in labels}
         worst_cfg = max(per_cfg, key=per_cfg.get) if units and max(per_cfg.values()) > 0 else None
 
         polys_by_page: dict[int, list[np.ndarray]] = defaultdict(list)
@@ -726,9 +928,15 @@ def evaluate_output(
                     return False
             return _is_new_text(words[wid][1].text, t, got, cfg)
 
-        new_text = any(got_new(pg, wid, t) for (pg, wid), t in req_all.items())
-        replaced = new_text or any(_text_like_ink(primary_out[pg], polys, scale)
-                                   for pg, polys in polys_by_page.items() if pg in primary_out)
+        shape = None
+        if unit is not None and ident:
+            # E1: an address part is judged by its identifying words and the unit's read-back.
+            replaced, shape, more = e1(m, unit, ident)
+            review_flags += more
+        else:
+            new_text = any(got_new(pg, wid, t) for (pg, wid), t in req_all.items())
+            replaced = new_text or any(_text_like_ink(primary_out[pg], polys, scale)
+                                       for pg, polys in polys_by_page.items() if pg in primary_out)
         region_polys: dict[int, list[np.ndarray]] = defaultdict(list)
         for seg in m.segments:
             region_polys[seg.page].extend(as_poly(regions_idx[rid][1].poly) for rid in seg.regions)
@@ -736,7 +944,8 @@ def evaluate_output(
                                    for pg, polys in region_polys.items() if pg in primary_out)
 
         l2 = []
-        if f_text > cfg.safe_max_residual:
+        # A whole identifying word of an address in the text layer is a leak whatever its share (E4).
+        if f_text > cfg.safe_max_residual or (unit is not None and leaked_words):
             l2.append("text_layer")
         if f_img > cfg.safe_max_residual:
             l2.append("image_layer")
@@ -748,7 +957,7 @@ def evaluate_output(
             status = MentionStatus.NOT_EVALUATED
         elif f_vis >= cfg.leak_min_residual:
             status = MentionStatus.LEAK_VISIBLE
-        elif f_vis > cfg.safe_max_residual:
+        elif f_vis > cfg.safe_max_residual or word_seen:
             status = MentionStatus.PARTIAL
         elif l2:
             status = MentionStatus.LEAK_RECOVERABLE
@@ -770,7 +979,8 @@ def evaluate_output(
             l2_sources=l2, status=status, displaced_residual=round(f_disp, 4), shared_words=sorted(su.full),
             shared_chars=sorted([w, k] for w, k in su.chars),
             shared_visible=round(_fraction([vis[pg].get(u, False) for pg, u in shared_units]), 4),
-            shared_pairs=pair_log))
+            shared_pairs=pair_log, address_unit=unit.key if unit is not None else None, locality_shape=shape,
+            review_flags=review_flags))
 
     # -- words: the in-place test, or MOVED where the word was found away from its place ------------
     word_outcomes: list[WordOutcome] = []

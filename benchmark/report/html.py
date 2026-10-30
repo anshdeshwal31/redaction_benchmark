@@ -118,6 +118,8 @@ code{font-size:12px}.wrap{overflow-x:auto}
 
 {% if shared_rows %}<h2>Shared structure</h2><p class="mut">Words and characters of required mentions a realistic fake may keep (policy shared roles), left out of every residual. A state is excused only with its postcode prefix (the pair).</p><div class="wrap"><table><tr><th>doc</th><th>mention</th><th>type</th><th>status</th><th>shared words</th><th>shared characters</th><th>state/postcode pairs</th><th>shared still visible</th></tr>
 {% for r in shared_rows %}<tr><td>{{ r.doc_id }}</td><td>{{ r.mention_id }}</td><td>{{ r.type }}</td><td>{{ r.status }}</td><td>{{ r.words }}</td><td>{{ r.chars }}</td><td>{{ r.pairs }}</td><td>{{ r.visible }}</td></tr>{% endfor %}</table></div>{% endif %}
+{% if address_rows %}<h2>Address units</h2><p class="mut">Each address is judged as a unit: its street line and its locality get their own verdict. A locality on a page with a text layer is replaced only when the text at the unit ends in a locality (suburb, and a state and postcode where the original had them). Review flags come from the measurement OCR and never change a verdict.</p><div class="wrap"><table><tr><th>doc</th><th>unit</th><th>part</th><th>mention</th><th>status</th><th>text at the unit</th><th>review</th></tr>
+{% for r in address_rows %}<tr><td>{{ r.doc_id }}</td><td>{{ r.unit }}</td><td>{{ r.part }}</td><td>{{ r.mention_id }}</td><td>{{ r.status }}</td><td>{{ r.shape }}</td><td>{{ r.flags }}</td></tr>{% endfor %}</table></div>{% endif %}
 {% for title, rows in breakdowns %}<h2>{{ title }}</h2><table><tr><th>slice</th><th>required mentions</th><th>leaking</th><th>leak rate</th></tr>
 {% for r in rows %}<tr><td>{{ r[0] }}</td><td>{{ r[1] }}</td><td>{{ r[2] }}</td><td>{{ r[3] }}</td></tr>{% endfor %}</table>{% endfor %}
 
@@ -269,6 +271,14 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
                                 "status": m["status"], "words": ", ".join(sw) or "-", "chars": len(sc),
                                 "pairs": ", ".join(f"{w} {'held' if ok else 'failed'}" for w, ok in sp) or "-",
                                 "visible": _fmt(m.get("shared_visible"), True)})
+    # eval-0.4: the parts of each address unit side by side (ids, statuses and the read-back's shape only)
+    address_rows = []
+    for m in sorted((x for x in must if x.get("address_unit")),
+                    key=lambda x: (x["doc_id"], x["address_unit"], x["type"] != "ADDRESS")):
+        address_rows.append({"doc_id": m["doc_id"], "unit": m["address_unit"], "mention_id": m["mention_id"],
+                             "part": "locality" if m["type"] == "LOCATION" else "street line",
+                             "status": m["status"], "shape": m.get("locality_shape") or "-",
+                             "flags": m.get("review_flags") or "-"})
     gallery = []
     ds = load_manifest(run.dataset["name"], run.dataset["version"])
     gts = {}
@@ -300,6 +310,7 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
                            components=comp_rows, docs=docs, breakdowns=breakdowns, funnel=funnel,
                            attribution=[(*k, v) for k, v in attribution.most_common()],
                            over=sorted(over.items()), determinism=determinism, gallery=gallery, shared_rows=shared_rows,
+                           address_rows=address_rows,
                            pending=sorted(pending.items()), skipped=scoring.get("skipped", []),
                            matter_mismatch=scoring.get("matter_mismatch", []),
                            mismatch=deviations.mismatch_section([scoring]),

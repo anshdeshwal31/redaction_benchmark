@@ -104,10 +104,14 @@ def test_same_font_fakes_in_place_are_safe(form, dpi):
     # 300-DPI JPEG, under the shared roles of policy 1.2.0: every MUST text mention SAFE_REPLACED and none
     # with image-layer evidence. The claim numbers keep their 'CLM-' prefix (shared, owner Q3); at 150 DPI
     # two fake letters where org1's 'Pty' was pass the run clause, inside the shared legal form (owner Q2).
+    # P1's locality fake ('Faketown QLD 4000' -> two pool names and a 5-digit number) is no locality: where
+    # the output has a text layer, E1 reads the text at the address unit and finds no locality shape, so the
+    # locality is NOT_REPLACED (S15), never a leak.
     b = calib.base()
     out = calib.same_font_fakes(300 if form == "r300" else None)
     ev = evaluate_output(b.pdf, out, b.gt, calib.V1_SHARED, EvalConfig(dpi=dpi))
-    assert _not_safe(ev) == {}
+    assert _not_safe(ev) == ({} if form == "r300" else {"addr1-loc": "NOT_REPLACED"})
+    assert ev.mention("addr1-loc").locality_shape == ("no_text_at_unit" if form == "r300" else "none")
     layer = {m.mention_id for m in ev.mentions if m.mention_id in calib.must_text_mentions()
              and ("image_layer" in m.l2_sources or m.image_latent_residual > CFG.safe_max_residual)}
     assert layer == set(), layer
@@ -115,10 +119,11 @@ def test_same_font_fakes_in_place_are_safe(form, dpi):
 
 def test_random_other_state_localities_in_place_are_safe():
     # E5: the address line truly redacted and a random realistic whole-address fake in another state
-    # typeset in its place, 15 seeded fakes. eval-0.3.1 flagged 7 of 15. The identity gate leaves 5:
-    # four fakes whose house number starts with '1', the very glyph '14' starts with at the same place
-    # (E4, S15: a 1-2 character address word counts only when all its characters are visible), and one
-    # whose postcode digits pass the run clause in the PDFium render ('7486' over '4000').
+    # typeset in its place, 15 seeded fakes. eval-0.3.1 flagged 7 of 15. The identity gate leaves 5, and E4
+    # clears four of them: their house number starts with '1', the very glyph '14' starts with at the same
+    # place, and a word of one or two characters counts only when all its characters are seen. One stays:
+    # its postcode digits pass the run clause in the PDFium render ('7486' over '4000'), the documented limit
+    # on random same-font fakes.
     flagged = {}
     for k, fake in enumerate(calib.address_fakes()):
         ev = _evaluate(calib.address_in_place(fake))
@@ -126,8 +131,7 @@ def test_random_other_state_localities_in_place_are_safe():
                if m.mention_id in ("addr1", "addr1-loc") and m.status not in SAFE}
         if bad:
             flagged[k] = bad
-    assert flagged == {2: {"addr1": "PARTIAL"}, 4: {"addr1-loc": "PARTIAL"}, 6: {"addr1": "PARTIAL"},
-                       12: {"addr1": "PARTIAL"}, 14: {"addr1": "PARTIAL"}}, flagged
+    assert flagged == {4: {"addr1-loc": "PARTIAL"}}, flagged
 
 
 @pytest.mark.parametrize("font", ["cour", "tiro", "hebo"])

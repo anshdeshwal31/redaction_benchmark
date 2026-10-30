@@ -165,6 +165,17 @@ class EvalConfig(BaseModel):
                                                        "own embedded fonts (when it has a text layer), the others "
                                                        "base-14 families")
 
+    # -- address units (eval-0.4; docs/metrics.md, "Address units") ------------------------------
+    address_new_ink_fraction: float = Field(0.5, description="E1: a street line is replaced when this share of an "
+                                                             "identifying word's informative bands carry new ink "
+                                                             "(original glyphs left out), or the read-back holds new "
+                                                             "text at the word")
+    address_adjacent_lines: int = Field(1, ge=0, description="E3: GT lines before and after the unit's lines, in "
+                                                             "the same block, that its region also covers")
+    address_short_chars: int = Field(2, ge=0, description="E4: a word of an address part with at most this many "
+                                                          "letters or digits counts in a channel only when all its "
+                                                          "characters do there")
+
     # -- file-level survival (L2) ---------------------------------------------------
     layer_ncc: float = Field(0.6, description="Image-layer cell correlates with the original content")
     layer_amp: float = Field(0.25, description="Image-layer contrast ratio for recoverable (else latent)")

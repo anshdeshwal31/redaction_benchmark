@@ -58,7 +58,11 @@ def test_redrawn_lines_are_moved_not_removed(case, raster_dpi):
     s = ev.summary
     assert s["collateral_real_words"] == 0 and s["protected_damaged"] == [] and s["must_words_displaced"] == []
     text = set(calib.must_text_mentions())
-    assert all(m.status in SAFE for m in ev.mentions if m.mention_id in text)
+    # The locality's fake (two pool names and a 5-digit number) is no locality: with a text layer, E1 finds no
+    # locality shape at the unit and the locality is NOT_REPLACED (S15).
+    expected = {"addr1-loc": "NOT_REPLACED"} if raster_dpi is None else {}
+    assert {m.mention_id: m.status.value for m in ev.mentions if m.mention_id in text and m.status not in SAFE} == \
+        expected
 
 
 @pytest.mark.parametrize("case", ["B4", "B12"])

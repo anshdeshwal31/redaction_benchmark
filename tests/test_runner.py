@@ -670,6 +670,8 @@ def test_the_ceiling_mock_follows_the_run_policy_and_reports_show_the_departures
     title = html.escape("Departures from the client's answers")
     report = build_report("ceiling", res).read_text(encoding="utf-8")
     assert title in report and report.index(title) < report.index("<h2>Scorecard</h2>")
+    # eval-0.4: each address unit's parts side by side, with what the text at the unit holds.
+    assert "<h2>Address units</h2>" in report and "<td>suburb+state+postcode</td>" in report
     assert all(html.escape(getattr(d, k)) in report for d in v1.deviations for k in ("client_answer", "reason"))
     assert title not in build_report("ref", env / "results" / "ref").read_text(encoding="utf-8")  # draft: none
 
