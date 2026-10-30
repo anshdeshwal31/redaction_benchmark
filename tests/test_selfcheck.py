@@ -15,6 +15,7 @@ CLIENT = load_policy(Path(__file__).resolve().parents[1] / "policies" / "au-medi
 CFG = EvalConfig(dpi=150, renderers=("mupdf",))
 
 
+@pytest.mark.calibration
 @pytest.mark.parametrize("make", [digital, mrc, rotated_content])
 def test_selfcheck_passes_on_fixtures(make):
     fx = make()
@@ -65,6 +66,7 @@ def test_client_rule_checks_catch_the_opposite_tool():
     assert _remove_only(removed, required)[0] is False
 
 
+@pytest.mark.calibration
 def test_every_check_passes_on_a_fixture_under_the_client_policy():
     # The drawn signature is required under the client policy: under an overlay box it is recoverable.
     fx = digital()
@@ -77,6 +79,7 @@ EVAL04 = ["replace-in-place", "retypeset", "retypeset-keep", "overprint", "overp
           "text-next-line", "whole-address", "keeps-locality-moved", "erases-locality"]
 
 
+@pytest.mark.calibration
 def test_the_eval04_checks_follow_the_shared_roles_of_the_policy_passed_in():
     # Under the shared roles of policy 1.2.0 (owner, 2026-10-29) a fake mobile may keep its '04': the fakes
     # typeset in place are all replacements. With no shared roles (the shared structure of 1.1.1), or under

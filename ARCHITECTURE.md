@@ -756,7 +756,7 @@ erDiagram
 
 ### Relevant tests and coverage gaps
 
-789 tests (they take roughly 50 minutes on the development laptop). They cover:
+789 tests (about 26 minutes on 3 workers on the development laptop, 45 minutes serially; the slow calibration and self-check tests carry the `calibration` marker and can be skipped with `--skip-calibration`). They cover:
 
 - **Geometry:** property-based round trips across every pair of frames, all rotations and
   CropBox offsets, checked against renders from both engines.

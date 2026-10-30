@@ -137,6 +137,7 @@ def test_repeated_words_traps():
 FIXTURES = {"digital": digital, "mrc": mrc, "rotated_content": rotated_content}
 
 
+@pytest.mark.calibration
 @pytest.mark.parametrize("fixture", sorted(FIXTURES))
 def test_no_mock_moves_a_word(fixture):
     # The self-check's mocks redact in place: any word they leave MOVED is within 1 pt of its place. The

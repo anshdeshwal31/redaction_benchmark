@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==9.1.1", "hypothesis==6.168.3"]
+dev = ["pytest==9.1.1", "pytest-xdist==3.8.0", "hypothesis==6.168.3"]
 
 [project.scripts]
 rb = "benchmark.cli:main"
@@ -37,7 +37,10 @@ include = ["benchmark*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# 3 workers, each test file on one worker (some runner tests reuse an earlier test's run). Memory is
+# the limit: 3 workers peaked at about 11.5 GB used on the 15 GB laptop. Run one test serially with -n 0.
+addopts = "-n 3 --dist loadfile"
 filterwarnings = ["ignore:The `fitz` API is deprecated"]
 markers = [
-    "calibration: eval-0.4 calibration on fictional adversarial outputs (slow; a quick loop can deselect them with -m 'not calibration')",
+    "calibration: slow eval-0.4 calibration and full self-check tests on fictional outputs; on by default, skipped with --skip-calibration or RB_SKIP_CALIBRATION=1",
 ]

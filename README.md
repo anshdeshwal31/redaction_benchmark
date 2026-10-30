@@ -18,8 +18,15 @@ traced to the stage that caused them.
 ```bash
 py -3.11 -m venv .venv                  # Windows
 .venv/Scripts/python -m pip install -e ".[dev]"
-.venv/Scripts/python -m pytest          # 789 tests, about 50 minutes
+.venv/Scripts/python -m pytest          # 789 tests on 3 workers, about 26 minutes
 ```
+
+The suite runs on 3 workers (`addopts` in `pyproject.toml`, pytest-xdist); each test file stays on one
+worker. Add `-n 0` to run serially, for example one test while debugging. The slow calibration and
+full self-check tests (marker `calibration`) run by default; `--skip-calibration` or
+`RB_SKIP_CALIBRATION=1` leaves them out of a quick run (about 10 minutes, 140 tests reported as skipped). Run them before
+every commit that touches `benchmark/evaluate/`, `policies/`, the config, the mocks or the self-check,
+before any scoring that is reported, and after updating packages or moving to a new machine.
 
 On Linux the interpreter is `.venv-linux/bin/python` (`python3.11 -m venv .venv-linux`, then the same
 `pip install`). Without an editable install, set `PYTHONPATH` to the repository so the mock candidates
