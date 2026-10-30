@@ -32,7 +32,7 @@ from benchmark.runner.runner import (
     resolve_version,
     run_candidate,
 )
-from benchmark.runner.scoring import score_run
+from benchmark.runner.scoring import results_root, score_run
 from benchmark.schemas import CandidateManifest, DocumentEntry
 from benchmark.synth.register import register_synthetic
 
@@ -697,6 +697,8 @@ from pathlib import Path
 import pymupdf
 src, out = Path(sys.argv[1]), Path(sys.argv[2])
 original = "\\f".join(p.get_text("text") for p in pymupdf.open(src))
+if "--misread" in sys.argv:  # the tool's own extraction misreads a name, as OCR can
+    original = original.replace("Elizabeth", "Elizabcth")
 fakes = {"Smithers": "Dunbar", "SMITHERS": "DUNBAR", "Jane": "Ruth"}
 redacted = re.sub(r"\\b(" + "|".join(fakes) + r")\\b", lambda m: fakes[m.group(1)], original)
 if "--none" not in sys.argv:
@@ -742,7 +744,33 @@ def test_a_text_only_tool_is_scored_on_its_redacted_text(env, tmp_path):
     # text and is left out.
     assert status["m2"] == status["m8"] == "SAFE_REPLACED"
     assert status["ph1"] == status["em1"] == "LEAK_VISIBLE" and "sig1" not in status
-    assert build_report("text-tool", res).exists()
+    report = build_report("text-tool", res).read_text(encoding="utf-8")
+    assert "graded on its redacted text" in report and "from the redacted text" in report
+    from benchmark.report.board import RunData, build_board, scorecard
+
+    # The board says what a run is graded on, and its token recall leaves the excused shared words out, as
+    # each document's summary does.
+    row = scorecard([RunData("text-tool")])[0]
+    assert row["evidence"] == "text" and row["eval"] == CFG.version
+    doc = query(res, "SELECT effective_token_recall FROM documents")[0][0][0]
+    excused = query(res, "SELECT shared_words FROM mentions WHERE requirement='MUST' AND shared_words <> ''")[0]
+    assert excused and abs(row["recall"] - doc) < 1e-4, (row["recall"], doc)  # the summary keeps 4 decimals
+    assert "<td>text</td>" in build_board(["text-tool"], tmp_path / "text.html").read_text(encoding="utf-8")
+    # A mention the tool's own extraction does not hold is NOT_EVALUATED, and the strict view counts it
+    # against the tool (not hidden), as metrics.md says; the completed-only view leaves it out.
+    run_candidate(_text_candidate(tmp_path, "text-misread", " --misread"), "synthetic@0.0.1",
+                  ROOT / "experiments" / "e2e.yaml", CLIENT_POLICY, run_id="text-misread")
+    res_m = score_run("text-misread", CLIENT_POLICY, CFG)
+    unaligned = [r for r in must_rows(res_m, "status, mention_id") if r[0] == "NOT_EVALUATED"]
+    assert unaligned
+    rm = RunData("text-misread")
+    row_m = scorecard([rm])[0]
+    assert row_m["n"] == row["n"] and any(m["status"] == "NOT_EVALUATED" for m in rm.mentions)
+    n_bad = sum(m["status"] not in ("SAFE_REPLACED", "SAFE_REMOVED", "NOT_REPLACED") for m in rm.mentions)
+    assert row_m["leak"] == n_bad / row_m["n"]
+    assert row_m["leak_completed"] == (n_bad - len(unaligned)) / (row_m["n"] - len(unaligned))
+    assert "not in the tool&#39;s own text" in build_report("text-misread", res_m).read_text(encoding="utf-8") or \
+        "not in the tool's own text" in build_report("text-misread", res_m).read_text(encoding="utf-8")
     # A text-only tool that writes nothing has no output, named by its primary output's file.
     run_candidate(_text_candidate(tmp_path, "text-none", " --none"), "synthetic@0.0.1",
                   ROOT / "experiments" / "e2e.yaml", CLIENT_POLICY, run_id="text-none")
@@ -750,3 +778,16 @@ def test_a_text_only_tool_is_scored_on_its_redacted_text(env, tmp_path):
     skipped = json.loads((res / "scoring.json").read_text(encoding="utf-8"))["skipped"]
     assert [s["reason"] for s in skipped] == ["no redacted_text.json"]
     assert {r[0] for r in must_rows(res)} == {"NO_OUTPUT"}
+    # Its no-output rows cover the mentions the text path scores: the signature has no text and is left out.
+    none_ids = {r[0] for r in must_rows(res, "mention_id")}
+    assert "sig1" not in none_ids and none_ids == set(status)
+    # An oracle run scored under another evaluation version is refused for attribution, and a board with such
+    # a run says it must be rescored.
+    sj = results_root() / "text-tool" / "scoring.json"
+    meta = json.loads(sj.read_text(encoding="utf-8"))
+    meta["eval_config"]["version"] = "eval-0.3.1"
+    sj.write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(ValueError, match="rescore it first"):
+        score_run("text-misread", CLIENT_POLICY, CFG, oracle_runs={"oracle_text": "text-tool"})
+    board = build_board(["text-tool", "text-misread"], tmp_path / "mixed.html").read_text(encoding="utf-8")
+    assert "Scored under another evaluation version" in board and "rescore those runs first" in board

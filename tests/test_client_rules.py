@@ -310,10 +310,11 @@ def test_a_signature_across_its_outlined_label_is_judged_by_its_own_stroke(strok
 
 
 @lru_cache(maxsize=None)
-def _signature_on_a_typed_line():
+def _signature_on_a_typed_line(inside: bool = False):
     """The digital fixture signed across a typed "______________" line (a kept word in the text layer,
     not drawn as outlines): three short curved pen strokes in one signature region, each centred on the
-    line and smaller than its box, and each reaching above and below it."""
+    line and smaller than its box, and each reaching above and below it (``inside``: a flat signature,
+    each stroke wholly inside the line's box, 1 pt around)."""
     import hashlib
 
     from benchmark.geometry import rect_poly
@@ -323,9 +324,13 @@ def _signature_on_a_typed_line():
     spec = medico_legal_spec()
     spec.pages[0].append(L(80, 330, 11, T("______________")))
     first = ((88, 340), (94, 314), (100, 338), (106, 316), (112, 336))
+    curves = (((120, 338), (126, 308), (134, 344), (142, 316)), ((150, 316), (156, 346), (164, 306), (170, 336)))
+    if inside:
+        first = ((88, 330), (94, 322), (100, 330), (106, 323), (112, 329))
+        curves = (((118, 330), (124, 321), (132, 331), (138, 323)), ((143, 323), (149, 331), (155, 321), (160, 330)))
     fx = digital(dataclasses.replace(spec, squiggles={0: [Squiggle("sig1", first, mention="sig1")]}))
     doc = pymupdf.open("pdf", fx.pdf)
-    for curve in (((120, 338), (126, 308), (134, 344), (142, 316)), ((150, 316), (156, 346), (164, 306), (170, 336))):
+    for curve in curves:
         doc[0].draw_bezier(*curve, color=(0, 0, 0), width=1.6)
     pdf = doc.tobytes()
     strokes = [d["rect"] for d in doc[0].get_drawings()]
@@ -341,14 +346,19 @@ def _signature_on_a_typed_line():
     for r in strokes:  # what hid them before eval-0.4: centred on the kept word and no larger than it
         assert min(xs) < (r.x0 + r.x1) / 2 < max(xs) and min(ys) < (r.y0 + r.y1) / 2 < max(ys)
         assert r.width * r.height < (max(xs) - min(xs)) * (max(ys) - min(ys))
-        assert r.y0 < min(ys) and r.y1 > max(ys)
+        if inside:  # what hid them in eval-0.4 before fix round 1: wholly inside the line's box
+            assert min(xs) - 1 <= r.x0 and r.x1 <= max(xs) + 1 and min(ys) - 1 <= r.y0 and r.y1 <= max(ys) + 1
+        else:
+            assert r.y0 < min(ys) and r.y1 > max(ys)
     return dataclasses.replace(fx, pdf=pdf, gt=gt), pymupdf.Rect(*box)
 
 
+@pytest.mark.parametrize("inside", [False, True], ids=["across", "inside-the-line"])
 @pytest.mark.parametrize("output", ["stand-in over the strokes", "box only", "strokes removed, stand-in"])
-def test_a_signature_on_a_typed_signature_line_is_judged_by_its_strokes(output):
-    # The typed line is a kept word, but only in the text layer: nothing drawn across it is its glyphs.
-    fx, rect = _signature_on_a_typed_line()
+def test_a_signature_on_a_typed_signature_line_is_judged_by_its_strokes(output, inside):
+    # The typed line is a kept word, but only in the text layer: nothing drawn across it, or wholly inside
+    # its box, is its glyphs (a word with no letters or digits is never taken as drawn in outlines).
+    fx, rect = _signature_on_a_typed_line(inside)
 
     def stand_in(page):
         page.draw_rect(rect, color=None, fill=(1, 1, 1))
@@ -862,14 +872,13 @@ def test_true_redaction_with_fakes_at_the_original_size_is_clean(dpi):
     ev = evaluate_output(fx.pdf, out, fx.gt, calib.V1_NO_SHARED, EvalConfig(dpi=dpi))
     assert {m.status for m in must(ev)} == {MentionStatus.SAFE_REPLACED} and ev.summary["clean_document"]
     # Under policy 1.2.0 the mock keeps 'QLD' and writes a same-state postcode, but at three quarters of the line
-    # height: its '4' is not the original glyph, so at 200 DPI the pair fails where the state is seen and the
-    # kept 'QLD' counts (PARTIAL 0.2; docs/metrics.md, known limits). At 150 DPI the pair holds. Every other fake
-    # at the original size is safe.
+    # height: its '4' is not the original glyph. Where the glyph check fails the pair is read from the text
+    # layer ('QLD' then '4189'), so the same-state fake pairs at every DPI (it was PARTIAL 0.2 at 200 DPI and
+    # SAFE at 150, the verdict on identical pixels depending on the DPI).
     ev = evaluate_output(fx.pdf, mocked("digital", spec), fx.gt, V1, EvalConfig(dpi=dpi))
-    assert {m.status for m in must(ev) if m.mention_id != "addr1-loc"} == {MentionStatus.SAFE_REPLACED}
+    assert {m.status for m in must(ev)} == {MentionStatus.SAFE_REPLACED} and ev.summary["clean_document"]
     loc = ev.mention("addr1-loc")
-    want = {150: (MentionStatus.SAFE_REPLACED, 0.0, True), 200: (MentionStatus.PARTIAL, 0.2, False)}[dpi]
-    assert (loc.status, loc.visible_residual, loc.shared_pairs[0][1]) == want
+    assert (loc.visible_residual, loc.shared_pairs[0][1]) == (0.0, True)
 
 
 def test_reference_replace_fills_injected_oracle_regions_with_its_fakes():

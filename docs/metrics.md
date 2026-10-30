@@ -7,7 +7,9 @@ records the configuration digest; changing a threshold creates a new evaluation 
 what counts as a surviving original, so earlier results are not comparable. Rescoring needs no new
 run (`rb score <run_id>`), except for the ceiling mock (`mock-reference-replace`), whose default
 changed: it now draws its fakes at the original size, in the same state where the policy shares the
-state, so its runs are made again. eval-0.4 differs from eval-0.3.1 in these parts, each described
+state, so its runs are made again. The board names each run's evaluation version and warns about runs
+of another version or other settings, and scoring refuses an oracle run scored under another version
+for attribution. eval-0.4 differs from eval-0.3.1 in these parts, each described
 below:
 
 - **Character identity** (in place, in every render configuration and earlier revision, and in image
@@ -93,7 +95,9 @@ whole is still the original glyph.
   the matching pixel set. Without them most veiled originals read safe (the 22 October plan caught 4,
   2 and 2 of 20 at opacities 0.3, 0.6 and 0.9).
 - **Where it applies**: every render configuration, every earlier revision, and image layers, each
-  layer resampled onto the render grid over the words it flags and gated the same way. Signature and
+  layer resampled bilinearly onto the render grid over the words it flags and gated the same way
+  (sampled at the nearest pixel, a 72-85 DPI layer came out blocky and its recoverable originals
+  failed the gate). Signature and
   mark slices are not gated.
 
 Calibration of eval-0.4 (fictional synthetic fixtures in Helvetica, 150-300 DPI, MuPDF and PDFium;
@@ -182,7 +186,7 @@ it. For the other documents the evaluator checks in this order:
 | `NOT_EVALUATED` | output unreadable, the page's displayed aspect ratio changed, or nothing in the mention can be measured (text-level path: a word of the mention is missing from the tool's original text) |
 | `LEAK_VISIBLE` | ≥ 90% of units visible in any render configuration (MuPDF, PDFium; with and without annotations if the output has any). A unit is visible in place, or as part of a displaced original (below); units of shared structure the policy excuses are left out of the count, as they are for every status |
 | `PARTIAL` | > 2% of units visible, or, in an address part, one identifying word visible whole (E4) |
-| `LEAK_RECOVERABLE` | not visible, but the original survives in the file: text layer at the word (its 1 pt zone or its displayed place, any render mode; for an address part a whole identifying word, and E3's token survival), an image layer on its own, glyph vector paths, the pen strokes of a drawn signature or mark, or an earlier incremental revision. A pen stroke survives only when the output still has the very same path (the same items through the same points), so a new stand-in drawn to the original's size is not taken for it; straight rules and boxes in the region (the form) and the glyphs of kept words drawn as outlines whose whole box lies inside the word (a "Signed:" label the signature crosses) are not counted. A kept word is drawn as outlines when the source page has at least half as many paths wholly inside its box (1 pt around) as it has letters and digits, and at least one; a typed `______` or `.....` line in the text layer has none, so pen strokes across it count. Not covered: a mark drawn only with horizontal and vertical lines or rectangles, which counts as form, and other kept curved art inside a region's box, which counts as its strokes |
+| `LEAK_RECOVERABLE` | not visible, but the original survives in the file: text layer at the word (its 1 pt zone or its displayed place, any render mode; for an address part a whole identifying word, and E3's token survival), an image layer on its own, glyph vector paths, the pen strokes of a drawn signature or mark, or an earlier incremental revision. A pen stroke survives only when the output still has the very same path (the same items through the same points), so a new stand-in drawn to the original's size is not taken for it; straight rules and boxes in the region (the form) and the glyphs of kept words drawn as outlines whose whole box lies inside the word (a "Signed:" label the signature crosses) are not counted. A kept word is drawn as outlines when it has letters or digits and the source page has at least half as many paths wholly inside its box (1 pt around) as it has; a typed `______` or `.....` line has none, so pen strokes across it, or wholly inside its box, count. Not covered: a mark drawn only with horizontal and vertical lines or rectangles, which counts as form, and other kept curved art inside a region's box, which counts as its strokes |
 | `LEAK_LATENT` | > 2% of units latent (e.g. translucent box, MRC ghost) |
 | `SAFE_REPLACED` | none of the above, and the region carries new text-like ink or new text (an address part: E1, "Address units"); for a region-only mention (signature, mark, avatar, photo), the region holds new picture content: grey-level spread ≥ 12 inside it, eroded by 2 px, where a box or blank paper is near-uniform |
 | `NOT_REPLACED` | none of the above, and the policy requires a replacement (`action: replace`): hidden, so not a leak, but not a pass either (client Q7) |
@@ -299,12 +303,17 @@ in the output, on the first render configuration of each evaluated page, by its 
   character identity gate there: an altered word in place ('far' typed over 'for') is not a moved
   'for'. A kept word is found only as a whole word: at most `moved_side_ink` 0.02 of the pixels in the
   strips beside the found box (`moved_side_strip`, 0.02 to 0.15 word heights along the line) may be
-  ink, so a kept 'on' is not found inside a fake 'Wilson'.
+  ink, so a kept 'on' is not found inside a fake 'Wilson'. The box is also tried half a scale step
+  larger and smaller about its centre, since a word re-typeset between two steps of the scale grid
+  overhangs the box found at the nearer one.
 - **Restyled search.** A word still `DAMAGED` or `REMOVED` is looked for re-typeset in a substitute
   font: its GT text typeset, at the source text layer's size and baseline (else the word height /
   1.374), in the output page's embedded fonts (when it has a text layer; a font is tried only when it
-  holds every glyph of the word) and the base-14 families Helvetica, Times-Roman, Courier and
-  Helvetica-Bold (`restyle_fonts`), searched in the same window and scales. It is found where the
+  holds every glyph of the word) and the twelve base-14 text fonts: Helvetica, Times-Roman, Courier,
+  Helvetica-Bold and their italic, oblique and bold styles (`restyle_fonts`), searched in the same
+  window and scales. The identity gate takes an original drawn in another style for new ink, so a
+  style not tried here would read safe where eval-0.3.1 flagged it (with four fonts, 15 to 20 of 20
+  Times-Italic, Times-Bold or Courier-Bold originals in a 300-DPI raster did). It is found where the
   typeset text scores at least `restyle_match` 0.90, beats the original's own image at the same
   transform by `restyle_margin` 0.05, and `restyle_chars` 0.8 of its characters correlate with the
   output there. The right font scores at least 0.90 for 139 of 139 Times and 41 of 41 Helvetica-Bold
@@ -339,7 +348,9 @@ layer at its displayed place (the GT polygon plus the page's registration shift,
 tolerance above; `text_place_leak`) is a text-layer leak, and so is a displaced original's text at its
 found place. Words of addresses and localities match only as whole tokens, a number as a maximal digit
 run: '14' is not found in '214' or '142750'; a word of letters also matches the letters of a token
-glued to digits ('NSW' in 'NSW2750'), but never a word inside an email or web address. The 1 pt zone
+glued to digits ('NSW' in 'NSW2750') and a part of a letter run glued at a change of case ('Example'
+and 'Street' in 'ExampleStreet,', as MuPDF extracts words drawn under about 1.5 pt apart), but never
+a word inside another ('Park' in 'Parkside') or inside an email or web address. The 1 pt zone
 alone is still used for earlier revisions and by the names' pseudonym reader.
 
 ## Shared words
@@ -376,8 +387,13 @@ place in the mention (`benchmark/gt/shared_roles.py`, the address role reader
 mention (visible in place or displaced, latent, image layer, earlier revision, text layer, vector
 paths), E3's searched words, and detection's and the effective-token metrics' token counts (they are
 neutral: neither required nor an extra). A word with shared characters is searched in the text layer
-by its identifying slice. Shared units are never the replacement: a mention left with only a domain,
-a prefix, a state or a street type is `NOT_REPLACED`. A mention whose every letter and digit would be
+by its identifying slice, with the text's own copy of each shared part cut out first and a slice of
+digits matched only as a whole digit run ('04' of '0404' is not found in a fake '0498', nor 'smith' in
+a kept '@smithlaw.com.au'); a template match of the slice lying for the most part on the word's
+shared characters is the fake's own shared part. Shared units are never the replacement: a mention
+left with only a domain, a prefix, a state or a street type is `NOT_REPLACED`, also when a line
+re-typeset after the deletion slides them (or the line's other kept words, or the locality's fake)
+into an erased word's place: their text and ink there are left out of the replacement tests. A mention whose every letter and digit would be
 shared is judged in full.
 
 **The pair.** The state and the postcode's prefix digits are excused only together: when the prefix
@@ -414,11 +430,12 @@ locality on its own, or an unsplit address. Each part is judged with three rules
   `moved_along` word heights). A street line is replaced when an identifying word (the part's words
   less its shared ones) has new text in the read-back at its place, or new ink on at least
   `address_new_ink_fraction` 0.5 of its informative bands (visible original bands and displaced
-  originals' boxes left out). A locality is replaced, when the read-back has any token, exactly when
+  originals' boxes left out) where that ink looks like text (the edges of a plain box make a word's
+  edge bands new ink, and a box is no fake). A locality is replaced, when the read-back has any token, exactly when
   the read-back ends in a locality shape: a suburb word right before the state (or the postcode), and
   a state and a 4-digit postcode where the original had them (any written form of the state; a state
   the pair check kept need not be in the text of a scan). With no token, every identifying word needs
-  new ink. `locality_shape` reports the parts found ('suburb+state+postcode', ..., 'none', or
+  new ink that looks like text. `locality_shape` reports the parts found ('suburb+state+postcode', ..., 'none', or
   'no_text_at_unit' when judged on pixels).
 - **E3, token survival.** An identifying word of the unit survives in the text layer when the
   output's whole tokens equal to it in the unit's region (its GT lines and `address_adjacent_lines` 1
@@ -473,19 +490,23 @@ the same evaluation version and digest, and the same summary keys:
    case folded and stripped of punctuation (difflib, autojunk off), page by page when both texts hold
    one page break per GT page break, else as one text (with an integrity warning). A GT word with no
    token is `NOT_EVALUATED`, and so is every required mention holding such a word.
-2. **Diff.** The original text is diffed against the redacted text (Levenshtein opcodes): each
-   character of an aligned GT word is kept in place or changed.
+2. **Diff.** The original text is diffed against the redacted text in two steps: whitespace tokens
+   first, line breaks among them (difflib), then characters (Levenshtein opcodes) only between the
+   tokens matched. Each character of an aligned GT word is kept in place or changed. A character diff
+   of the whole text could merge a deleted mention with the next line's new text and credit it with
+   that fake.
 3. **Words.** `PRESERVED`, `DAMAGED` or `REMOVED` by the share of kept characters, with the PDF path's
    fractions. `MOVED` cannot occur.
 4. **Mentions.** The PDF path's units, shared roles and cut-offs. A character is visible when it is
    kept and lies in a run of kept characters as long as the run rule asks for its word; E4 holds for
-   address parts. The pair holds when the state is changed, or kept with its postcode's prefix digits.
+   address parts. The pair holds when the state is changed, or kept with its postcode's prefix digits
+   (for a postcode such as NSW 1xxx, with a postcode of that state after it).
    A **displaced original** is an identifying whole token of the mention (a number as a maximal digit
    run; an email's local part also before an '@') that the redacted text holds more often than the
    original text holds it outside the required mentions plus the required words kept in place: its
    characters are visible in every mention holding it, since the text does not say which one moved. A
    mention is **replaced** when the diff puts new text with a letter or digit at it (read as the whole
-   tokens of the redacted text over the mention) that is not a placeholder: a bracketed tag with a letter in it ('[REDACTED]', '<PERSON>'), a run of X, asterisks
+   tokens of the redacted text over the mention) that is not a placeholder: a bracketed tag ('[REDACTED]', '<PERSON>', '{NAME_1}': letters in capitals, or only words for a PII type or a redaction), never a fake written in brackets ('(Ruth)', '<ruth.dunbar@example.com>'); a run of X, asterisks
    or block characters, a tag in capitals naming a PII type or a redaction ('PERSON_2', 'REDACTED'), or
    one text standing for every replaced required mention with different originals; an address's
    locality also needs E1's locality shape on the new text over the unit. Otherwise the status follows
@@ -493,7 +514,9 @@ the same evaluation version and digest, and the same summary keys:
    output. Signatures, marks and images have no text: their mentions are left out.
 5. **Components.** Detection takes the changed spans as predictions: runs of consecutive changed GT
    words on a page, carried through shared words left as they were (so a whole-address fake is one
-   prediction, exact for both parts); a prediction's label comes from the tool's mappings when one's
+   prediction, exact for both parts) and ended at a GT line change unless the next word shares a
+   mention or an address unit with the last (two mentions with only a line break between them are two
+   predictions); a prediction's label comes from the tool's mappings when one's
    original equals the run's text, its type from the label map, else none. The pseudonym checks read
    the new text the diff puts at each GT word (a mention's new text split on white space when it has
    one token per word) and each address unit's new text as its read-back; resolution is inferred from
@@ -501,8 +524,11 @@ the same evaluation version and digest, and the same summary keys:
    are as for a PDF; searchable text is n/a, since the text is the whole output.
 
 The tool's own extraction decides what can be aligned: on an OCR'd scan its original text may differ
-from GT enough to leave mentions `NOT_EVALUATED`, which the strict view counts against it. Run the
-tool on the benchmark's injected text as well, to tell extraction from redaction.
+from GT enough to leave mentions `NOT_EVALUATED`, which the strict view (the board's and the report's
+strict leak rate) counts against it, like `NO_OUTPUT`; the completed-only view leaves them out. Run the
+tool on the benchmark's injected text as well, to tell extraction from redaction. The board and the
+report say what each run is graded on (the evidence column), and a text-only tool's failed documents
+list the same required mentions as its scored ones (no signatures, marks or images).
 
 ## Known limits of eval-0.4
 
@@ -518,14 +544,13 @@ for review; none lowers a pass mark.
   outside 0.86-1.18, and the same word twice on a line with no anchor between (one false `MOVED` in
   the trap case) are outside the search. Words are looked for on the first render configuration only;
   latent displaced originals and displaced originals inside image layers are not looked for, and the
-  restyled search skips vertical words. On the rotated scan fixture, a re-typeset line's first word
-  (vertical) is neither `PRESERVED` nor found `MOVED` (collateral 1 of 18 in the `retypeset`
-  self-check). Same-font digit groups can be taken for a neighbouring original by the moved search,
+  restyled search skips vertical words. Same-font digit groups can be taken for a neighbouring original by the moved search,
   which is why the ceiling mock draws numbers that keep no shared digit centred at 80% of the line.
   One-letter look-alike garbles of kept words can pass as `MOVED` (9 and 21 words in two fictional
   cases).
-- **Substitute fonts** neither embedded in the output nor a base-14 family are not looked for, and
-  Courier substitutes in 300-DPI rasters are caught in 16 or more of 20 mentions, not all.
+- **Substitute fonts** neither embedded in the output nor one of the twelve base-14 text fonts are not
+  looked for (an italic or monospace TrueType substitute can read safe where eval-0.3.1 flagged it),
+  and Courier substitutes in 300-DPI rasters are caught in 16 or more of 20 mentions, not all.
 - **Character identity.** Look-alike digits in protected words (3/8, 5/6, 6/8) can still read as
   intact (pinned by a test). Random same-font fakes can still match in 1-4 of 554 digit words and 3-4
   of 384 name words; the run clause admits a few same-font fake letters (two letters where 'Pty' was
@@ -533,12 +558,12 @@ for review; none lowers a pass mark.
   shifted 0.3-0.4 of a line with the fake inside leaves under half the x-height and reads safe in 14
   of 20 cases, as in eval-0.3.1.
 - **Shared words.** A state kept as the original's glyphs beside a same-state postcode drawn at another
-  size or place cannot pair, because the prefix digit is not the original's glyph where the state is
-  seen: the locality reads `PARTIAL` 0.2 (a mock that redraws the postcode at three quarters of the
-  line height shows it at 200 DPI). Redraw the whole locality, or keep the prefix digit's glyph. A state
-  with no postcode after it is excused unchecked. A state before a postcode
-  whose prefix matches no state digit (NSW 1xxx, VIC 8xxx, QLD 9xxx, ACT 02xx) cannot pair, so a
-  correct same-state fake there reads `PARTIAL` (about 0.16). A street type in a corner form is not
+  size or place pairs only through the text layer (the state at its displayed place, then a 4-digit
+  postcode starting with the prefix digit), since the prefix digit is not the original's glyph where
+  the state is seen; so does a state before a postcode whose prefix matches no state digit (NSW 1xxx,
+  VIC 8xxx, QLD 9xxx, ACT 02xx), with a postcode of that state after it. On an image-only output
+  neither can pair (OCR never decides): the locality reads `PARTIAL` (0.2, about 0.16). A state with no
+  postcode after it is excused unchecked. A street type in a corner form is not
   shared, so a correct fake keeping 'Streets' in 'Corner of Smith and King Streets' reads `PARTIAL`.
   'Mount Victoria 2786' shares the postcode's '2' as a plain character (no state word).
 - **Address units.** The rules are checked on the fictional address case table and synthetic
@@ -549,8 +574,14 @@ for review; none lowers a pass mark.
 - **Text in the 1 pt zone.** The names' pseudonym reader still reads the 1 pt zone of each GT word,
   not the displayed place.
 - **Runtime.** eval-0.4 takes about 2-13 s per two-page synthetic document (eval-0.3.1: 1-5 s); the
-  restyled search tries every embedded font with no cap. Measure on the seed documents before real
-  scoring.
+  restyled search tries every embedded font with no cap and the twelve base-14 fonts (about twice the
+  time of four on an image-only output). Measure on the seed documents before real scoring.
+- **Memory.** Every page's cells stay in memory until the document's moved, restyled and slice
+  searches are done. Their pixel indices are kept in 32 bits, the originals' blurred renders for the
+  last few pages only, and a page's other renders are dropped once it is evaluated. Peak memory on a
+  fictional dense document (about 415 words a page): 575 MB for 3 pages and 1.13 GB for 12, about
+  62 MB a page (eval-0.3.1: 373 MB and 779 MB, about 45 MB a page), so roughly 3 GB for 40 pages. Score
+  long documents one at a time.
 
 ## Attribution
 

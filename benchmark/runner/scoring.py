@@ -88,6 +88,22 @@ def _no_output_reason(item, out_path: Path, kind: str = ArtifactKind.OUTPUT_PDF.
     return None
 
 
+def _oracle_eval(run_id: str, cfg: EvalConfig) -> str | None:
+    """Check that an oracle run was scored under this evaluation version: its statuses are compared with
+    this run's for attribution, and results of another version are not comparable (docs/metrics.md).
+    Raises ValueError when the version differs; returns a warning when only the settings differ."""
+    path = results_root() / run_id / "scoring.json"
+    meta = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    version = (meta.get("eval_config") or {}).get("version")
+    if version != cfg.version:
+        raise ValueError(f"oracle run {run_id} was scored under {version or 'an unknown evaluation'}, not "
+                         f"{cfg.version}: rescore it first")
+    if meta.get("eval_digest") != cfg.digest():
+        return (f"oracle run {run_id} was scored with other evaluation settings (digest "
+                f"{str(meta.get('eval_digest'))[:12]}, this run {cfg.digest()[:12]})")
+    return None
+
+
 def _oracle_status(run_id: str) -> dict[str, dict[str, str]]:
     """doc id -> {mention id: status} from repeat 0 of an already-scored oracle run."""
     out = {}
@@ -138,14 +154,18 @@ def _gt_info(gt) -> dict:
     return {"gt_version": gt.gt_version, "gt_sha256": hashlib.sha256(dump_json(gt).encode("utf-8")).hexdigest()}
 
 
-def _no_output_rows(ident: dict, doc_id: str, repeat: int, gt, policy, reason: str) -> dict[str, list[dict]]:
+def _no_output_rows(ident: dict, doc_id: str, repeat: int, gt, policy, reason: str,
+                    as_text: bool = False) -> dict[str, list[dict]]:
     """A failed run leaves every required mention unprotected (strict view); reports also
-    show the completed-only view, which excludes these rows."""
+    show the completed-only view, which excludes these rows. For a text-only tool (``as_text``) the
+    rows cover the mentions the text path scores: a signature, mark or image has no text and is left
+    out, as when the document is scored."""
     from ..gt.policy import resolve
 
     res = resolve(gt, policy)
     entities = {e.id: e for e in gt.entities}
-    must = [m for m in gt.mentions if res.mentions[m.id].requirement.value == "MUST"]
+    must = [m for m in gt.mentions if res.mentions[m.id].requirement.value == "MUST"
+            and (not as_text or any(sg.words for sg in m.segments))]
     mentions = [dict(ident, doc_id=doc_id, repeat=repeat, mention_id=m.id, type=m.type.value, subtype=m.subtype,
                      entity=m.entity, role=entities[m.entity].role.value if m.entity in entities else None,
                      requirement="MUST", pending=None, status="NO_OUTPUT", conditions=",".join(m.conditions),
@@ -153,7 +173,7 @@ def _no_output_rows(ident: dict, doc_id: str, repeat: int, gt, policy, reason: s
                      attr_category="CANDIDATE_ERROR", attr_confidence="confirmed", attr_detail=reason, attr_tags="")
                 for m in must]
     doc = dict(ident, doc_id=doc_id, repeat=repeat, candidate_error=reason, must_mentions=len(must),
-               must_evaluated=0, clean_document=False, integrity_ok=False,
+               must_evaluated=0, clean_document=False, integrity_ok=False, evidence="text" if as_text else "pdf",
                entities_with_must_mentions=len({m.entity for m in must if m.entity}))
     return {"documents": [doc], "mentions": mentions}
 
@@ -169,6 +189,7 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
     given = policy_was_given(run, manifest)
     given_rules = given_rules_sha256(run_policy)
     ds = load_manifest(run.dataset["name"], run.dataset["version"])
+    oracle_warnings = [w for w in (_oracle_eval(rid, cfg) for rid in (oracle_runs or {}).values()) if w]
     oracle = {mode: _oracle_status(rid) for mode, rid in (oracle_runs or {}).items()}
     out_root = results_root() / run_id
     (out_root / "scores").mkdir(parents=True, exist_ok=True)
@@ -208,7 +229,7 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
                 reason = errors.get(primary.value) or f"{out_path.name} could not be read"
             if reason:
                 skipped.append({"doc_id": doc_id, "repeat": item.repeat, "reason": reason})
-                no_out = _no_output_rows(ident, doc_id, item.repeat, gt, policy, reason)
+                no_out = _no_output_rows(ident, doc_id, item.repeat, gt, policy, reason, as_text)
                 no_out["documents"][0].update(gt_used[doc_id])
                 for name, rows in no_out.items():
                     tables[name].extend(rows)
@@ -280,7 +301,7 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
         "policy_warning": policy_warning(run_policy, scored_policy, given, given_rules),
         # Deliberate departures from the client's answers, kept with the scores for every report.
         "deviations": [d.model_dump(mode="json") for d in policy.deviations],
-        "oracle_runs": oracle_runs or {}, "gt": gt_used,
+        "oracle_runs": oracle_runs or {}, "oracle_warnings": oracle_warnings, "gt": gt_used,
         "matter_consistency": {"compared": len(tables["matters"]), "consistent": consistent},
         "matter_mismatch": matter_mismatch,
         "skipped": skipped}, indent=1),

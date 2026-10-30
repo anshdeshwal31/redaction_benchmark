@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 
 from rapidfuzz.distance import Levenshtein
 
+from ..gt.address_split import STATE_CODES, postcode_in_state
 from ..gt.policy import Effective, resolve
 from ..gt.shared_roles import STRIP as SHARED_STRIP
 from ..gt.shared_roles import SharedUnits, document_shared_units
@@ -75,14 +76,20 @@ def _key(token: str) -> str:
 
 
 def is_placeholder(token: str) -> bool:
-    """A redaction placeholder rather than a fake: a bracketed tag with a letter in it ('[REDACTED]',
-    '<PERSON>'), a run of X, asterisks or block characters, or a tag in capitals naming a PII type or a
-    redaction ('PERSON_1', 'REDACTED')."""
+    """A redaction placeholder rather than a fake: a bracketed tag ('[REDACTED]', '<PERSON>', '{NAME_1}',
+    '[Redacted]': letters in capitals, or only words for a PII type or a redaction), a run of X, asterisks
+    or block characters, or a tag in capitals naming a PII type or a redaction ('PERSON_1', 'REDACTED'). A
+    fake written in brackets is no tag: '(Ruth)', '[Dunbar]', '<ruth.dunbar@example.com>'."""
     t = token.strip(".,;:")
     if not t:
         return True
     if _BRACKETED.match(t):
-        return True
+        inside = t.rstrip(".,;:")[1:-1]
+        words = re.sub(r"[^\W\d_]+", lambda m: " " + m.group() + " ", inside).split()
+        letters = [w for w in words if w.isalpha()]
+        if "@" not in inside and (inside.upper() == inside or all(w.upper() in _TAG_WORDS for w in letters)):
+            return True
+        return False
     if set(t) <= _BLOCKS:
         return True
     letters = re.sub(r"[\d_\-]+", " ", t).split()
@@ -146,6 +153,31 @@ def _word_chars(word: str, token: str, offset: int) -> list[int | None]:
     return pos
 
 
+def _diff_chars(d: TextDiff, oa: int, ob: int, ra: int, rb: int) -> None:
+    """The character diff of original[oa:ob] against redacted[ra:rb], with every boundary of the original
+    mapped into the redacted text: the leftmost and rightmost place of any edit touching it, so text
+    inserted at a boundary lies between the two."""
+    if oa >= ob and ra >= rb:
+        d.left[oa] = min(d.left[oa], ra)
+        d.right[oa] = max(d.right[oa], ra)
+        return
+    for tag, i1, i2, j1, j2 in Levenshtein.opcodes(d.original[oa:ob], d.redacted[ra:rb]):
+        i1, i2, j1, j2 = i1 + oa, i2 + oa, j1 + ra, j2 + ra
+        n = i2 - i1
+        if tag == "equal":
+            for k in range(n):
+                d.kept[i1 + k] = True
+                d.new[j1 + k] = False
+        for k in range(n + 1):
+            if tag == "equal":
+                lo = hi = j1 + k
+            else:
+                j = j1 + (round(k * (j2 - j1) / n) if n else 0)
+                lo, hi = (j1 if k == 0 else j), (j2 if k == n else j)
+            d.left[i1 + k] = min(d.left[i1 + k], lo)
+            d.right[i1 + k] = max(d.right[i1 + k], hi)
+
+
 def align(gt: GTDocument, art: RedactedTextArtifact) -> TextDiff:
     """Align the GT words to the original text and diff the original text against the redacted text."""
     o, r = art.original_text, art.redacted_text
@@ -168,23 +200,19 @@ def align(gt: GTDocument, art: RedactedTextArtifact) -> TextDiff:
             for k in range(n):
                 w, (off, tok) = gws[a + k], toks[b + k]
                 d.chars[w.id] = _word_chars(w.text, tok, off)
-        # The diff, with every boundary of the original mapped into the redacted text: the leftmost and
-        # rightmost place of any edit touching it, so text inserted at a boundary lies between the two.
-        for tag, i1, i2, j1, j2 in Levenshtein.opcodes(o[oa:ob], r[ra:rb]):
-            i1, i2, j1, j2 = i1 + oa, i2 + oa, j1 + ra, j2 + ra
-            n = i2 - i1
-            if tag == "equal":
-                for k in range(n):
-                    d.kept[i1 + k] = True
-                    d.new[j1 + k] = False
-            for k in range(n + 1):
-                if tag == "equal":
-                    lo = hi = j1 + k
-                else:
-                    j = j1 + (round(k * (j2 - j1) / n) if n else 0)
-                    lo, hi = (j1 if k == 0 else j), (j2 if k == n else j)
-                d.left[i1 + k] = min(d.left[i1 + k], lo)
-                d.right[i1 + k] = max(d.right[i1 + k], hi)
+        # The diff in two steps: whole tokens (line breaks are tokens) first, then characters only between
+        # the tokens matched. A character diff of the whole text can merge a deleted mention with the next
+        # line's new text into one edit, which then spread the fake over both (a deleted 'Peter Strong'
+        # credited with the 'Ruth Dunbar' that replaced 'SMITHERS Jane' below it).
+        ot = [(m.start() + oa, m.end() + oa) for m in re.finditer(r"\n|[^\s]+", o[oa:ob])]
+        rt = [(m.start() + ra, m.end() + ra) for m in re.finditer(r"\n|[^\s]+", r[ra:rb])]
+        tm = difflib.SequenceMatcher(None, [o[a:b] for a, b in ot], [r[a:b] for a, b in rt], autojunk=False)
+        pi, pj = oa, ra
+        for a, b, n in tm.get_matching_blocks():
+            _diff_chars(d, pi, ot[a][0] if a < len(ot) else ob, pj, rt[b][0] if b < len(rt) else rb)
+            if n:
+                _diff_chars(d, ot[a][0], ot[a + n - 1][1], rt[b][0], rt[b + n - 1][1])
+                pi, pj = ot[a + n - 1][1], rt[b + n - 1][1]
     # Boundaries no diff reached (page breaks between pages) take the place of the boundary before them.
     prev = 0
     for i in range(len(o) + 1):
@@ -249,6 +277,18 @@ def _tokens_over(d: TextDiff, a: int, b: int, new_only: bool = False) -> list[st
         if e > a and (not new_only or any(d.new[k] for k in range(max(s, a), min(e, b)))):
             out.append(d.redacted[s:e])
     return out
+
+
+def _state_postcode_follows(d: TextDiff, s_wid: str, state: str) -> bool:
+    """Is the kept state word followed, in the redacted text, by a 4-digit postcode of that state?"""
+    sp = d.span(s_wid)
+    if sp is None:
+        return False
+    _, b = d.dest(*sp)
+    m = re.match(r"\s*(\S+)", d.redacted[b:])
+    pc = m.group(1).strip(SHARED_STRIP) if m else ""
+    code = STATE_CODES.get("".join(ch for ch in state.casefold() if ch.isalnum()))
+    return len(pc) == 4 and pc.isdigit() and code is not None and postcode_in_state(code, pc)
 
 
 def _mention_extent(d: TextDiff, wids: list[str]) -> tuple[int, int] | None:
@@ -334,7 +374,12 @@ def score_text_document(gt: GTDocument, policy: PolicyProfile, art: RedactedText
             state_seen = any(visible.get(s_wid, [])[k] for k in range(len(visible.get(s_wid, [])))
                              if (s_wid in su.full or (s_wid, k) in su.chars) and k not in ks)
             pk = d.char_kept(p_wid)
-            ok = bool(ks) and (not state_seen or all(k < len(pk) and pk[k] for k in ks))
+            if ks:
+                ok = not state_seen or all(k < len(pk) and pk[k] for k in ks)
+            else:
+                # No prefix digit to keep (NSW 1xxx, VIC 8xxx, QLD 9xxx, ACT 02xx): the kept state must be
+                # followed by a postcode of that state, as the PDF path reads it from the text layer.
+                ok = state_seen and _state_postcode_follows(d, s_wid, words[s_wid][1].text)
             pair_log.append([s_wid, ok])
             if not ok:
                 su.without_pair(s_wid, p_wid, ks)
@@ -468,6 +513,16 @@ def changed_spans(gt: GTDocument, d: TextDiff, ev: DocumentEvaluation, art: Reda
 
     excused = {w for m in ev.mentions for w in m.shared_words}
     claims = {_key(x.original): x.label for x in art.mappings}
+    # A run ends at a GT line change unless the next word shares a mention or an address unit with the
+    # last: two required mentions with only a line break between them are two redactions.
+    groups: dict[str, set] = defaultdict(set)
+    for m in gt.mentions:
+        for seg in m.segments:
+            for wid in seg.words:
+                groups[wid].add(m.id)
+    for u in units_of(gt):
+        for wid in u.word_ids:
+            groups[wid].add(("unit", u.key))
     preds = []
     for page in gt.pages:
         run: list = []
@@ -488,6 +543,10 @@ def changed_spans(gt: GTDocument, d: TextDiff, ev: DocumentEvaluation, art: Reda
                 run, held = [], []
                 continue
             if not all(c for c in ks if c is not None):
+                last = (run + held)[-1] if run else None
+                if last is not None and last.line != w.line and not groups[last.id] & groups[w.id]:
+                    close()
+                    run, held = [], []
                 run += held + [w]
                 held = []
             elif run and w.id in excused:

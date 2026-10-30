@@ -55,6 +55,12 @@ class RenderCache:
             self._store[k] = render_gray(pdf, page_index, self.dpi, cfg)
         return self._store[k]
 
+    def evict(self, page_index: int, keep: tuple[tuple[str, RenderConfig], ...] = ()) -> None:
+        """Forget a page's renders but the (key, configuration) pairs in ``keep``: the evaluator is done
+        with them, and keeping every page's renders made memory grow with the document."""
+        for k in [k for k in self._store if k[1] == page_index and (k[0], k[2]) not in keep]:
+            del self._store[k]
+
 
 def match_shapes(reference: np.ndarray, other: np.ndarray) -> tuple[np.ndarray, bool]:
     """Crop/pad ``other`` to ``reference``'s shape (renderers can differ by one pixel)."""

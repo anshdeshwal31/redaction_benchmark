@@ -390,8 +390,18 @@ def _keep(w, c: dict, pc: PageCells, o: np.ndarray, x: np.ndarray, requirement: 
         v = pc.word_fraction_at(w.id, o, x, c["s"], c["tx"], c["ty"], cfg, gated=True, strict_words=strict_words)
         if v is None or v < cfg.word_preserved_fraction:
             return False
-    if requirement != "MUST" and inky_beside(x, c["box"], _vertical(w.angle), cfg, paper):
-        return False
+    if requirement != "MUST":
+        # The found size is on the search's scale grid: a word re-typeset between two steps overhangs the box
+        # found at the nearer one by up to half a step, which can put its own ends in the side strips (the
+        # first word of a re-typeset line on the rotated scan). The box is also tried half a step larger and
+        # smaller, about its centre; ink of a neighbouring letter stays beside it either way.
+        half = 0.5 * cfg.moved_scale_step / max(c["s"], 1e-6)
+        x0, y0, x1, y1 = c["box"]
+        mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+        boxes = [c["box"]] + [(mx - f * (mx - x0), my - f * (my - y0), mx + f * (x1 - mx), my + f * (y1 - my))
+                              for f in (1.0 + half, 1.0 - half)]
+        if all(inky_beside(x, b, _vertical(w.angle), cfg, paper) for b in boxes):
+            return False
     return True
 
 
@@ -448,8 +458,13 @@ def find_moved(gt: GTDocument, requirement: Mapping[str, str], pcs: Mapping[int,
 
 # -- the restyled search (words re-typeset in a substitute font) ---------------------------------------------
 
-# The base-14 families of restyle_fonts, as PyMuPDF draws them.
-BASE14 = {"Helvetica": "helv", "Times-Roman": "tiro", "Courier": "cour", "Helvetica-Bold": "hebo"}
+# The twelve base-14 text fonts of restyle_fonts, as PyMuPDF draws them. The italic, oblique and bold
+# styles are needed too: the identity gate takes an original drawn in any other style for new ink, so a
+# style left out here would read safe where eval-0.3.1 flagged it.
+BASE14 = {"Helvetica": "helv", "Times-Roman": "tiro", "Courier": "cour", "Helvetica-Bold": "hebo",
+          "Helvetica-Oblique": "heit", "Helvetica-BoldOblique": "hebi", "Times-Italic": "tiit",
+          "Times-Bold": "tibo", "Times-BoldItalic": "tibi", "Courier-Oblique": "coit", "Courier-Bold": "cobo",
+          "Courier-BoldOblique": "cobi"}
 # Without a source text layer: font size and baseline from the GT box height h (Helvetica's proportions).
 SIZE_PER_HEIGHT = 1.374
 BASELINE_ABOVE_BOTTOM = 0.21
@@ -723,12 +738,26 @@ def find_slices(gt: GTDocument, needle_cut: Mapping[str, tuple[int, int]], pcs: 
         if t.size == 0 or t.std() < 1.0:
             continue
         tpl = dict(t=t, c0=c0, r0=r0, c1=c1, r1=r1, box=(x0, y0, x1, y1), hpt=hpt, ang=ang, vertical=vertical)
+        # The word's shared characters (the prefix or domain a fake may keep, in place): a match lying for
+        # the most part on them is the fake's own shared part ('04' of '0404' on a fake's '04', 'smith' in
+        # '@smithlaw'), never the slice pushed along.
+        rest = [i for i in pc.word_cells.get(wid, []) if not a <= pc.cells[i].index < b]
+        rest_r = np.concatenate([pc.rows[i] for i in rest]) if rest else np.zeros(0, np.int64)
+        rest_c = np.concatenate([pc.cols[i] for i in rest]) if rest else np.zeros(0, np.int64)
+        shared_box = ((float(rest_c.min()), float(rest_r.min()), float(rest_c.max() + 1), float(rest_r.max() + 1))
+                      if rest_r.size else None)
         best = None
         for c in candidates(o, x, w, cfg, None, None, [], tpl=tpl):
             if c["score"] < cfg.moved_match:
                 continue
             if abs(c["s"] - 1.0) < 1e-6 and math.hypot(c["dx_pt"], c["dy_pt"]) * scale <= cfg.moved_zero_px:
                 continue
+            if shared_box is not None:
+                fb = (x0 * c["s"] + c["tx"], y0 * c["s"] + c["ty"], x1 * c["s"] + c["tx"], y1 * c["s"] + c["ty"])
+                iw = min(fb[2], shared_box[2]) - max(fb[0], shared_box[0])
+                ih = min(fb[3], shared_box[3]) - max(fb[1], shared_box[1])
+                if iw > 0 and ih > 0 and iw * ih >= 0.5 * (fb[2] - fb[0]) * (fb[3] - fb[1]):
+                    continue
             v = pc.word_fraction_at(wid, o, x, c["s"], c["tx"], c["ty"], cfg, chars=(a, b))
             if v is not None and v >= cfg.word_preserved_fraction and (best is None or c["score"] > best["score"]):
                 best = c

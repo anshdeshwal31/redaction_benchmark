@@ -714,7 +714,8 @@ def q3_fakes() -> dict[str, str]:
 
 def shared_case(name: str, raster_dpi=None) -> bytes:
     """The merge study's shared-word cases under K1's fakes: S2 the state kept and the rest of the address
-    boxed, S3 the postcode kept, S4 only the shared words left (the rest erased), K3 the street name kept,
+    boxed, S3 the postcode kept, S4 only the shared words left (the rest erased; S4r with the lines
+    re-typeset, so they slide into the erased words' places), K3 the street name kept,
     K4 the company name kept, S5 another state's fake beside the kept state."""
     ws = words()
     addr, loc, org = mention_words("addr1"), mention_words("addr1-loc"), mention_words("org1")
@@ -725,6 +726,11 @@ def shared_case(name: str, raster_dpi=None) -> bytes:
     if name == "S4":
         return build(word_ops={w: ("erase",) for w in addr + loc + org
                                if ws[w].text.strip(".,") not in ("Street", "QLD", "Pty", "Ltd")}, raster_dpi=raster_dpi)
+    if name == "S4r":  # S4 on re-typeset lines: the kept words (and the locality's fake) slide left
+        fk = dict(shared_fakes())
+        fk.update({w: (ws[w].text if ws[w].text.strip(".,") in ("Street", "Pty", "Ltd") else "") for w in addr + org})
+        return build(line_ops={ln: ("redraw", {w: fk[w] for w in lines()[ln] if w in fk}, 1.0, 0.0, 0.0)
+                               for ln in must_lines()}, raster_dpi=raster_dpi)
     if name == "K3":
         return build(line_ops=redraw(keep(shared_fakes(), [addr[1]])), raster_dpi=raster_dpi)
     if name == "K4":
@@ -736,3 +742,42 @@ def shared_case(name: str, raster_dpi=None) -> bytes:
     if name == "W0":
         return build(word_ops=in_place(realistic_fakes()), raster_dpi=raster_dpi)
     raise ValueError(name)
+
+
+# -- fix round 1 cases ---------------------------------------------------------------------------------
+
+
+def layer_under_boxes(raster_dpi: int) -> bytes:
+    """The unredacted page as one grey JPEG image layer at ``raster_dpi``, with a black vector box over
+    every MUST word: the originals are recoverable from the layer under the boxes."""
+    b, ws = base(), words()
+    doc = pymupdf.open("pdf", build(raster_dpi=raster_dpi))
+    for w in must_words():
+        x0, y0, x1, y1 = bbox(as_poly(ws[w].poly))
+        doc[b.layout[w][0]].draw_rect(pymupdf.Rect(x0 - 0.3, y0 - 0.3, x1 + 0.3, y1 + 0.3), color=None,
+                                      fill=(0, 0, 0))
+    return doc.tobytes(garbage=3, deflate=True)
+
+
+def image_only_png(pdf: bytes, dpi: int) -> bytes:
+    """Each page of ``pdf`` rendered to a grey PNG at ``dpi`` and placed as the page's only content."""
+    src, out = pymupdf.open("pdf", pdf), pymupdf.open()
+    for p in src:
+        pix = p.get_pixmap(dpi=dpi, colorspace=pymupdf.csGRAY)
+        q = out.new_page(width=p.rect.width, height=p.rect.height)
+        q.insert_image(q.rect, stream=pix.tobytes("png"))
+    return out.tobytes()
+
+
+def hidden_address(fake: str, hidden: list[str], glued: bool) -> bytes:
+    """The address line truly redacted with ``fake`` typeset in place (as :func:`address_in_place`), plus
+    an invisible text layer (render mode 3) on the address line holding ``hidden``: spaced as the original
+    words were, or glued (each word ending 1 pt before the next, which MuPDF extracts as one token)."""
+    doc = pymupdf.open("pdf", address_in_place(fake))
+    page = doc[0]
+    src = pymupdf.open("pdf", base().pdf)[0]
+    x = [w[0] for w in src.get_text("words") if w[4] in ADDRESS_WORDS][0]
+    for t in hidden:
+        page.insert_text((x, 160.0), t, fontname="helv", fontsize=11, render_mode=3)
+        x += pymupdf.get_text_length(t + ("" if glued else " "), fontname="helv", fontsize=11) + (1.0 if glued else 0.0)
+    return doc.tobytes(garbage=4, deflate=True)

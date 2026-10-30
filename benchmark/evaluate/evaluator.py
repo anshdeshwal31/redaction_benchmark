@@ -27,6 +27,7 @@ import shapely
 from .. import ocr
 from ..forensics.inspect import revision_prefixes
 from ..geometry import as_poly, dilate, geometry_from_pikepdf_page, rasterize, to_shapely
+from ..gt.address_split import STATE_CODES, postcode_in_state, read_end
 from ..gt.policy import Effective, resolve
 from ..gt.shared_roles import STRIP as SHARED_STRIP
 from ..gt.shared_roles import SharedUnits, document_shared_units
@@ -59,6 +60,7 @@ from .layers import (
     page_layers,
     page_text,
     separated,
+    slice_in,
     text_in_words,
     text_leaks,
     token_leaks,
@@ -202,9 +204,30 @@ def _is_new_text(word_text: str, needle: str, got: str | None, cfg: EvalConfig) 
     return bool(new) and new not in rest
 
 
-def _text_like_ink(gray: np.ndarray, polys: list[np.ndarray], scale: float) -> bool:
+def _only_slid(got: str | None, slid: set[str]) -> bool:
+    """Is the text at a word (letters and digits) made only of words its line kept, whole, with at most the
+    end of one before them and the start of one after them? A line re-typeset after a deletion slides
+    those words (the mention's shared words, the line's other words) into an erased word's place; they
+    are never its replacement. Kept words of one character are left out, so a fake is never cut up."""
+    left = _alnum(got or "")
+    whole = {t for t in slid if len(t) >= 2}
+    if not left or not whole:
+        return False
+    n = len(left)
+    # ok[i]: left[:i] is an end fragment, then whole kept words
+    ok = [False] * (n + 1)
+    ok[0] = True
+    for i in range(1, n + 1):
+        ok[i] = any(t.endswith(left[:i]) for t in whole) or any(ok[i - len(t)] and left[i - len(t):i] == t
+                                                               for t in whole if len(t) <= i)
+    return any(ok[i] and (i == n or any(t.startswith(left[i:]) for t in whole)) for i in range(n + 1)
+               if i > 0 or any(t.startswith(left) for t in whole))
+
+
+def _text_like_ink(gray: np.ndarray, polys: list[np.ndarray], scale: float, min_transitions: int = 4) -> bool:
     """Does the region carry text-like ink (many stroke transitions), rather than a solid
-    fill or the edge of a box? Used to tell replacement text from plain removal."""
+    fill or the edge of a box? Used to tell replacement text from plain removal. A word of one or
+    two characters has fewer strokes across it: ``min_transitions`` 2 for those."""
     if not polys:
         return False
     mask = rasterize(polys, gray.shape, scale)
@@ -221,7 +244,7 @@ def _text_like_ink(gray: np.ndarray, polys: list[np.ndarray], scale: float) -> b
     rows = np.abs(np.diff(i8, axis=1)).sum(axis=1)[ink.any(axis=1)]
     cols = np.abs(np.diff(i8, axis=0)).sum(axis=0)[ink.any(axis=0)]
     med = max(float(np.median(rows)) if rows.size else 0.0, float(np.median(cols)) if cols.size else 0.0)
-    return med >= 4
+    return med >= min_transitions
 
 
 def _region_stand_in(gray: np.ndarray, polys: list[np.ndarray], scale: float, min_std: float) -> bool:
@@ -534,6 +557,9 @@ def evaluate_output(
             spill_area_pt2=round(float(spill.sum()) * px_area, 2),
             spill_fraction=round(float(spill.sum()) / spill.size, 6), orphan_regions=orphans[:200],
             blank_output=bool(exists and primary_x.std() < 1.0 and primary_o.std() > 5.0), notes=notes))
+        # The page's renders are done with, but the primary source render (the earlier-revision check
+        # reads it again).
+        cache.evict(i, keep=(("src", configs[0]),))
 
     # -- L2: earlier revisions ------------------------------------------------------------
     prefixes = revision_prefixes(output) if (cfg.check_revisions and integrity.opens) else []
@@ -616,26 +642,45 @@ def evaluate_output(
         vis[pg][u] = True
         vis_by_cfg[pg][labels[0]][u] = True
 
-    def text_pair(pg: int, s_wid: str, p_wid: str, ks) -> bool:
-        """The pair read from the text layer, for a state not seen in pixels: the state's text at its
-        displayed place followed by a 4-digit token starting with the original's prefix digits. No state
-        text there: nothing is kept, the pair stands."""
+    def text_pair(pg: int, s_wid: str, p_wid: str, ks, seen: bool = False) -> bool:
+        """The pair read from the text layer: the state's text at its displayed place followed by a 4-digit
+        token starting with the original's prefix digits or, when the original postcode starts with no
+        digit of its state (NSW 1xxx, VIC 8xxx, QLD 9xxx, ACT 02xx), a postcode of that state. No state text
+        there: for a state not seen in pixels (``seen`` False) nothing is kept and the pair stands; for one
+        seen, the pair cannot be read and fails."""
         pt = page_texts.get(pg, PageText())
         state = words[s_wid][1].text.strip(SHARED_STRIP)
         run = find_at_place(words[s_wid][1].poly, state, pt, shift_pt.get(pg, (0.0, 0.0)), line_h.get(s_wid),
                             cfg.searchable_band, cfg.searchable_margin, cfg.text_ratio, whole_token=True)
         if run is None:
-            return True
-        after = "".join(c.c for c in pt if c.seq > run.last).lstrip()[:4]
-        prefix = "".join(words[p_wid][1].text[k] for k in ks)
-        return len(after) == 4 and after.isdigit() and after.startswith(prefix)
+            return not seen
+        # The postcode: the text right after the state in extraction order, or a 4-digit token at the
+        # postcode's displayed place (a fake written into the page after the kept state comes later in the
+        # extraction order).
+        got = ["".join(c.c for c in pt if c.seq > run.last).lstrip()[:4]]
+        pw = words[p_wid][1]
+        h = line_h.get(p_wid) or float(np.hypot(*(as_poly(pw.poly)[3] - as_poly(pw.poly)[0])))
+        got += [t.text.strip(SHARED_STRIP) for t in tokens_by_page.get(pg) or []
+                if at_place(t, pw.poly, h, shift_pt.get(pg, (0.0, 0.0)), cfg)]
+        # The original postcode (kept in the text under a box, say) is no same-state fake.
+        got = [g for g in got if len(g) == 4 and g.isdigit() and g != pw.text.strip(SHARED_STRIP)]
+        if not ks:
+            code = STATE_CODES.get(_alnum(state))
+            return code is not None and any(postcode_in_state(code, g) for g in got)
+        prefix = "".join(pw.text[k] for k in ks)
+        return any(g.startswith(prefix) for g in got)
 
     def pair_ok(pg: int, s_wid: str, state_units: list[Unit], p_wid: str, ks) -> bool:
         """Are the postcode's prefix digits the original glyphs where the state word is seen (in place, or
         at its found transform, refined within half a character)? A same-state fake has the state's digit
-        there; another state's fake does not."""
-        if not ks or pg in unreliable or pg not in prim_pairs:
+        there; another state's fake does not. Where they are not, or the original postcode has no prefix
+        digit to read, the pair is read from the text layer (:func:`text_pair`): a same-state fake that
+        redraws the postcode at another size, or replaces a postcode such as NSW 1xxx, still pairs where
+        the output's text says so; with no text it fails."""
+        if pg in unreliable or pg not in prim_pairs:
             return False
+        if not ks:
+            return text_pair(pg, s_wid, p_wid, ks, seen=True)
         f = found.get(s_wid)
         if f is not None:
             t = (f.s, f.tx, f.ty)
@@ -648,16 +693,21 @@ def evaluate_output(
         if score >= cfg.moved_match:
             t = (t[0], t[1] + dx, t[2] + dy)
         flags = pcs[pg].char_flags_at(p_wid, ks, o, x, *t, cfg)
-        return all(flags.get(k, False) for k in ks)
+        return all(flags.get(k, False) for k in ks) or text_pair(pg, s_wid, p_wid, ks, seen=True)
 
-    def text_leaked(pg: int, wid: str, needle: str) -> bool:
+    def text_leaked(pg: int, wid: str, needle: str, shared: tuple[str, ...] | None = None) -> bool:
         """The original token in the output's text: in the 1 pt zone of its word or, with text_place_leak,
         at its displayed place (the GT polygon plus the page's registration shift, the searchable
-        tolerance), and for a displaced original also at its found place."""
+        tolerance), and for a displaced original also at its found place. With ``shared`` the needle is the
+        identifying slice of a word with shared characters, matched by :func:`slice_in` (never inside the
+        shared part a fake keeps)."""
         whole = wid in whole_token_words
-        if whole and token_leaks(needle, zone_tokens.get(pg, {}).get(wid, []), cfg):
+        if shared is not None:
+            if slice_in(needle, texts.get(pg, {}).get(wid), shared):
+                return True
+        elif whole and token_leaks(needle, zone_tokens.get(pg, {}).get(wid, []), cfg):
             return True
-        if not whole and text_leaks(needle, texts.get(pg, {}).get(wid), cfg):
+        elif not whole and text_leaks(needle, texts.get(pg, {}).get(wid), cfg):
             return True
         if not cfg.text_place_leak:
             return False
@@ -667,9 +717,11 @@ def evaluate_output(
             places.append((f.poly(words[wid][1].poly, scale), line_h[wid] * f.s if line_h.get(wid) else None))
         return any(find_at_place(poly, needle, page_texts.get(pg, PageText()), shift_pt.get(pg, (0.0, 0.0)), h,
                                  cfg.searchable_band, cfg.searchable_margin, cfg.text_ratio,
-                                 whole_token=whole) is not None for poly, h in places)
+                                 whole_token=whole, shared=shared) is not None for poly, h in places)
 
-    def rev_text_leaked(pg: int, wid: str, needle: str) -> bool:
+    def rev_text_leaked(pg: int, wid: str, needle: str, shared: tuple[str, ...] | None = None) -> bool:
+        if shared is not None:
+            return slice_in(needle, rev_texts.get(pg, {}).get(wid), shared)
         if wid in whole_token_words:
             return token_leaks(needle, rev_tokens.get(pg, {}).get(wid, []), cfg)
         return text_leaks(needle, rev_texts.get(pg, {}).get(wid), cfg)
@@ -729,6 +781,35 @@ def evaluate_output(
             new_ink_cache[pg] = arr
         return new_ink_cache[pg]
 
+    def blanked(pg: int, toks: list[Token]) -> np.ndarray:
+        """The primary output of a page with the boxes of the given output-text tokens blanked (1 px
+        around): ink that is never the replacement of the word under it."""
+        pt = page_texts.get(pg)
+        boxes = [pt[k].box for t in toks if t.page == pg and t.index >= 0 and pt is not None
+                 for k in pt.tokens[t.index]]
+        if not boxes:
+            return primary_out[pg]
+        x = primary_out[pg].copy()
+        dx, dy = shift_pt.get(pg, (0.0, 0.0))
+        for x0, y0, x1, y1 in boxes:
+            r0, r1 = int((y0 - dy) * scale) - 1, int(np.ceil((y1 - dy) * scale)) + 2
+            c0, c1 = int((x0 - dx) * scale) - 1, int(np.ceil((x1 - dx) * scale)) + 2
+            x[max(r0, 0):max(r1, 0), max(c0, 0):max(c1, 0)] = 255
+        return x
+
+    def slid_tokens(pg: int, polys: list[np.ndarray], slid: set[str]) -> list[Token]:
+        """Output tokens over the given word polygons (1 pt around) that are words their lines keep."""
+        sh = np.asarray(shift_pt.get(pg, (0.0, 0.0)), float)
+        out = []
+        for t in tokens_by_page.get(pg) or []:
+            if _alnum(t.text) not in slid:
+                continue
+            c = np.asarray(t.centre, float) - sh
+            if any(p[:, 0].min() - 1 <= c[0] <= p[:, 0].max() + 1 and p[:, 1].min() - 1 <= c[1] <= p[:, 1].max() + 1
+                   for p in polys):
+                out.append(t)
+        return out
+
     def e3(unit: AddressUnit, needles: dict[str, str]) -> tuple[set[str], bool]:
         """E3: the identifying words (word id -> whole-token needle) that survive in the text layer of the
         unit's region, and whether the measurement OCR suspects one on a page with no text layer."""
@@ -758,12 +839,22 @@ def evaluate_output(
                 survived |= hit
         return survived, suspected
 
-    def e1(m, unit: AddressUnit, ident: dict[tuple[int, str], list[int]], kept: dict[str, str]
-           ) -> tuple[bool, str | None, list[str]]:
+    def e1(m, unit: AddressUnit, ident: dict[tuple[int, str], list[int]], kept: dict[str, str],
+           slid: set[str] = frozenset()) -> tuple[bool, str | None, list[str]]:
         """E1: is this part of an address replaced? (replaced, locality shape, review flags). ``ident`` maps
-        each identifying word to its identifying character indices."""
+        each identifying word to its identifying character indices; ``slid`` holds the words its lines keep
+        (letters and digits only), never the replacement where a re-typeset line slides them along."""
         rb = readback[unit.key]
         flags: list[str] = []
+        outs = primary_out
+
+        def text_like(pg: int, wid: str) -> bool:
+            # New ink on a word's bands counts only when it looks like text there: the edges of a plain box
+            # (and their JPEG ringing) make the word's edge bands new ink, and a box is never a fake.
+            w = words[wid][1]
+            short = sum(ch.isalnum() for ch in w.text) <= cfg.address_short_chars
+            return _text_like_ink(outs[pg], [as_poly(w.poly)], scale, 2 if short else 4)
+
         # A state kept as shared structure has passed its pair check: the text layer need not hold it.
         state_kept = any(unit.roles.get(w) in ("state", "state+postcode") for w in kept)
         if m.type is PiiType.LOCATION:
@@ -776,7 +867,7 @@ def evaluate_output(
                     ok = False
                     break
                 chars = unit_flags(pcs[pg], prim_stats[pg].informative, new_ink(pg))
-                if not any(chars.get((wid, k), False) for k in ks):
+                if not any(chars.get((wid, k), False) for k in ks) or not text_like(pg, wid):
                     ok = False
                     break
             if not ok:
@@ -793,24 +884,40 @@ def evaluate_output(
                 if not locality_shape([t.text for t in read], *locality_roles(unit, gt), state_kept=state_kept)[0]:
                     flags.append("LOCALITY_SHAPE_UNCONFIRMED")
             return ok, "no_text_at_unit", flags
+        # The street line's own new text: read-back tokens before the locality's, never the words its lines
+        # keep. A line re-typeset after a deletion slides those, and the locality's fake, into an erased street
+        # word's place; their ink is blanked for the pixel tests too.
+        street_rb, other_rb = list(rb), []
+        if unit.locality is not None and rb:
+            end = read_end([t.text for t in rb], overseas=True)
+            if end is not None and end.anchor is not None and end.anchor >= 1:
+                street_rb, other_rb = rb[:end.anchor - 1], rb[end.anchor - 1:]
+        other_rb += [t for t in street_rb if _alnum(t.text) in slid]
+        street_rb = [t for t in street_rb if _alnum(t.text) not in slid]
+        polys = defaultdict(list)
+        for (pg, wid) in ident:
+            polys[pg].append(as_poly(words[wid][1].poly))
+        outs = {pg: blanked(pg, other_rb + slid_tokens(pg, polys[pg], slid)) for pg in polys if pg in primary_out}
         for (pg, wid), ks in ident.items():
             w = words[wid][1]
             h = line_h.get(wid) or float(np.hypot(*(as_poly(w.poly)[3] - as_poly(w.poly)[0])))
             sh = shift_pt.get(pg, (0.0, 0.0))
-            if any(t.page == pg and at_place(t, w.poly, h, sh, cfg) and is_new_text(w.text, t.text) for t in rb):
+            if any(t.page == pg and at_place(t, w.poly, h, sh, cfg) and is_new_text(w.text, t.text) for t in street_rb):
                 return True, None, flags
-            if pg in primary_out:
-                st, pc = prim_stats[pg], pcs[pg]
+            if pg in outs:
+                st, pc, x = prim_stats[pg], pcs[pg], outs[pg]
                 cells = [ci for ci in pc.word_cells.get(wid, []) if pc.cells[ci].index in ks and st.informative[ci]]
-                if cells and np.mean(new_ink(pg)[cells]) >= cfg.address_new_ink_fraction:
+                ink = [bool(new_ink(pg)[ci]) and float(x[pc.rows[ci], pc.cols[ci]].std()) >= cfg.cell_min_visible_std
+                       for ci in cells]
+                if cells and np.mean(ink) >= cfg.address_new_ink_fraction and text_like(pg, wid):
                     return True, None, flags
-        polys = defaultdict(list)
-        for (pg, wid) in ident:
-            polys[pg].append(as_poly(words[wid][1].poly))
-        return any(_text_like_ink(primary_out[pg], ps, scale) for pg, ps in polys.items() if pg in primary_out), \
-            None, flags
+        return any(_text_like_ink(outs[pg], ps, scale) for pg, ps in polys.items() if pg in outs), None, flags
 
     # -- mentions ----------------------------------------------------------------------------
+    line_words: dict[tuple[int, str], list] = defaultdict(list)
+    for page in gt.pages:
+        for w in page.words:
+            line_words[(page.index, w.line)].append(w)
     outcomes: list[MentionOutcome] = []
     excused_words: set[str] = set()  # whole words excused as shared structure (pairs that held)
     for m in gt.mentions:
@@ -886,16 +993,19 @@ def evaluate_output(
         # In the text layer a shared word is left out and a word with shared characters is looked for by
         # its identifying slice (an email's local part, an identifier's digits).
         req_text = {}
+        cut_parts: dict[str, tuple[str, ...]] = {}  # word id -> its shared parts, for a slice's search
         for (pg, wid), t in req_all.items():
             if wid in su.full:
                 continue
             if wid in su.needle_cut:
                 a, b = su.needle_cut[wid]
-                t = words[wid][1].text[a:b].strip(SHARED_STRIP)
+                wt = words[wid][1].text
+                t = wt[a:b].strip(SHARED_STRIP)
+                cut_parts[wid] = tuple(p for p in (wt[:a].strip(SHARED_STRIP), wt[b:].strip(SHARED_STRIP)) if p)
             if t:
                 req_text[(pg, wid)] = t
         total_chars = sum(len(t) for t in req_text.values())
-        leaked_words = {k for k, t in req_text.items() if text_leaked(k[0], k[1], t)}
+        leaked_words = {k for k, t in req_text.items() if text_leaked(k[0], k[1], t, cut_parts.get(k[1]))}
         review_flags: list[str] = []
         if unit is not None:
             # E3: an identifying word of the unit found more often in the unit's region than the input kept it
@@ -906,7 +1016,7 @@ def evaluate_output(
             if suspected:
                 review_flags.append("LEAK_SUSPECTED")
         hit = sum(len(t) for k, t in req_text.items() if k in leaked_words)
-        rev_hit = sum(len(t) for (pg, wid), t in req_text.items() if rev_text_leaked(pg, wid, t))
+        rev_hit = sum(len(t) for (pg, wid), t in req_text.items() if rev_text_leaked(pg, wid, t, cut_parts.get(wid)))
         f_text = hit / total_chars if total_chars else 0.0
         f_rev = max(f_rev_px, rev_hit / total_chars if total_chars else 0.0)
         vec_orig = vec_surv = 0
@@ -921,10 +1031,19 @@ def evaluate_output(
         polys_by_page: dict[int, list[np.ndarray]] = defaultdict(list)
         for seg in m.segments:
             polys_by_page[seg.page].extend(as_poly(words[wid][1].poly) for wid in seg.words)
+        # The words the mention's lines keep (its shared words, the lines' other words): a line re-typeset
+        # after a deletion slides them into an erased word's place, and they are never its replacement.
+        ident_ids = {wid for (_, wid) in ident} if unit is not None else \
+            {wid for (_, wid) in req_all if wid not in su.full}
+        slid = {_alnum(x.text) for pg, wid in req_all for x in line_words.get((pg, words[wid][1].line), ())
+                if x.id not in ident_ids and _alnum(x.text)}
+
         def got_new(pg: int, wid: str, t: str) -> bool:
             # A word's shared characters (an email's domain, an identifier's prefix), and any fragment of
             # the original left beside them, are never the replacement.
             got = texts.get(pg, {}).get(wid)
+            if _only_slid(got, slid):
+                return False
             if got and wid in su.needle_cut:
                 a, b = su.needle_cut[wid]
                 wt = words[wid][1].text
@@ -941,11 +1060,11 @@ def evaluate_output(
         shape = None
         if unit is not None and ident:
             # E1: an address part is judged by its identifying words and the unit's read-back.
-            replaced, shape, more = e1(m, unit, ident, su.full)
+            replaced, shape, more = e1(m, unit, ident, su.full, slid)
             review_flags += more
         else:
             new_text = any(got_new(pg, wid, t) for (pg, wid), t in req_all.items())
-            replaced = new_text or any(_text_like_ink(primary_out[pg], polys, scale)
+            replaced = new_text or any(_text_like_ink(blanked(pg, slid_tokens(pg, polys, slid)), polys, scale)
                                        for pg, polys in polys_by_page.items() if pg in primary_out)
         region_polys: dict[int, list[np.ndarray]] = defaultdict(list)
         for seg in m.segments:

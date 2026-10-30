@@ -127,6 +127,11 @@ def test_placeholder_forms():
         assert is_placeholder(t), t
     for t in ("Ruth", "DUNBAR", "(02)", "CLM-70596", "0412", "Marsden"):
         assert not is_placeholder(t), t
+    # A tag in brackets is a placeholder; a fake written in brackets is not.
+    for t in ("[Redacted]", "<EMAIL_ADDRESS>", "[NAME]"):
+        assert is_placeholder(t), t
+    for t in ("<ruth.dunbar@example.com>", "<ruth.dunbar@example.com>,", "(Ruth)", "(Marsden),", "[Dunbar]"):
+        assert not is_placeholder(t), t
 
 
 def test_one_text_for_every_mention_is_a_placeholder():
@@ -197,3 +202,79 @@ def test_the_artifact_is_validated(bad):
 
     with pytest.raises(ValidationError):
         RedactedTextArtifact.model_validate(bad)
+
+
+def _words_of(mid: str) -> list[str]:
+    m = next(x for x in gt().mentions if x.id == mid)
+    return [wid for seg in m.segments for wid in seg.words]
+
+
+def test_fakes_written_in_brackets_are_replacements():
+    # 'From: Ruth Dunbar <ruth.dunbar@example.com>': a realistic fake in angle brackets or parentheses is a
+    # replacement, not a placeholder (it read NOT_REPLACED, and the document could never be clean).
+    em, m2 = _words_of("em1"), _words_of("m2")
+    ev = evaluate(texts(faked(**{em[0]: "<ruth.dunbar@example.com>", m2[-1]: "(Dunbar)"})))
+    assert ev.mention("em1").status is MentionStatus.SAFE_REPLACED
+    assert ev.mention("m2").status is MentionStatus.SAFE_REPLACED
+    assert ev.summary["clean_document"]
+
+
+def test_a_deleted_mention_is_not_credited_with_a_neighbours_fake():
+    # 'Signed: Dr Peter Strong' / 'SMITHERS Jane (01.02.2026) ...': m7 deleted and ftr0 on the next line
+    # replaced by 'Ruth Dunbar'. A character diff of the whole text merged the two edits and spread the fake
+    # over both, so m7 read SAFE_REPLACED and the document clean. Tokens (line breaks among them) are matched
+    # first now, so a deleted mention is NOT_REPLACED.
+    ftr0 = _words_of("ftr0")
+    ev = evaluate(texts(faked(**{ftr0[0]: "Ruth Dunbar", ftr0[1]: ""}, **dict.fromkeys(_words_of("m7"), ""))))
+    assert ev.mention("m7").status is MentionStatus.NOT_REPLACED
+    assert ev.mention("ftr0").status is MentionStatus.SAFE_REPLACED
+    assert not ev.summary["clean_document"]
+    # Every name of the claimant replaced by one text 'Ruth Dunbar' and every other required mention deleted:
+    # the claim number and the doctor's name are NOT_REPLACED, never credited with the next line's fake.
+    from benchmark.gt.policy import resolve
+
+    res = resolve(gt(), V1)
+    change = {}
+    for m in gt().mentions:
+        ws = [wid for seg in m.segments for wid in seg.words]
+        if not ws or res.mentions[m.id].requirement.value != "MUST":
+            continue
+        if m.entity == "E1" and m.type.value == "PERSON_NAME":
+            change.update({ws[0]: "Ruth Dunbar", **dict.fromkeys(ws[1:], "")})
+        else:
+            change.update(dict.fromkeys(ws, ""))
+    ev = evaluate(texts(change))
+    assert ev.mention("m7").status is MentionStatus.NOT_REPLACED
+    assert ev.mention("clm1").status is MentionStatus.NOT_REPLACED
+
+
+def test_a_perfect_replacement_predicts_every_mention_exactly():
+    # Two required mentions with only a line break between them ('Dr Peter Strong' ends a line, 'SMITHERS Jane'
+    # starts the next) are two predictions, not one merged run.
+    sc = score_text(gt(), V1, texts(faked()), config=CFG)
+    must_ids = set(required_words().values())
+    boundary = {x.mention_id: x.boundary for x in sc.detection.matches if x.mention_id in must_ids}
+    assert set(boundary.values()) == {"exact"}, {k: v for k, v in boundary.items() if v != "exact"}
+
+
+@pytest.mark.parametrize("postcode, ok", [("2112", True), ("3112", False)])
+def test_a_kept_state_before_a_postcode_with_no_prefix_digit_pairs_from_the_text(postcode, ok):
+    # 'Darlinghurst NSW 1300' has no digit of its state to keep: the kept 'NSW' pairs when a postcode of that
+    # state follows it in the redacted text, as the PDF path reads it from the text layer.
+    from tests import address_fixtures as af
+
+    case = af.one_case("loc", [("Report prepared for the claimant.", 0),
+                               ("Address: 12 Smith Street, Darlinghurst NSW 1300", 2)],
+                       [("A1", [[1, 1], [1, 2], [1, 3]], [[1, 4], [1, 5], [1, 6]])])
+    g = af.render(case).gt
+    fakes = {"12": "27", "Smith": "Banksia", "Darlinghurst": "Marsden", "1300": postcode}
+    lines_o, lines_r = defaultdict(list), defaultdict(list)
+    for w in sorted(g.pages[0].words, key=lambda w: w.order):
+        lines_o[w.line].append(w.text)
+        lines_r[w.line].append(fakes.get(w.text, w.text))
+    art = RedactedTextArtifact(original_text="\n".join(" ".join(v) for v in lines_o.values()),
+                               redacted_text="\n".join(" ".join(v) for v in lines_r.values()))
+    ev = score_text_document(g, V1, art, CFG)
+    loc = next(m for m in ev.mentions if m.address_unit and m.type == "LOCATION")
+    assert loc.shared_pairs[0][1] is ok
+    assert (loc.status is MentionStatus.SAFE_REPLACED) is ok, loc.status

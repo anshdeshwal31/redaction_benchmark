@@ -100,7 +100,7 @@ code{font-size:12px}.wrap{overflow-x:auto}
 .dev h2{color:var(--warn);border-bottom:0;margin-top:12px}
 </style></head><body>
 <h1>Run {{ run.run_id }}</h1>
-<div class="mut">candidate <b>{{ run.candidate.name }}</b> {{ run.candidate.version }} · experiment {{ run.experiment.name }} ({{ run.experiment.mode }}, {{ run.experiment.repeats }} repeat(s)) · dataset {{ run.dataset.name }}@{{ run.dataset.version }} · eval {{ scoring.eval_config.version }}/{{ scoring.eval_digest }}{% if scoring.policy_id %} · policy {{ scoring.policy_id|e }}{% endif %} · benchmark {{ run.benchmark.version }} {{ (run.benchmark.commit or 'uncommitted')[:10] }}{% if run.benchmark.dirty %} (dirty){% endif %}</div>
+<div class="mut">candidate <b>{{ run.candidate.name }}</b> {{ run.candidate.version }} · experiment {{ run.experiment.name }} ({{ run.experiment.mode }}, {{ run.experiment.repeats }} repeat(s)) · dataset {{ run.dataset.name }}@{{ run.dataset.version }} · graded on {{ "its redacted text" if evidence == "text" else ("the output PDF" if evidence == "pdf" else "the output PDF or its redacted text") }} · eval {{ scoring.eval_config.version }}/{{ scoring.eval_digest }}{% if scoring.policy_id %} · policy {{ scoring.policy_id|e }}{% endif %} · benchmark {{ run.benchmark.version }} {{ (run.benchmark.commit or 'uncommitted')[:10] }}{% if run.benchmark.dirty %} (dirty){% endif %}</div>
 {% if shareable %}<p class="mut">Shareable mode: GT spans are masked in all crops.</p>{% else %}<p class="bad">Sensitive: contains crops of real documents. Do not circulate; use <code>--shareable</code>.</p>{% endif %}
 {% if pending %}<p class="mut">Policy decisions pending (scored as MAY, neither rewarded nor penalised): {% for q, n in pending %}{{ q }} ({{ n }} mentions){% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}
 {% if skipped %}<p class="mut">Not scored: {% for s in skipped %}{{ s.doc_id }}{% if s.repeat is defined %}/r{{ s.repeat }}{% endif %} ({{ s.reason }}){% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
@@ -144,10 +144,20 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
     docs_t, mentions, words, comps = (_rows(results_dir, n) for n in ("documents", "mentions", "words", "components"))
     determinism = _rows(results_dir, "determinism")
     must = [m for m in mentions if m["requirement"] == "MUST" and m["repeat"] == 0]
-    leaking = [m for m in must if m["status"] not in HIDDEN and m["status"] != "NOT_EVALUATED"]
+    # What the verdicts rest on: the output PDF, or the redacted text of a text-only tool (eval-0.4). On a
+    # text-graded document a required mention the tool's own extraction does not hold is left NOT_EVALUATED;
+    # the strict view counts it against the tool, like NO_OUTPUT.
+    evidence = sorted({d.get("evidence") or "pdf" for d in docs_t if d.get("repeat") == 0})
+    text_docs = {d["doc_id"] for d in docs_t if d.get("repeat") == 0 and d.get("evidence") == "text"}
+
+    def counted(m) -> bool:
+        return m["status"] != "NOT_EVALUATED" or m["doc_id"] in text_docs
+
+    leaking = [m for m in must if m["status"] not in HIDDEN and counted(m)]
+    unaligned = [m for m in must if m["status"] == "NOT_EVALUATED" and counted(m)]
     per_doc = defaultdict(lambda: [0, 0])
     for m in must:
-        if m["status"] == "NOT_EVALUATED":
+        if not counted(m):
             continue
         per_doc[m["doc_id"]][1] += 1
         per_doc[m["doc_id"]][0] += m["status"] not in HIDDEN
@@ -163,7 +173,9 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
     w0 = [w for w in words if w["repeat"] == 0 and w["status"] != "NOT_EVALUATED"]
     ordinary = [w for w in w0 if w["requirement"] == "ORDINARY"]
     protected = [w for w in w0 if w["requirement"] == "MUST_NOT"]
-    must_w = [w for w in w0 if w["requirement"] == "MUST"]
+    # Words of shared structure excused in their mention are neutral, as in each document's summary.
+    excused = {(m["doc_id"], w) for m in must for w in (m.get("shared_words") or "").split(",") if w}
+    must_w = [w for w in w0 if w["requirement"] == "MUST" and (w["doc_id"], w["word_id"]) not in excused]
     # A MOVED word is present, wherever it was drawn.
     red = lambda w: w["status"] != "MOVED" and w["visible_fraction"] is not None and w["visible_fraction"] < 0.5  # noqa: E731
     tp = sum(1 for w in must_w if red(w))
@@ -172,13 +184,15 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
     searchable_vals = [d["searchable_rate"] for d in doc0 if isinstance(d.get("searchable_rate"), (int, float))]
     searchable_mean = sum(searchable_vals) / len(searchable_vals) if searchable_vals else None
     searchable_ok = all(d.get("searchable_ok") is not False for d in doc0)
-    completed = [m for m in leaking if m["status"] != "NO_OUTPUT"]
+    completed = [m for m in leaking if m["status"] not in ("NO_OUTPUT", "NOT_EVALUATED")]
+    n_completed = evaluated - len(no_output) - len(unaligned)
     cards = [
         {"label": "required mentions leaking (strict)", "value": _fmt(leak_rate, True), "cls": "bad" if leaking else "ok",
          "note": f"{len(leaking)}/{evaluated}" + (f" · 95% CI {ci[0]*100:.1f}-{ci[1]*100:.1f}%" if ci else "")
-                 + (f" · {len(no_output)} from failed runs" if no_output else "")},
-        {"label": "leaking, completed runs only", "value": _fmt(_rate(len(completed), evaluated - len(no_output)), True),
-         "cls": "bad" if completed else "ok", "note": f"{len(completed)}/{evaluated - len(no_output)}"},
+                 + (f" · {len(no_output)} from failed runs" if no_output else "")
+                 + (f" · {len(unaligned)} not in the tool's own text" if unaligned else "")},
+        {"label": "leaking, completed runs only", "value": _fmt(_rate(len(completed), n_completed), True),
+         "cls": "bad" if completed else "ok", "note": f"{len(completed)}/{n_completed}"},
         {"label": "visible or recoverable (L1+L2)", "value": _fmt(_rate(len(l12), evaluated), True),
          "cls": "bad" if l12 else "ok", "note": f"partial {by_status['PARTIAL']} · visible {by_status['LEAK_VISIBLE']} · recoverable {by_status['LEAK_RECOVERABLE']}"},
         {"label": "latent only (L3)", "value": str(by_status["LEAK_LATENT"]), "cls": "bad" if by_status["LEAK_LATENT"] else "ok", "note": "recoverable by enhancement"},
@@ -188,7 +202,9 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
         {"label": "clean documents", "value": f"{clean}/{len(doc0)}", "cls": "ok" if clean == len(doc0) else "bad", "note": "no L1/L2 leak, all replaced, no protected damage, collateral and searchable pass marks met"},
         {"label": "collateral ordinary words", "value": _fmt(_rate(sum(1 for w in ordinary if w['status'] not in PRESENT_VALUES), len(ordinary)), True), "cls": "", "note": f"of {len(ordinary)}"},
         {"label": "protected words damaged", "value": str(sum(1 for w in protected if w['status'] not in PRESENT_VALUES)), "cls": "", "note": f"of {len(protected)}"},
-        {"label": "effective token precision / recall", "value": f"{_fmt(_rate(tp, tp + fp))} / {_fmt(_rate(tp, len(must_w)))}", "cls": "", "note": "from the output pixels"},
+        {"label": "effective token precision / recall", "value": f"{_fmt(_rate(tp, tp + fp))} / {_fmt(_rate(tp, len(must_w)))}", "cls": "",
+         "note": {"pdf": "from the output pixels", "text": "from the redacted text"}.get(
+             "+".join(evidence), "from the output pixels or the redacted text")},
     ]
     comp_rows = []
     c0 = [c for c in comps if c.get("repeat") == 0]
@@ -221,7 +237,7 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
     def breakdown(keyfn):
         groups = defaultdict(lambda: [0, 0])
         for m in must:
-            if m["status"] == "NOT_EVALUATED":
+            if not counted(m):
                 continue
             for k in keyfn(m):
                 groups[k][0] += 1
@@ -307,6 +323,7 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
                         "out": _crop(out_pdf.read_bytes(), seg.page, box, 150, polys, shareable, m["type"])
                         if out_pdf.exists() else ""})
     page = TEMPLATE.render(run=run.model_dump(mode="json"), scoring=scoring, shareable=shareable, cards=cards,
+                           evidence="+".join(evidence) or "pdf",
                            components=comp_rows, docs=docs, breakdowns=breakdowns, funnel=funnel,
                            attribution=[(*k, v) for k, v in attribution.most_common()],
                            over=sorted(over.items()), determinism=determinism, gallery=gallery, shared_rows=shared_rows,

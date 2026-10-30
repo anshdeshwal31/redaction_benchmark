@@ -756,7 +756,7 @@ erDiagram
 
 ### Relevant tests and coverage gaps
 
-741 tests (they take roughly 30 minutes on the development laptop). They cover:
+772 tests (they take roughly 50 minutes on the development laptop). They cover:
 
 - **Geometry:** property-based round trips across every pair of frames, all rotations and
   CropBox offsets, checked against renders from both engines.

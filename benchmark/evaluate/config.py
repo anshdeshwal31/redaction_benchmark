@@ -165,10 +165,13 @@ class EvalConfig(BaseModel):
                                                     "the same transform (the original font is the moved search's)")
     restyle_chars: float = Field(0.8, description="Share of the typeset characters that must correlate with the "
                                                   "output there")
-    restyle_fonts: tuple[str, ...] = Field(("embedded", "Helvetica", "Times-Roman", "Courier", "Helvetica-Bold"),
+    restyle_fonts: tuple[str, ...] = Field(("embedded", "Helvetica", "Times-Roman", "Courier", "Helvetica-Bold",
+                                            "Helvetica-Oblique", "Helvetica-BoldOblique", "Times-Italic",
+                                            "Times-Bold", "Times-BoldItalic", "Courier-Oblique", "Courier-Bold",
+                                            "Courier-BoldOblique"),
                                            description="Candidate fonts, in order: 'embedded' is the output page's "
                                                        "own embedded fonts (when it has a text layer), the others "
-                                                       "base-14 families")
+                                                       "the twelve base-14 text fonts")
 
     # -- address units (eval-0.4; docs/metrics.md, "Address units") ------------------------------
     address_new_ink_fraction: float = Field(0.5, description="E1: a street line is replaced when this share of an "

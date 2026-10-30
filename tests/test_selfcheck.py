@@ -20,13 +20,10 @@ def test_selfcheck_passes_on_fixtures(make):
     fx = make()
     results = selfcheck(fx.pdf, fx.gt, POLICY, EvalConfig(dpi=150, renderers=("mupdf",)))
     failed = [(r.name, r.observed) for r in results if r.passed is False]
-    if make is rotated_content:
-        # Measured limit (eval-0.4, S17): a line re-typeset at 1.02-1.035x on this rotated scan leaves its first
-        # word ('June', in place, vertical) neither PRESERVED nor found MOVED: 1 of its 18 real words is
-        # collateral, over the 1% mark. Pinned for the reviewers; the mark is not lowered.
-        assert [name for name, _ in failed] == ["retypeset"] and "collateral 0.0556" in failed[0][1], failed
-    else:
-        assert failed == []
+    # On the rotated scan a line re-typeset between two steps of the moved search's scale grid (1.02-1.035x)
+    # overhangs its first word's found box ('June', vertical): the side-strip check tries the box half a step
+    # larger and smaller, so the word is MOVED, not collateral (1 of 18 words, over the 1% mark, before fix 1).
+    assert failed == []
     names = {r.name for r in results}
     assert {"reference-true", "null", "overlay", "incremental", "dpi-scale"} <= names
     # eval-0.4: fakes drawn the way tools draw them; the address checks are not applicable without an address.
@@ -98,6 +95,14 @@ def test_the_eval04_checks_follow_the_shared_roles_of_the_policy_passed_in():
         assert ev.mention("ph1").status.value == mobile
         assert {m.status.value for m in ev.mentions if m.requirement == "MUST" and m.mention_id != "ph1"} == {
             "SAFE_REPLACED"}
+
+
+def test_retypeset_check_passes_on_the_rotated_scan_under_the_client_policy():
+    # S17 acceptance: the re-typeset check passes on the rotated scan under the 1.2.0 roles as well (its first
+    # word, vertical, is found MOVED; see test_selfcheck_passes_on_fixtures).
+    fx = rotated_content()
+    results = selfcheck(fx.pdf, fx.gt, CLIENT, CFG, only=["retypeset"])
+    assert [(r.name, r.passed) for r in results] == [("retypeset", True)], [(r.name, r.observed) for r in results]
 
 
 def test_a_check_that_breaks_fails_as_an_error_and_the_other_checks_still_run(monkeypatch):

@@ -187,10 +187,10 @@ def test_identity_thresholds_for_mention_and_kept_characters():
 def test_image_layer_gate_drops_same_font_fakes(raster_dpi):
     # Every MUST word replaced in place by a same-font fake, the page rasterised (image only). The layer
     # holds the fakes, not the originals, so no fake character keeps layer evidence that counts; the kept
-    # 'CLM-' of the claim numbers is original and keeps it. In the 150-DPI layer two fake letters where
-    # org1's legal form 'Pty' was pass the run clause (the documented limit of random same-font matches).
-    # Under the shared roles of policy 1.2.0 (the identifier prefix and the legal form shared) no MUST
-    # mention has image-layer evidence.
+    # 'CLM-' of the claim numbers is original and keeps it. The layer is resampled bilinearly: sampled at
+    # the nearest pixel, two fake letters where org1's legal form 'Pty' was passed the run clause in the
+    # 150-DPI layer. Under the shared roles of policy 1.2.0 (the identifier prefix and the legal form
+    # shared) no MUST mention has image-layer evidence.
     b = calib.base()
     out = calib.same_font_fakes(raster_dpi)
     cfg = EvalConfig(dpi=200)
@@ -201,7 +201,7 @@ def test_image_layer_gate_drops_same_font_fakes(raster_dpi):
     ws = calib.words()
     fake = calib.fake_characters(calib.fakes())
     claims = {(w, k) for w in calib.mention_words("clm0") + calib.mention_words("clm1") for k in range(4)}
-    expected = {("p1w11", 0), ("p1w11", 1)} if raster_dpi == 150 else set()
+    expected = set()
     kept = set()  # characters whose layer evidence counts (two bands and the run rule, as for a mention)
     for page in b.gt.pages:
         o = RenderCache(200).get("src", b.pdf, page.index, RenderConfig("mupdf", True))
@@ -247,3 +247,32 @@ def test_identity_subbands_are_the_band_cells_split(variant):
                 assert got == set(zip(fine.rows[k].tolist(), fine.cols[k].tolist())), (c.word_id, c.index, c.band, j)
                 n += len(got)
         assert n > 10000
+
+
+def test_page_cells_keep_compact_indices_and_few_blurred_originals():
+    # Fix round 1 (memory): a page keeps its cells until its document is done, so the per-pixel indices are
+    # 32-bit (sub-bands 16-bit), the originals' blurred renders are kept for the last few only, and a page's
+    # renders are forgotten once it is evaluated (peak memory grew about 115 MB per dense page).
+    from benchmark.evaluate import cells as cells_mod
+
+    fx = ALL_VARIANTS["digital"]()
+    page = fx.gt.pages[0]
+    shape = (int(round(page.height_pt * 200 / 72)) + 1, int(round(page.width_pt * 200 / 72)) + 1)
+    pc = PageCells.build(page, 200, shape, 4, 16)
+    word = next(i for i, c in enumerate(pc.cells) if c.word_id is not None and pc.rows[i].size)
+    assert pc.rows[word].dtype == np.int32 and pc.cols[word].dtype == np.int32 and pc.subs[word].dtype == np.int16
+    idx = pc._identity_index()
+    for name in ("rr", "cc", "pix_cell", "pix_unit", "pix_word", "key"):
+        assert getattr(idx, name).dtype == np.int32, name
+    cfg = EvalConfig(dpi=200)
+    for k in range(6):
+        pc._originals(np.full(shape, 200 + k, np.float32), cfg)
+    assert len(cells_mod._ORIGINALS) <= cells_mod._ORIGINALS_KEPT
+    cache = RenderCache(72)
+    pdf = fx.pdf
+    for i in range(len(fx.gt.pages)):
+        cache.get("src", pdf, i, RenderConfig("mupdf", True))
+        cache.get("out", pdf, i, RenderConfig("mupdf", True))
+    cache.evict(0, keep=(("src", RenderConfig("mupdf", True)),))
+    assert {(k[0], k[1]) for k in cache._store} == {("src", 0), *(("src", i) for i in range(1, len(fx.gt.pages))),
+                                                    *(("out", i) for i in range(1, len(fx.gt.pages)))}

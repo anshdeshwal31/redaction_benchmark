@@ -304,6 +304,11 @@ def test_shared_words_alone_are_not_a_replacement():
     ev = _shared(calib.shared_case("S4"))
     assert _st(ev, "addr1")[0] == "NOT_REPLACED" and _st(ev, "org1")[0] == "NOT_REPLACED"
     assert _st(ev, "addr1-loc") == ("PARTIAL", 0.2)
+    # The same with the lines re-typeset (S4r): 'Street,', 'Pty Ltd', the line's other words and the
+    # locality's fake slide into the erased words' places. They are no replacement either (they read
+    # SAFE_REPLACED before fix round 1).
+    ev = _shared(calib.shared_case("S4r"))
+    assert _st(ev, "addr1")[0] == "NOT_REPLACED" and _st(ev, "org1")[0] == "NOT_REPLACED"
 
 
 @pytest.mark.parametrize("raster_dpi", [None, 300], ids=["S5-vector", "S5r-r300"])
@@ -404,3 +409,145 @@ def test_mobile_prefix_is_shared():
     assert _st(_shared(kept), "ph1")[0] == "LEAK_VISIBLE"
     rest = calib.build(word_ops=calib.in_place(calib.keep({**fk, ph[0]: "0491"}, ph[1:])))
     assert _st(_shared(rest), "ph1")[0] in ("PARTIAL", "LEAK_VISIBLE")
+
+
+# -- fix round 1: leaks the review found ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raster_dpi", [72, 85])
+def test_low_resolution_image_layer_under_boxes_is_a_leak(raster_dpi):
+    # The unredacted page as a 72- or 85-DPI image layer, a black vector box over every MUST word. The layer
+    # is resampled onto the render grid bilinearly for the identity gate: sampled at the nearest pixel it
+    # came out blocky, the originals failed the gate and 6 (85 DPI) or 11 (72 DPI) of the 20 recoverable
+    # mentions read NOT_REPLACED.
+    ev = _evaluate(calib.layer_under_boxes(raster_dpi))
+    text = set(calib.must_text_mentions())
+    missed = {m.mention_id: m.status.value for m in ev.mentions if m.mention_id in text
+              and (m.status.value != "LEAK_RECOVERABLE" or "image_layer" not in m.l2_sources)}
+    assert missed == {}, missed
+
+
+def test_correct_fakes_as_a_150_dpi_image_are_safe():
+    # The replace-in-place mock's output rendered to a 150-DPI grey PNG, image only. The layer is the page
+    # the pixel test sees, so it holds no original: sampled at the nearest pixel, two fake letters of the
+    # running header passed the gate and hdr0 and hdr1 read LEAK_RECOVERABLE.
+    b = calib.base()
+    good = run_mock(b.pdf, b.gt, calib.V1, NAMED["replace-in-place"]).pdf
+    ev = _evaluate(calib.image_only_png(good, 150))
+    bad = {m.mention_id: m.status.value for m in ev.mentions if m.requirement == "MUST" and m.status not in SAFE}
+    assert bad == {}, bad
+
+
+@pytest.mark.parametrize("glued", [False, True], ids=["spaced", "glued"])
+def test_hidden_address_words_glued_together_are_a_leak(glued):
+    # A realistic fake typeset in place over the truly redacted address line, and an invisible text layer
+    # keeping the original street name and suburb with fake digits. Glued (1 pt apart) MuPDF extracts one
+    # token, '27ExampleStreet,FaketownQLD4999'; the words are still found as parts glued at a change of
+    # case, as eval-0.3.1 found them by substring.
+    out = calib.hidden_address(calib.address_fakes()[0], ["27", "Example", "Street,", "Faketown", "QLD", "4999"],
+                               glued)
+    ev = _evaluate(out)
+    for mid in ("addr1", "addr1-loc"):
+        m = ev.mention(mid)
+        assert m.status.value == "LEAK_RECOVERABLE" and "text_layer" in m.l2_sources, (mid, m.status.value)
+    street = calib.hidden_address(calib.address_fakes()[0], ["Example", "Street,"], glued)
+    m = _evaluate(street).mention("addr1")
+    assert m.status.value == "LEAK_RECOVERABLE" and "text_layer" in m.l2_sources, m.status.value
+
+
+@pytest.mark.parametrize("op, raster_dpi", [(("box",), 150), (("partial", 0.85), 300)], ids=["box-r150", "partial085-r300"])
+def test_boxed_address_is_not_replaced(op, raster_dpi):
+    # A black box over every MUST word, no fake, as an image-only raster. The edges of a box (and their JPEG
+    # ringing) make the word's edge bands new ink, but a box is no realistic fake (owner, 2026-10-22): E1
+    # takes band new ink only where it looks like text, so both address parts are NOT_REPLACED, as in
+    # eval-0.3.1.
+    ev = _evaluate(calib.build(word_ops={w: op for w in calib.must_words()}, raster_dpi=raster_dpi))
+    for mid in ("addr1", "addr1-loc"):
+        assert ev.mention(mid).status.value not in ("SAFE_REPLACED", "SAFE_REMOVED"), (mid, ev.mention(mid).status)
+    if op == ("box",):
+        assert {ev.mention(mid).status.value for mid in ("addr1", "addr1-loc")} == {"NOT_REPLACED"}
+
+
+@pytest.mark.parametrize("font", ["tiit", "tibo", "heit"])
+def test_original_retypeset_in_an_italic_or_bold_base14_style_in_a_raster_is_a_leak(font):
+    # As above in Times-Italic, Times-Bold and Helvetica-Oblique: the identity gate takes an original drawn
+    # in another style for new ink, so only the restyled search catches it, and it now tries all twelve
+    # base-14 text fonts (with four, 15 to 20 of 20 read safe; eval-0.3.1 flagged most).
+    ev = _evaluate(calib.retypeset_in_font(font, raster_dpi=300))
+    assert len(_not_safe(ev)) == 20, _not_safe(ev)
+
+
+def _one_mention(kind: str, orig: list[str]):
+    """A one-line fictional page holding ``orig`` as the only (MUST) mention of type ``kind``."""
+    from benchmark.schemas import GTMention, PiiType, Segment
+    from tests import address_fixtures as af
+
+    case = af.one_case("slice", [("Contact for the claimant: " + " ".join(orig), 0), ("Dated 3 May 2024", 1)], [])
+    fx = af.render(case)
+    ids = [w.id for w in fx.gt.pages[0].words if w.line == "l0"][-len(orig):]
+    m = GTMention(id="m", type=PiiType(kind), entity="E", text=" ".join(orig), segments=[Segment(page=0, words=ids)])
+    gt = fx.gt.model_copy(update={"mentions": [m]})
+    return af.Fixture(fx.pdf, gt, fx.origin, case), ids
+
+
+@pytest.mark.parametrize("kind, orig, fake, expected", [
+    ("PHONE", ["0404", "123", "456"], ["0498", "987", "654"], "SAFE_REPLACED"),
+    ("PHONE", ["131", "126"], ["138", "947"], "SAFE_REPLACED"),
+    ("EMAIL", ["smith@smithlaw.com.au"], ["jdoex@smithlaw.com.au"], "SAFE_REPLACED"),
+    ("PHONE", ["0404", "123", "456"], ["0404", "987", "654"], "not safe"),
+    ("PHONE", ["131", "126"], ["131", "947"], "not safe"),
+    ("EMAIL", ["smith@smithlaw.com.au"], ["smith@jdoexlaw.com.au"], "not safe"),
+], ids=["0404", "131", "email-in-domain", "0404-kept", "131-kept", "email-local-kept"])
+def test_identifying_slice_is_not_found_in_the_shared_part(kind, orig, fake, expected):
+    # Owner answers (a) and (3): a fake keeps the phone prefix or the email domain. The identifying slice
+    # ('04' of '0404', '1' of '131', 'smith') is searched with the shared part cut out, digits as whole
+    # digit runs, and a template match lying on the shared part is the fake's own: before, '04' was found
+    # inside every '04xx' fake and 'smith' inside '@smithlaw', so correct fakes read as leaks. A slice the
+    # fake really keeps is still found.
+    from tests import address_fixtures as af
+
+    fx, ids = _one_mention(kind, orig)
+    out = af.draw(fx, [("replace", w, f) for w, f in zip(ids, fake)])
+    st = evaluate_output(fx.pdf, out, fx.gt, calib.V1, EvalConfig(dpi=150)).mention("m").status.value
+    if expected == "not safe":
+        assert st not in ("SAFE_REPLACED", "SAFE_REMOVED"), st
+    else:
+        assert st == expected, st
+
+
+def _locality_case(locality: str, postcode_fake: str, raster: bool = False):
+    """'Address: 12 Smith Street, <locality>' on a fictional page, every identifying word replaced in place by a
+    correct fake, the shared street type and state kept, the postcode written as ``postcode_fake``."""
+    from tests import address_fixtures as af
+
+    case = af.one_case("loc", [("Report prepared for the claimant.", 0), ("Address: 12 Smith Street, " + locality, 2),
+                               ("The claimant attended on time.", 5)],
+                       [("A1", [[1, 1], [1, 2], [1, 3]], [[1, 4], [1, 5], [1, 6]])])
+    fx = af.render(case)
+    out = af.draw(fx, af.correct(fx, calib.V1, fakes={"w1_6": postcode_fake}))
+    if raster:
+        out = af.raster(out, 300)
+    ev = evaluate_output(fx.pdf, out, fx.gt, calib.V1, EvalConfig(dpi=200, renderers=("mupdf",)))
+    return next(m for m in ev.mentions if m.address_unit and m.type == "LOCATION")
+
+
+@pytest.mark.parametrize("locality, fake, expected", [
+    ("Darlinghurst NSW 1300", "2112", "SAFE_REPLACED"),
+    ("Brisbane QLD 9726", "4127", "SAFE_REPLACED"),
+    ("Parramatta NSW 2150", "2477", "SAFE_REPLACED"),
+    ("Darlinghurst NSW 1300", "3112", "PARTIAL"),
+], ids=["NSW-1xxx", "QLD-9xxx", "NSW-2xxx", "NSW-1xxx-other-state"])
+def test_kept_state_before_a_postcode_with_no_prefix_digit_pairs_from_the_text(locality, fake, expected):
+    # Owner ruling 2026-10-22: a same-state fake may keep the state. A postcode such as NSW 1xxx has no digit
+    # of its state to keep, so the pair is read from the text layer: the kept state followed by a postcode of
+    # that state. Before, such a state never paired and a correct fake read PARTIAL (about 0.16); another
+    # state's postcode after the kept state still fails.
+    loc = _locality_case(locality, fake)
+    assert loc.status.value == expected and loc.shared_pairs[0][1] == (expected == "SAFE_REPLACED"), \
+        (loc.status.value, loc.shared_pairs)
+
+
+def test_kept_state_before_a_postcode_with_no_prefix_digit_in_a_raster_is_a_known_limit():
+    # With no text layer nothing reads the fake postcode (OCR never decides), so the kept state counts.
+    loc = _locality_case("Darlinghurst NSW 1300", "2112", raster=True)
+    assert loc.status.value == "PARTIAL" and loc.shared_pairs[0][1] is False

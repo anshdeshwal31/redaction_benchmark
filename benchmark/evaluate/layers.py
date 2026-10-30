@@ -63,6 +63,24 @@ def text_in_words(page_gt: GTPage, centres: np.ndarray, chars: list[str], word_i
     return out
 
 
+def slice_in(needle: str, text: str | None, shared: tuple[str, ...] = ()) -> bool:
+    """Is the identifying slice of a word with shared characters in ``text``? The text's own copy of each
+    shared part (an identifier's or a phone number's prefix, an email's domain) is cut out first, so the
+    slice is never found inside the shared part a fake keeps ('04' of '0404' in a fake '0498', 'smith' in
+    '@smithlaw.com.au'); a slice of digits counts only as a whole digit run of what is left."""
+    n = needle.strip(STRIP).casefold()
+    if not text or not n:
+        return False
+    t = text.casefold()
+    for part in shared:
+        i = t.find(part.casefold()) if part else -1
+        if i >= 0:
+            t = t[:i] + " " + t[i + len(part):]
+    if n.isdigit():
+        return any(m.group() == n for m in re.finditer(r"\d+", t))
+    return n in t
+
+
 def text_leaks(needle: str, got: str | None, cfg: EvalConfig) -> bool:
     """Is the original token recoverable from the extracted text at its location?"""
     if not got or not needle.strip():
@@ -148,12 +166,30 @@ def _frame(poly) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
     return p.mean(axis=0), u, v, length, height
 
 
+def glued_parts(token: str) -> list[tuple[int, int]]:
+    """The parts of a token's letter runs that are glued at a change of case: (start, end) of 'Example'
+    and 'Street' in 'ExampleStreet,', of 'Faketown' and 'QLD' in 'FaketownQLD4000'. Only runs that split
+    give parts, so a whole run ('Parkside', or 'example' in 'jane@example.com') gives none. MuPDF puts no
+    space between words drawn less than about 1.5 pt apart, so their letters come out as one token."""
+    out: list[tuple[int, int]] = []
+    for m in re.finditer(r"[^\W\d_]+", token):
+        run, a = m.group(), 0
+        cuts = [k for k in range(1, len(run))
+                if (run[k - 1].islower() and run[k].isupper())
+                or (run[k - 1].isupper() and run[k].isupper() and k + 1 < len(run) and run[k + 1].islower())]
+        for b in [*cuts, len(run)] if cuts else ():
+            out.append((m.start() + a, m.start() + b))
+            a = b
+    return out
+
+
 def token_span(needle: str, token: str, ratio: float) -> tuple[int, int] | None:
     """The part of a whole output token that holds ``needle`` (both stripped of punctuation and case
     folded): a number only as a maximal digit run equal to it ('214' and '142750' do not hold '14');
     anything else as the whole token, equal or with a rapidfuzz ratio of at least ``ratio``, and a word
     of letters also as a maximal letter run equal to it (the state of a glued 'NSW2750', the suburb of
-    a word the GT splits between the street line and the locality)."""
+    a word the GT splits between the street line and the locality) or as a part of a letter run glued at
+    a change of case (:func:`glued_parts`: 'Example' in 'ExampleStreet,', never 'Park' in 'Parkside')."""
     n = needle.strip(STRIP).casefold()
     t = token.casefold()
     if not n:
@@ -171,12 +207,15 @@ def token_span(needle: str, token: str, ratio: float) -> tuple[int, int] | None:
         for m in re.finditer(r"[^\W\d_]+", t):
             if m.group() == n:
                 return m.start(), m.end()
+        for a, b in glued_parts(token):
+            if t[a:b] == n:
+                return a, b
     return None
 
 
 def find_at_place(poly, needle: str, chars, shift=(0.0, 0.0), line_height: float | None = None,
                   band: float = 0.5, margin: float | None = 0.25, ratio: float = 90.0,
-                  whole_token: bool = False) -> TextRun | None:
+                  whole_token: bool = False, shared: tuple[str, ...] | None = None) -> TextRun | None:
     """Is ``needle`` in the text at the word's displayed place? The nearest accepted occurrence, or None.
 
     The place is the word's GT polygon moved by ``shift`` (pt): centre C, along-line direction u, length
@@ -184,7 +223,9 @@ def find_at_place(poly, needle: str, chars, shift=(0.0, 0.0), line_height: float
     within ``band`` x H of C across the line and 1.5 L + H along it. Joined in extraction order and case
     folded, they must hold the needle (stripped of .,;:()) as a substring or, failing that, as a window
     of n-1..n+1 characters with a rapidfuzz ratio of at least ``ratio``; with ``whole_token`` an output
-    token must hold it (:func:`token_span`). An occurrence is at the place when its centre lies within
+    token must hold it (:func:`token_span`); with ``shared`` (the shared parts of a word whose identifying
+    slice the needle is) an output token must hold it by :func:`slice_in`. An occurrence is at the place
+    when its centre lies within
     ``band`` x H across and L/2 + ``margin`` x H along (``margin`` None: anywhere along the line)."""
     pt = chars if isinstance(chars, PageText) else PageText(chars)
     n = needle.strip(STRIP).casefold()
@@ -202,7 +243,12 @@ def find_at_place(poly, needle: str, chars, shift=(0.0, 0.0), line_height: float
     if not idx:
         return None
     spans: list[list[int]] = []
-    if whole_token:
+    if shared is not None:
+        for t in sorted({int(pt.token_of[k]) for k in idx}):
+            ids = pt.tokens[t]
+            if slice_in(n, "".join(pt[k].c for k in ids), shared):
+                spans.append(ids)
+    elif whole_token:
         for t in sorted({int(pt.token_of[k]) for k in idx}):
             ids = pt.tokens[t]
             got = token_span(n, "".join(pt[k].c for k in ids), ratio)
@@ -368,7 +414,10 @@ def _layer_on_render_grid(cells: PageCells, layer: Layer, geom: PageGeometry, sh
                           words: set[str]) -> np.ndarray:
     """The layer as the output render would show it on its own, over the given words' boxes (2 px
     around): each render pixel centre taken from display pt to unrotated pt to the layer's unit square
-    and sampled there (nearest pixel). Elsewhere, and outside the layer, the layer's paper level."""
+    and sampled there bilinearly (layer pixel centres at half-integers, edges held). Elsewhere, and
+    outside the layer, the layer's paper level. Nearest-pixel sampling made a low-resolution layer
+    blocky on the render grid, so the original's characters failed the identity gate and a
+    recoverable layer was dropped (75-100 DPI backgrounds are common)."""
     g = layer.gray
     h, w = shape
     s = cells.dpi / 72.0
@@ -385,13 +434,26 @@ def _layer_on_render_grid(cells: PageCells, layer: Layer, geom: PageGeometry, sh
         pts = np.column_stack([(xx.ravel() + 0.5) / s, (yy.ravel() + 0.5) / s])
         unrot = geom.transform(pts, Frame.DISPLAY_PT, Frame.UNROTATED_PT)
         uv = np.hstack([unrot, np.ones((len(unrot), 1))]) @ layer.inverse.T
-        px = np.floor(uv[:, 0] * layer.width).astype(np.int64)
-        py = np.floor(uv[:, 1] * layer.height).astype(np.int64)
-        inside = (px >= 0) & (px < layer.width) & (py >= 0) & (py < layer.height)
-        vals = np.where(inside, g[np.clip(py, 0, layer.height - 1), np.clip(px, 0, layer.width - 1)],
-                        out[yy.ravel(), xx.ravel()])
+        fx, fy = uv[:, 0] * layer.width, uv[:, 1] * layer.height
+        inside = (fx >= 0) & (fx < layer.width) & (fy >= 0) & (fy < layer.height)
+        vals = np.where(inside, _sample_bilinear(g, fx - 0.5, fy - 0.5), out[yy.ravel(), xx.ravel()])
         out[yy.ravel(), xx.ravel()] = vals
     return out
+
+
+def _sample_bilinear(g: np.ndarray, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+    """``g`` sampled bilinearly at fractional pixel coordinates (x a column, y a row, pixel centres
+    at integers), coordinates held to the image's edge pixels."""
+    h, w = g.shape
+    xs = np.clip(xs, 0.0, w - 1.0)
+    ys = np.clip(ys, 0.0, h - 1.0)
+    x0 = np.minimum(np.floor(xs).astype(np.int64), max(w - 2, 0))
+    y0 = np.minimum(np.floor(ys).astype(np.int64), max(h - 2, 0))
+    x1, y1 = np.minimum(x0 + 1, w - 1), np.minimum(y0 + 1, h - 1)
+    fx, fy = xs - x0, ys - y0
+    gf = g.astype(np.float32, copy=False)
+    return (gf[y0, x0] * (1 - fx) * (1 - fy) + gf[y0, x1] * fx * (1 - fy)
+            + gf[y1, x0] * (1 - fx) * fy + gf[y1, x1] * fx * fy)
 
 
 def _gate_layer_cells(cells: PageCells, original: np.ndarray, layers: list[Layer], geom: PageGeometry,
@@ -474,9 +536,10 @@ def _same_path(a: dict, b: dict, tol: float = 0.1) -> bool:
 def _kept_glyph_paths(src: list[dict], src_geom: PageGeometry, page_gt: GTPage, word_ids: set[str]) -> set[int]:
     """Indices of the source paths that are glyphs of kept words drawn as outlines: a path's whole
     bounding box (display pt) lies inside the 1 pt dilated box of a kept word that the page draws as
-    outlines, that is a word with at least max(1, ceil(half its letters and digits)) paths wholly
-    inside that box. A word only in the text layer, such as a typed "______" signature line, has no
-    such paths, so nothing drawn across it is taken for its glyphs."""
+    outlines, that is a word with letters or digits and at least ceil(half of them) paths wholly inside
+    that box. A word with none, such as a typed "______" signature line, is never outlined: a pen stroke
+    wholly inside its box (a flat signature or initials on the line) would otherwise be taken for its
+    glyph, and a rule's own glyphs are straight, which vector_survival leaves out anyway."""
     kept = [w for w in page_gt.words if w.id not in word_ids]
     if not kept or not src:
         return set()
@@ -488,8 +551,8 @@ def _kept_glyph_paths(src: list[dict], src_geom: PageGeometry, page_gt: GTPage, 
     words = [to_shapely(dilate(as_poly(w.poly), 1.0)) for w in kept]
     word_of, path_of = shapely.STRtree(boxes).query(words, predicate="covers")
     inside = np.bincount(word_of, minlength=len(kept))
-    outlined = np.array([inside[k] >= max(1, math.ceil(0.5 * sum(c.isalnum() for c in w.text)))
-                         for k, w in enumerate(kept)], bool)
+    alnum = [sum(c.isalnum() for c in w.text) for w in kept]
+    outlined = np.array([n > 0 and inside[k] >= math.ceil(0.5 * n) for k, n in enumerate(alnum)], bool)
     return {int(p) for k, p in zip(word_of, path_of) if outlined[k]}
 
 
@@ -510,8 +573,8 @@ def vector_survival(
     rules and boxes (the line a signature sits on belongs to the form) and glyphs of kept words drawn
     as outlines whose whole box lies inside the word (outlined text, such as a "Signed:" label the
     signature crosses). A kept word is drawn as outlines when the source page has at least half as
-    many paths wholly inside its box (1 pt around) as it has letters and digits, and at least one; a
-    typed "______" line in the text layer has none, so pen strokes across it count. Not covered: a
+    many paths wholly inside its box (1 pt around) as it has letters and digits; a typed "______" line
+    has none, so pen strokes across it or wholly inside its box count. Not covered: a
     mark drawn only with axis-aligned lines or rectangles, which counts as form, and other kept
     curved art inside a region's box, which counts as its strokes."""
     zones = {w.id: to_shapely(dilate(as_poly(w.poly), 1.0)) for w in page_gt.words if w.id in word_ids}

@@ -118,6 +118,11 @@ class _IdentityIndex:
     key: np.ndarray  # [pixels]: character row * sub-bands + identity sub-band
 
 
+# The originals' blurred renderings for character identity, most recent first (PageCells._originals).
+_ORIGINALS: list[tuple] = []
+_ORIGINALS_KEPT = 4
+
+
 @dataclass
 class PageCells:
     """All cells of one GT page, with their pixel footprints at a given DPI."""
@@ -185,15 +190,16 @@ class PageCells:
         c1 = min(int(math.ceil(x1 * s)) + 1, self.shape[1])
         r1 = min(int(math.ceil(y1 * s)) + 1, self.shape[0])
         if c1 <= c0 or r1 <= r0:
-            rr = cc = np.zeros(0, dtype=np.int64)
+            rr = cc = np.zeros(0, dtype=np.int32)
         else:
             mask = rasterize([cell.poly], (r1 - r0, c1 - c0), s, origin=(c0 / s, r0 / s))
             rr, cc = np.nonzero(mask)
-            rr, cc = rr + r0, cc + c0
+            # 32-bit pixel indices: a page keeps these for every cell until its document is done
+            rr, cc = (rr + r0).astype(np.int32), (cc + c0).astype(np.int32)
         self.cells.append(cell)
         self.rows.append(rr)
         self.cols.append(cc)
-        self.subs.append(np.zeros(0, dtype=np.int64))
+        self.subs.append(np.zeros(0, dtype=np.int16))
         return len(self.cells) - 1
 
     def _split(self, i: int, angle: float, per_band: int) -> np.ndarray:
@@ -202,14 +208,14 @@ class PageCells:
         with ``bands * per_band`` bands would give, without rasterising them again."""
         c = self.cells[i]
         if self.rows[i].size == 0:
-            return np.zeros(0, dtype=np.int64)
+            return np.zeros(0, dtype=np.int16)
         t = math.radians(angle + 90.0)
         v = np.array([math.cos(t), math.sin(t)])
         proj = c.poly @ v
         lo, hi = float(proj.min()), float(proj.max())
         p = self.points(i) @ v
         j = np.clip(np.floor((p - lo) / max(hi - lo, 1e-9) * per_band).astype(np.int64), 0, per_band - 1)
-        return c.band * per_band + j
+        return (c.band * per_band + j).astype(np.int16)
 
     def points(self, i: int) -> np.ndarray:
         """Display-pt coordinates of the pixel centres of cell ``i``."""
@@ -445,37 +451,43 @@ class PageCells:
             rr.append(self.rows[i])
             cc.append(self.cols[i])
             sub.append(self.subs[i])
-            pix_cell.append(np.full(self.rows[i].size, len(cell) - 1, np.int64))
+            pix_cell.append(np.full(self.rows[i].size, len(cell) - 1, np.int32))
             n_pix += self.rows[i].size
             spans[-1][1] = n_pix
 
+        # Per-pixel arrays in 32 bits: a page keeps its index until its document is done (eval-0.4 fix
+        # round 1: 64-bit arrays made peak memory grow about 115 MB per dense page).
         def cat(a):
-            return np.concatenate(a) if a else np.zeros(0, np.int64)
+            return np.concatenate(a).astype(np.int32) if a else np.zeros(0, np.int32)
 
-        cell_unit_a = np.array(cell_unit, np.int64)
+        cell_unit_a = np.array(cell_unit, np.int32)
         pix_cell_a = cat(pix_cell)
-        pix_unit = cell_unit_a[pix_cell_a] if pix_cell_a.size else np.zeros(0, np.int64)
-        unit_word_a = np.array(unit_word, np.int64)
+        pix_unit = cell_unit_a[pix_cell_a] if pix_cell_a.size else np.zeros(0, np.int32)
+        unit_word_a = np.array(unit_word, np.int32)
         idx = _IdentityIndex(
             rows=rows, unit_word=unit_word_a, words=words, word_span=np.array(spans, np.int64).reshape(-1, 2),
             cell=np.array(cell, np.int64), cell_unit=cell_unit_a,
             cell_size=np.array([self.rows[i].size for i in cell], np.int64), rr=cat(rr), cc=cat(cc),
             pix_cell=pix_cell_a, pix_unit=pix_unit,
-            pix_word=unit_word_a[pix_unit] if pix_unit.size else np.zeros(0, np.int64),
-            key=pix_unit * self.subbands + cat(sub) if pix_unit.size else np.zeros(0, np.int64))
+            pix_word=unit_word_a[pix_unit] if pix_unit.size else np.zeros(0, np.int32),
+            key=(pix_unit * self.subbands + cat(sub)).astype(np.int32) if pix_unit.size else np.zeros(0, np.int32))
         self._cache["identity_index"] = idx
         return idx
 
     def _originals(self, original: np.ndarray, cfg: EvalConfig) -> tuple[float, list[np.ndarray]]:
         """The original's paper level and its renderings for identity: as rendered, then blurred
-        (Gaussian, identity_blur_px). Kept for the last original seen (one per render configuration)."""
+        (Gaussian, identity_blur_px). Kept for the last few originals seen across pages (one per render
+        configuration), not per page: blurred copies of every page made peak memory grow with the
+        document."""
         key = (id(original), tuple(cfg.identity_blur_px))
-        got = self._cache.get("originals")
-        if got is not None and got[0] == key and got[1] is original:
-            return got[2], got[3]
+        for k, (got_key, got_orig, paper, blurred) in enumerate(_ORIGINALS):
+            if got_key == key and got_orig is original:
+                _ORIGINALS.insert(0, _ORIGINALS.pop(k))
+                return paper, blurred
         blurred = [original] + [cv2.GaussianBlur(original, (0, 0), s) for s in cfg.identity_blur_px if s > 0]
         paper = _paper(original)
-        self._cache["originals"] = (key, original, paper, blurred)
+        _ORIGINALS.insert(0, (key, original, paper, blurred))
+        del _ORIGINALS[_ORIGINALS_KEPT:]
         return paper, blurred
 
     def character_identity(self, original: np.ndarray, output: np.ndarray, informative: np.ndarray,

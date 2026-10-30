@@ -18,7 +18,7 @@ traced to the stage that caused them.
 ```bash
 py -3.11 -m venv .venv                  # Windows
 .venv/Scripts/python -m pip install -e ".[dev]"
-.venv/Scripts/python -m pytest          # 741 tests, about 30 minutes
+.venv/Scripts/python -m pytest          # 772 tests, about 50 minutes
 ```
 
 On Linux the interpreter is `.venv-linux/bin/python` (`python3.11 -m venv .venv-linux`, then the same

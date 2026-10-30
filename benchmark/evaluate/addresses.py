@@ -41,7 +41,7 @@ from ..gt.address_split import (
 )
 from ..schemas import GTDocument, GTMention
 from .config import EvalConfig
-from .layers import PageText
+from .layers import PageText, glued_parts
 
 STRIP = ".,;:()"
 # Roles of the locality part that the locality shape asks the fake to have again.
@@ -312,7 +312,9 @@ def same_token(needle: str, token: str) -> bool:
     maximal digit run ('214' and '142750' do not hold '14'), anything else as the whole token or as a part
     of it between commas, colons, semicolons, brackets, slashes or bars (a GT word split between the street
     line and the locality, 'St,Penrith'), a word of letters also as the letters of a part glued to digits
-    ('NSW2750'). A word inside an email or a web address ('example' in 'jane@example.com') is not one."""
+    ('NSW2750') or as a part of a letter run glued at a change of case ('ExampleStreet', 'FaketownQLD';
+    :func:`glued_parts`). A word inside an email or a web address ('example' in
+    'jane@example.com') is not one."""
     n = needle.strip(STRIP).casefold()
     if not n:
         return False
@@ -328,6 +330,8 @@ def same_token(needle: str, token: str) -> bool:
         if n.isalpha() and any(ch.isdigit() for ch in part) and \
                 any(m.group() == n for m in re.finditer(r"[^\W\d_]+", part)):
             return True
+    if n.isalpha() and any(token[a:b].casefold() == n for a, b in glued_parts(token)):
+        return True
     return False
 
 

@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 
 from ..dataset import load_manifest
-from ..evaluate import HIDDEN_VALUES, PRESENT_VALUES, SAFE_VALUES
+from ..evaluate import HIDDEN_VALUES, PRESENT_VALUES, SAFE_VALUES, EvalConfig
 from ..runner.runner import load_run
 from ..runner.scoring import results_root
 from . import deviations
@@ -60,10 +60,15 @@ class RunData:
         self.version = self.run.candidate["version"]
         self.mode = self.run.experiment.mode
         self.dataset = f"{self.run.dataset['name']}@{self.run.dataset['version']}"
-        self.mentions = [m for m in _rows(run_id, "mentions") if m["requirement"] == "MUST" and m["repeat"] == 0
-                         and m["status"] != "NOT_EVALUATED"]
-        self.words = [w for w in _rows(run_id, "words") if w["repeat"] == 0 and w["status"] != "NOT_EVALUATED"]
         self.documents = [d for d in _rows(run_id, "documents") if d.get("repeat") == 0]
+        # What the verdicts rest on: the output PDF, or the redacted text of a text-only tool (eval-0.4).
+        self.evidence = "+".join(sorted({d.get("evidence") or "pdf" for d in self.documents})) or "pdf"
+        # On a text-graded document a required mention the tool's own extraction does not hold is left
+        # NOT_EVALUATED; the strict view counts it against the tool, like NO_OUTPUT.
+        text_docs = {d["doc_id"] for d in self.documents if d.get("evidence") == "text"}
+        self.mentions = [m for m in _rows(run_id, "mentions") if m["requirement"] == "MUST" and m["repeat"] == 0
+                         and (m["status"] != "NOT_EVALUATED" or m["doc_id"] in text_docs)]
+        self.words = [w for w in _rows(run_id, "words") if w["repeat"] == 0 and w["status"] != "NOT_EVALUATED"]
         self.determinism = _rows(run_id, "determinism")
         self.matters = _rows(run_id, "matters")
         self.label = f"{self.candidate} · {self.run.experiment.name}"
@@ -71,6 +76,8 @@ class RunData:
         self.scoring = json.loads(scoring.read_text(encoding="utf-8")) if scoring.exists() else {}
         self.scoring.setdefault("run_id", run_id)
         self.policy = deviations.policy_label(self.scoring)  # the policy this run was scored under
+        self.eval_version = (self.scoring.get("eval_config") or {}).get("version")  # None: never scored
+        self.eval_digest = self.scoring.get("eval_digest")
 
     def leak(self, mentions=None) -> float | None:
         ms = self.mentions if mentions is None else mentions
@@ -135,14 +142,16 @@ def scorecard(runs: list[RunData]) -> list[dict]:
         for m in r.mentions:
             per_doc[m["doc_id"]][1] += 1
             per_doc[m["doc_id"]][0] += m["status"] not in HIDDEN
-        done = [m for m in r.mentions if m["status"] != "NO_OUTPUT"]
+        done = [m for m in r.mentions if m["status"] not in ("NO_OUTPUT", "NOT_EVALUATED")]
         not_replaced = [m for m in r.mentions if m["status"] == "NOT_REPLACED"]
         searchable = [d["searchable_rate"] for d in r.documents if isinstance(d.get("searchable_rate"), (int, float))]
         verdicts = Counter(d["self_check.verdict"] for d in r.documents if d.get("self_check.verdict"))
         l12 = [m for m in r.mentions if m["status"] in ("PARTIAL", "LEAK_VISIBLE", "LEAK_RECOVERABLE")]
         ordinary = [w for w in r.words if w["requirement"] == "ORDINARY"]
         protected = [w for w in r.words if w["requirement"] == "MUST_NOT"]
-        must_w = [w for w in r.words if w["requirement"] == "MUST"]
+        # Words of shared structure excused in their mention are neutral, as in each document's summary.
+        excused = {(m["doc_id"], w) for m in r.mentions for w in (m.get("shared_words") or "").split(",") if w}
+        must_w = [w for w in r.words if w["requirement"] == "MUST" and (w["doc_id"], w["word_id"]) not in excused]
 
         def red(w):  # a MOVED word is present, wherever it was drawn
             return w["status"] != "MOVED" and w["visible_fraction"] is not None and w["visible_fraction"] < 0.5
@@ -151,7 +160,8 @@ def scorecard(runs: list[RunData]) -> list[dict]:
         flips = [d["flip_rate"] for d in r.determinism if d.get("flip_rate") is not None]
         rows.append({
             "run": r.run_id, "candidate": r.candidate, "version": r.version, "experiment": r.run.experiment.name,
-            "mode": r.mode, "dataset": r.dataset, "policy": r.policy,
+            "mode": r.mode, "dataset": r.dataset, "policy": r.policy, "evidence": r.evidence,
+            "eval": r.eval_version, "eval_digest": r.eval_digest,
             # Set when the tool was given another policy than the one it is scored under.
             "given_policy": _given_policy(r),
             "docs": len({m["doc_id"] for m in r.mentions}),
@@ -395,13 +405,27 @@ def build_board(run_ids: list[str], out: Path, title: str = "Candidate compariso
     if len(policies) > 1:
         parts.append("<p><b>These runs were scored under different policies</b> (the scorecard's policy column), so "
                      "they were held to different required items: compare rates only between runs of one policy.</p>")
+    stale = [r.run_id for r in runs if r.eval_version != EvalConfig().version]
+    if stale:
+        parts.append("<p><b class=warn>Scored under another evaluation version than "
+                     f"{_esc(EvalConfig().version)}</b>: {_esc(', '.join(stale))}. Results labelled eval-0.3, "
+                     "eval-0.3.1 or eval-0.4-dev are not comparable with these: rescore those runs first.</p>")
+    digests = {r.eval_digest for r in runs if r.eval_digest}
+    if len(digests) > 1:
+        parts.append("<p><b>These runs were scored with different evaluation settings</b> (the scorecard's eval "
+                     "column): compare rates only between runs of one setting.</p>")
+    if len({r.evidence for r in runs}) > 1:
+        parts.append("<p><b>Some runs are graded on their redacted text, not their output PDF</b> (the scorecard's "
+                     "evidence column): a text-only tool is not checked for signatures, images, layers or "
+                     "searchability, and its signatures, marks and images are not among its required mentions.</p>")
     parts.append(deviations.mismatch_section([r.scoring for r in runs]))
     departures = deviations.collect([r.scoring for r in runs])
     parts.append(deviations.section(departures, policies))
 
     rows = scorecard(runs)
     parts.append("<h2>Scorecard</h2><div class=wrap><table><tr><th>candidate</th><th>experiment</th><th>dataset</th>"
-                 "<th>policy</th><th>docs</th><th>required</th><th>leak (strict)</th><th>95% CI</th>"
+                 "<th>policy</th><th>evidence</th><th>eval</th><th>docs</th><th>required</th><th>leak (strict)</th>"
+                 "<th>95% CI</th>"
                  "<th>leak (completed)</th>"
                  "<th>visible/recoverable</th><th>not replaced</th><th>failure</th><th>clean docs</th>"
                  "<th>collateral</th><th>protected dmg</th><th>moved kept / displaced required</th>"
@@ -411,7 +435,8 @@ def build_board(run_ids: list[str], out: Path, title: str = "Candidate compariso
                      f"<tr><td>{_esc(x['candidate'])} <span class=mut>{_esc(x['version'])}</span></td>"
                      f"<td>{_esc(x['experiment'])}</td><td>{_esc(x['dataset'])}</td><td>{_esc(x['policy'])}"
                      + (f"<br><b class=warn>tool given {_esc(x['given_policy'])}</b>" if x["given_policy"] else "")
-                     + f"</td><td>{x['docs']}</td><td>{x['n']}</td>"
+                     + f"</td><td>{_esc(x['evidence'])}</td><td>{_esc(x['eval'] or '?')} <span class=mut>"
+                     f"{_esc((x['eval_digest'] or '')[:8])}</span></td><td>{x['docs']}</td><td>{x['n']}</td>"
                      f"<td>{_pct(x['leak'])}</td><td>{_ci(x['ci'])}</td>"
                      f"<td>{_pct(x['leak_completed'])}</td><td>{_pct(x['l12'])}</td>"
                      f"<td>{_pct(x['not_replaced'])}</td><td>{_pct(x['fail'])}</td><td>{x['clean']}</td>"
