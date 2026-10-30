@@ -38,3 +38,6 @@ include = ["benchmark*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore:The `fitz` API is deprecated"]
+markers = [
+    "calibration: eval-0.4 calibration on fictional adversarial outputs (slow; a quick loop can deselect them with -m 'not calibration')",
+]

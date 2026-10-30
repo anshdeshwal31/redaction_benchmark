@@ -44,6 +44,47 @@ class EvalConfig(BaseModel):
     cell_min_visible_std: float = Field(6.0, description="Absolute output contrast (grey levels) to be visible")
     cell_latent_noise_std: float = Field(1.0, description="Output contrast below this is noise, not latent content")
 
+    # -- character identity (eval-0.4; docs/metrics.md, "Character identity") ----------------------
+    identity_subbands: int = Field(16, ge=1, le=64, description="Sub-bands across the line per character for "
+                                                               "identity: each band cell's pixels split into "
+                                                               "identity_subbands/bands strips (docs/metrics.md)")
+    identity_min: float = Field(0.80, description="Identity a character of a MUST or MAY word needs for its band "
+                                                 "evidence to stand (tool 2's fakes reach at most 0.636; "
+                                                 "docs/metrics.md)")
+    identity_min_kept: float = Field(0.70, description="Identity a character of a kept word needs (untouched kept "
+                                                      "words score at least 0.821; docs/metrics.md)")
+    identity_digit_extra: float = Field(0.05, description="Added to every identity threshold for a digit: tabular "
+                                                         "look-alikes 3/8, 5/6, 6/8 (docs/metrics.md)")
+    identity_offset_px: int = Field(1, ge=0, le=3, description="Identity is also taken at the word's best "
+                                                               "whole-pixel offset within this many pixels "
+                                                               "(docs/metrics.md)")
+    identity_box_pt: float = Field(2.5, description="Opening square (pt) that finds box pixels, left out in one "
+                                                    "identity variant (docs/metrics.md)")
+    identity_blur_px: tuple[float, ...] = Field((0.7, 1.4), description="Gaussian sigmas (px at the evaluation "
+                                                                        "DPI) of the blurred originals identity "
+                                                                        "also compares with; the output is never "
+                                                                        "blurred (docs/metrics.md)")
+    identity_ink_level: float = Field(0.3, description="Output pixels darker than this times the paper level are "
+                                                       "near-black ink (a fake drawn over the original), left out "
+                                                       "in one identity variant and in the second band test of MUST "
+                                                       "and MAY characters (veils 0.3/0.6/0.9: 18/18/17 of 20 "
+                                                       "caught; docs/metrics.md)")
+    identity_ink_dilate_px: int = Field(1, ge=0, le=3, description="Dilation (px) of the near-black ink mask: a "
+                                                                   "fake's anti-aliased fringe is ink too "
+                                                                   "(docs/metrics.md)")
+    identity_edge_min: float = Field(0.92, description="Edge clause, MUST and MAY characters: identity over two or "
+                                                       "more flagged bands touching the top or bottom band (a box "
+                                                       "shifted half a line); 0 of 724 same-font fake characters "
+                                                       "pass (docs/metrics.md)")
+    identity_run_min: float = Field(0.94, description="Run clause, MUST and MAY characters: identity of one flagged "
+                                                      "band pooled along a run of characters (docs/metrics.md)")
+    overprint_presence_min: float = Field(0.85, description="Presence (share of the original's ink still in the "
+                                                            "output) that keeps a character's evidence when it "
+                                                            "lies in a run of overprint_run such characters: an "
+                                                            "original under a fake drawn over it (docs/metrics.md)")
+    overprint_run: int = Field(3, ge=1, description="Run length (the whole word if shorter) for the presence "
+                                                    "clause (docs/metrics.md)")
+
     # -- mention decisions --------------------------------------------------------
     safe_max_residual: float = Field(0.02, description="SAFE when at most this fraction of cells survives")
     leak_min_residual: float = Field(0.90, description="LEAK_VISIBLE when at least this fraction survives")

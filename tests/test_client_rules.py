@@ -1,4 +1,4 @@
-"""The client's decisions (policies/au-medicolegal-v1.yaml, eval-0.3.1).
+"""The client's decisions (policies/au-medicolegal-v1.yaml, eval-0.4-dev).
 
 - Q7: hiding a required item instead of replacing it is NOT_REPLACED: not a leak, not a pass.
 - Q6: signatures and other marks count as replaced only when a stand-in is drawn in their place;
@@ -750,25 +750,14 @@ def test_a_drawn_stand_in_with_true_redaction_counts_as_replaced():
     assert _signature_status(out) is MentionStatus.SAFE_REPLACED
 
 
-def test_true_redaction_with_fakes_at_the_original_size_fails_only_where_known():
-    # The open calibration issue, pinned: at 150 DPI only the locality ("SA" over "QLD") is judged PARTIAL,
-    # at 200 DPI the document is clean. A leak anywhere else, or a crash, fails here.
+@pytest.mark.parametrize("dpi", [150, 200])
+def test_true_redaction_with_fakes_at_the_original_size_is_clean(dpi):
+    # Fakes written in the original's font, size and place can line up with its glyph bands ('SA' over
+    # 'QLD' at 150 DPI was PARTIAL under eval-0.3.1); the character identity gate rejects such matches.
     fx = fixture("digital")
     out = mocked("digital", MockSpec("true-replace", replace_all=True, stand_ins=True))
-    at_150 = evaluate("digital", out)
-    assert {m.mention_id: m.status for m in must(at_150) if m.status is not MentionStatus.SAFE_REPLACED} == {
-        "addr1-loc": MentionStatus.PARTIAL}
-    at_200 = evaluate_output(fx.pdf, out, fx.gt, V1, EvalConfig(dpi=200))
-    assert {m.status for m in must(at_200)} == {MentionStatus.SAFE_REPLACED} and at_200.summary["clean_document"]
-
-
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="open calibration issue (docs/metrics.md): correct fakes written in the original's font, "
-                          "size and place can line up with its glyph bands and be judged PARTIAL; the ceiling draws "
-                          "its fakes at 80% size to avoid this")
-def test_true_redaction_with_fakes_at_the_original_size_is_clean():
-    ev = evaluate("digital", mocked("digital", MockSpec("true-replace", replace_all=True, stand_ins=True)))
-    assert next(m for m in must(ev) if m.mention_id == "addr1-loc").status is MentionStatus.SAFE_REPLACED
+    ev = evaluate_output(fx.pdf, out, fx.gt, V1, EvalConfig(dpi=dpi))
+    assert {m.status for m in must(ev)} == {MentionStatus.SAFE_REPLACED} and ev.summary["clean_document"]
 
 
 def test_reference_replace_fills_injected_oracle_regions_with_its_fakes():

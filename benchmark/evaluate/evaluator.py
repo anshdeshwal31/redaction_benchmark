@@ -254,10 +254,15 @@ def evaluate_output(
     rev_texts: dict[int, dict[str, str]] = defaultdict(dict)
     vector: dict[int, dict[str, tuple[int, int]]] = {}
     primary_out: dict[int, np.ndarray] = {}
+    # (original, registered output) of the first render configuration per page, for the searches
+    # that run after the page loop (moved words, displaced originals)
+    prim_pairs: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     page_outcomes: list[PageOutcome] = []
     unreliable: set[int] = set()
 
     must_or_may_words = {wid for wid, eff in res.words.items() if eff in (Effective.MUST, Effective.MAY)}
+    # Held to the stricter identity thresholds and clauses of the character gate (cells.PageCells.stats).
+    strict_words = frozenset(must_or_may_words)
     mention_words = {wid for m in gt.mentions for seg in m.segments for wid in seg.words}
     mention_regions = {rid for m in gt.mentions for seg in m.segments for rid in seg.regions}
     kept_words = {wid for wid, eff in res.words.items() if eff in (Effective.ORDINARY, Effective.MUST_NOT)}
@@ -267,7 +272,7 @@ def evaluate_output(
         i = page.index
         notes: list[str] = []
         base = cache.get("src", source, i, configs[0])
-        pc = PageCells.build(page, cfg.dpi, base.shape, cfg.bands)
+        pc = PageCells.build(page, cfg.dpi, base.shape, cfg.bands, cfg.identity_subbands)
         pcs[i] = pc
         region_units[i] = defaultdict(list)
         for c in pc.cells:
@@ -308,9 +313,10 @@ def evaluate_output(
                 x = np.full_like(o, 255)
                 if k == 0:
                     notes.append("page missing from output")
-            band_stats[rc.label] = pc.stats(o, x, cfg)
+            band_stats[rc.label] = pc.stats(o, x, cfg, strict_words)
             if k == 0:
                 primary_o, primary_x = o, x
+                prim_pairs[i] = (o, x)
                 # For the "replaced?" test, blank out bands where the original survives, so a
                 # leftover original glyph is not mistaken for replacement text.
                 masked = x.copy()
@@ -383,7 +389,7 @@ def evaluate_output(
             x = render_gray(prefix, i, cfg.dpi, configs[0])
             if x.shape != o.shape:
                 x = cv2.resize(x, (o.shape[1], o.shape[0]), interpolation=cv2.INTER_AREA)
-            st_ = pcs[i].stats(o, x, cfg)
+            st_ = pcs[i].stats(o, x, cfg, strict_words)
             flags = unit_flags(pcs[i], st_.informative, st_.visible)
             rev[i] = {u: rev.get(i, {}).get(u, False) or v for u, v in flags.items()}
             centres, chars = page_chars(rdoc[i], rgeoms[i])
