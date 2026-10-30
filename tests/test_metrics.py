@@ -150,6 +150,30 @@ def test_protected_false_positives_are_classified():
     assert {"HOMOGRAPH_COMMON_WORD", "MEDICATION", "MEDICAL_EPONYM"} <= set(d.fp_classes)
 
 
+def test_a_whole_address_span_is_exact_for_both_parts():
+    # GT 0.2 splits '14 Example Street, Faketown QLD 4000' into the street line addr1 and its locality
+    # addr1-loc; a tool that reports one span per address (Joel's) finds both parts exactly.
+    from benchmark.metrics.detection import ProjectedMention
+
+    fx = ALL_VARIANTS["digital"]()
+    res = resolve(fx.gt, load_policy(Path(__file__).resolve().parents[1] / "policies" / "au-medicolegal-v1.yaml"))
+    mentions = {m.id: m for m in fx.gt.mentions}
+    street, loc = ({(s.page, w) for s in mentions[mid].segments for w in s.words} for mid in ("addr1", "addr1-loc"))
+    phone = {(0, next(w.id for w in fx.gt.page(0).words if w.text == "Phone:"))}
+
+    def scored(*preds):
+        d = evaluate_detection(fx.gt, res, [ProjectedMention(f"p{i}", t, t, ws) for i, (t, ws) in enumerate(preds)])
+        return {x.mention_id: x for x in d.matches if x.mention_id in ("addr1", "addr1-loc")}, d
+
+    for preds in [(("ADDRESS", street | loc),), (("ADDRESS", street), ("LOCATION", loc))]:
+        parts, d = scored(*preds)
+        assert {x.boundary for x in parts.values()} == {"exact"} and all(x.strict for x in parts.values())
+        assert d.mention_scores["exact_boundary"]["precision"] == 1.0
+    parts, d = scored(("ADDRESS", street | loc | phone))  # also takes the next line's label
+    assert {x.boundary for x in parts.values()} == {"over_harmful"}
+    assert d.mention_scores["exact_boundary"]["precision"] == 0.0
+
+
 # -- text acquisition ---------------------------------------------------------------------------
 
 

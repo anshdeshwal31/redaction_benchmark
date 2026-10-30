@@ -10,6 +10,10 @@ Boundary classes per GT mention: exact, over_benign (optional words only), over_
 (adjacent ordinary or protected words), merged (with another GT mention), split (covered
 only by several predictions), under (some required words missed; the missing name
 components are named), missed.
+
+A split address (GT 0.2: the street line, and its locality ``<id>-loc``) is one unit when both
+parts are scored: a single prediction over the whole address is exact for both parts, and a
+locality reported as ADDRESS has the right type.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
+from ..gt.address_split import LOCALITY_SUBTYPE
 from ..gt.policy import Effective, Resolution
 from ..schemas import GTDocument, MentionsArtifact, PiiType, Requirement, TextArtifact
 from .align import DEFAULT_THETA, InkIndex
@@ -107,6 +112,19 @@ def project_mentions(art: MentionsArtifact, index: InkIndex, label_map: dict[str
     return out
 
 
+def address_units(gt: GTDocument) -> dict[str, str]:
+    """Each part of a split address -> the other part: an ADDRESS street line (condition
+    ``address_street_line``) and the LOCATION/locality ``<its id>-loc`` of the same entity."""
+    by_id = {m.id: m for m in gt.mentions}
+    partner: dict[str, str] = {}
+    for m in gt.mentions:
+        loc = by_id.get(f"{m.id}-loc")
+        if (m.type is PiiType.ADDRESS and "address_street_line" in m.conditions and loc is not None
+                and loc.type is PiiType.LOCATION and loc.subtype == LOCALITY_SUBTYPE and loc.entity == m.entity):
+            partner[m.id], partner[loc.id] = loc.id, m.id
+    return partner
+
+
 def evaluate_detection(gt: GTDocument, res: Resolution, preds: list[ProjectedMention]) -> DetectionResult:
     words = gt.word_index()
     classified_cls = {wid: c.cls.value for c in gt.classified for seg in c.segments for wid in seg.words}
@@ -121,9 +139,17 @@ def evaluate_detection(gt: GTDocument, res: Resolution, preds: list[ProjectedMen
     matches: list[MentionMatch] = []
     evaluated = [m for m in gt.mentions if res.mentions[m.id].requirement in (Requirement.MUST, Requirement.MAY)
                  and req_sets[m.id]]
+    by_id = {m.id: m for m in gt.mentions}
+    scored_ids = {m.id for m in evaluated}
+    # A split address is one unit when both its parts are scored (under a policy that keeps the
+    # locality, a span over the whole address does take words that should stay).
+    partner = {k: v for k, v in address_units(gt).items() if k in scored_ids and v in scored_ids}
     for m in evaluated:
         R = req_sets[m.id]
         O = {(words[w][0], w) for w in m.optional_words}
+        mate = partner.get(m.id)
+        if mate:  # the unit's optional words: the split keeps the address's on its street line
+            O |= {(words[w][0], w) for w in by_id[mate].optional_words}
         covering = [p for p in preds if p.words & R]
         union = set().union(*(p.words for p in covering)) if covering else set()
         chars_total = sum(len(words[w][1].text) for _, w in R) or 1
@@ -142,18 +168,20 @@ def evaluate_detection(gt: GTDocument, res: Resolution, preds: list[ProjectedMen
                 boundary, best = "split", max(covering, key=lambda p: len(p.words & R))
             else:
                 best = min(single, key=lambda p: len(p.words))
-                extra = best.words - R
+                # A whole-address span: the other part's words are no extra for either part.
+                extra = best.words - R - (req_sets[mate] if mate else set())
                 if not extra:
                     boundary = "exact"
                 elif extra <= O:
                     boundary = "over_benign"
-                elif any(o != m.id for w in extra for o in word_owner.get(w, [])):
+                elif any(o not in (m.id, mate) for w in extra for o in word_owner.get(w, [])):
                     boundary = "merged"
                 else:
                     boundary = "over_harmful"
         exact = boundary == "exact"
         tolerant = boundary in ("exact", "over_benign")
-        type_ok = None if best is None or best.mapped_type is None else best.mapped_type == m.type.value
+        types = {m.type.value} | ({PiiType.ADDRESS.value} if mate and m.type is PiiType.LOCATION else set())
+        type_ok = None if best is None or best.mapped_type is None else best.mapped_type in types
         matches.append(MentionMatch(
             mention_id=m.id, type=m.type.value, requirement=res.mentions[m.id].requirement.value, entity=m.entity,
             conditions=list(m.conditions), detected=bool(covering), covered_fraction=round(chars_cov / chars_total, 4),
@@ -175,6 +203,7 @@ def evaluate_detection(gt: GTDocument, res: Resolution, preds: list[ProjectedMen
     must_matches = [x for x in matches if x.requirement == Requirement.MUST.value]
     pii_words = set().union(*req_sets.values()) if req_sets else set()
     exact_sets = {frozenset(req_sets[x.mention_id]) for x in matches}
+    exact_sets |= {frozenset(req_sets[a] | req_sets[b]) for a, b in partner.items()}  # whole-address spans
 
     def prec(ok):
         return round(sum(1 for p in preds if ok(p)) / len(preds), 4) if preds else None
