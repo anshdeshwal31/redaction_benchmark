@@ -554,6 +554,10 @@ for review; none lowers a pass mark.
   not found: those kept words read `DAMAGED` or `REMOVED`. The reading-order search that would find
   them (F2) follows in eval-0.4.1; until then tools are asked to keep line breaks
   (`docs/adapter_guide.md`). A fixture with reflowed lines keeps 8 of 54 words as collateral.
+- **Glued address words in one case.** The text-layer search splits a glued token at a change of case
+  ('ExampleStreet' gives 'Example' and 'Street') or at digits ('NSW2750'). Address words glued
+  together in all capitals or all lower case ('EXAMPLESTREET', 'examplestreet') cannot be split, so
+  a hidden original written that way in the text layer is not found as a text-layer leak.
 - **Moves.** Vertical moves over half a line (an 8 pt drop is found at most 4 of 10 times), scales
   outside 0.86-1.18, and the same word twice on a line with no anchor between (one false `MOVED` in
   the trap case) are outside the search. Words are looked for on the first render configuration only;
@@ -568,7 +572,10 @@ for review; none lowers a pass mark.
 - **Character identity.** Look-alike digits in protected words (3/8, 5/6, 6/8) can still read as
   intact (pinned by a test). Random same-font fakes can still match in 1-4 of 554 digit words and 3-4
   of 384 name words; the run clause admits a few same-font fake letters (two letters where 'Pty' was
-  at 150 DPI, one letter of a JPEG under PDFium): each only a false `PARTIAL`. White fake text on a black box can pass the presence clause. A white box
+  at 150 DPI, one letter of a JPEG under PDFium): each only a false `PARTIAL`. The self-check is
+  pinned at 150 DPI with MuPDF, the configuration the tests run; at 200 DPI under MuPDF one correct
+  re-typeset fake name on the rotated-scan fixture reads `PARTIAL` (2 of its 13 characters), a false
+  alarm of the same kind (it is safe under PDFium and at 150 DPI). White fake text on a black box can pass the presence clause. A white box
   shifted 0.3-0.4 of a line with the fake inside leaves under half the x-height and reads safe in 14
   of 20 cases, as in eval-0.3.1.
 - **Shared words.** A state kept as the original's glyphs beside a same-state postcode drawn at another
