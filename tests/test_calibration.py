@@ -127,6 +127,17 @@ def test_random_other_state_localities_in_place_are_safe():
                        12: {"addr1": "PARTIAL"}, 14: {"addr1": "PARTIAL"}}, flagged
 
 
+@pytest.mark.parametrize("font", ["cour", "tiro", "hebo"])
+def test_original_retypeset_in_another_font_is_a_leak(font):
+    # Hole 3, vector part: each MUST original re-typeset in place in Courier, Times or Helvetica-Bold is
+    # in the text layer at its displayed place, a text-layer leak on its own whatever the pixels show.
+    ev = _evaluate(calib.retypeset_in_font(font))
+    text = set(calib.must_text_mentions())
+    missed = {m.mention_id for m in ev.mentions if m.mention_id in text
+              and (m.status in SAFE or "text_layer" not in m.l2_sources)}
+    assert missed == set(), missed
+
+
 def test_lookalike_digit_in_protected_word_is_a_known_limit():
     # Hole 6: a protected date or dose altered by one look-alike digit in place (3/8, 5/6, 6/8) keeps a
     # high identity and reads PRESERVED; only a change the identity sees is damage.

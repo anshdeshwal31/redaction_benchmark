@@ -4,11 +4,16 @@ These checks ask whether the *original* content still exists in the output file,
 whether or not it is visible: text-layer characters at the GT location, image layers
 that still carry the original pixels (e.g. under an overlay box, or in one layer of an
 MRC stack), and glyph paths that survive under a covering shape.
+
+eval-0.4 adds the page's text in extraction order (:func:`page_text`) and the search for a
+word at its displayed place (:func:`find_at_place`), used for searchable kept words and for
+leaked text beside the 1 pt zone of a word's GT box.
 """
 
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -64,6 +69,200 @@ def text_leaks(needle: str, got: str | None, cfg: EvalConfig) -> bool:
         return False
     a, b = needle.casefold(), got.casefold()
     return a in b or fuzz.ratio(a, b) >= cfg.text_ratio
+
+
+# -- text at its displayed place (eval-0.4) ------------------------------------------
+
+STRIP = ".,;:()"
+
+
+@dataclass(frozen=True)
+class TextChar:
+    c: str
+    box: tuple[float, float, float, float]  # display pt (x0, y0, x1, y1)
+    line: int  # MuPDF text line number: a change is a line break in the extracted text
+    seq: int  # extraction order
+
+
+@dataclass(frozen=True)
+class TextRun:
+    along: float  # centre of the occurrence minus the word's centre, along the line (pt)
+    across: float  # the same across the line (pt)
+    width_ratio: float  # length of the occurrence / length of the word, along the line
+    first: int  # seq of its first character
+    last: int  # seq of its last character
+
+
+class PageText(list):
+    """The characters of one page's text in extraction order (a list of :class:`TextChar`), with
+    their box centres and whole tokens worked out once."""
+
+    def __init__(self, chars=()):
+        super().__init__(sorted(chars, key=lambda c: c.seq))
+        boxes = np.array([c.box for c in self], float).reshape(-1, 4)
+        self.mids = np.c_[(boxes[:, 0] + boxes[:, 2]) / 2, (boxes[:, 1] + boxes[:, 3]) / 2]
+        # whole tokens: maximal runs of characters with no whitespace between them on one text line
+        self.tokens: list[list[int]] = []
+        self.token_of = np.full(len(self), -1, np.int64)
+        prev_line = None
+        for k, ch in enumerate(self):
+            if ch.c.isspace():
+                prev_line = None
+                continue
+            if prev_line is None or ch.line != prev_line:
+                self.tokens.append([])
+            self.tokens[-1].append(k)
+            self.token_of[k] = len(self.tokens) - 1
+            prev_line = ch.line
+
+
+def page_text(page: pymupdf.Page, geom: PageGeometry, scale: tuple[float, float] = (1.0, 1.0)) -> PageText:
+    """Every character of the page's text (any render mode, as :func:`page_chars` reads it) in
+    extraction order, boxes in display pt (multiplied by ``scale`` when the output page was resized to
+    the source), including the spaces MuPDF's extraction adds for gaps."""
+    out: list[TextChar] = []
+    seq = line_no = 0
+    raw = page.get_text("rawdict", flags=pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_MEDIABOX_CLIP)
+    for block in raw["blocks"]:
+        for line in block.get("lines", []):
+            for span in line["spans"]:
+                for ch in span["chars"]:
+                    x0, y0, x1, y1 = ch["bbox"]
+                    p = geom.transform(np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]), Frame.UNROTATED_PT,
+                                       Frame.DISPLAY_PT) * np.asarray(scale)
+                    out.append(TextChar(ch["c"], (float(p[:, 0].min()), float(p[:, 1].min()),
+                                                  float(p[:, 0].max()), float(p[:, 1].max())), line_no, seq))
+                    seq += 1
+            line_no += 1
+    return PageText(out)
+
+
+def _frame(poly) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
+    """(centre, along unit vector, across unit vector, length, height) of a word polygon whose corners
+    run TL, TR, BR, BL in reading order."""
+    p = np.asarray(poly, dtype=float).reshape(-1, 2)
+    u, v = p[1] - p[0], p[3] - p[0]
+    length, height = float(np.hypot(*u)), float(np.hypot(*v))
+    u = u / length if length > 0 else np.array([1.0, 0.0])
+    v = v / height if height > 0 else np.array([0.0, 1.0])
+    return p.mean(axis=0), u, v, length, height
+
+
+def token_span(needle: str, token: str, ratio: float) -> tuple[int, int] | None:
+    """The part of a whole output token that holds ``needle`` (both stripped of punctuation and case
+    folded): a number only as a maximal digit run equal to it ('214' and '142750' do not hold '14');
+    anything else as the whole token, equal or with a rapidfuzz ratio of at least ``ratio``, and a word
+    of letters also as a maximal letter run equal to it (the state of a glued 'NSW2750', the suburb of
+    a word the GT splits between the street line and the locality)."""
+    n = needle.strip(STRIP).casefold()
+    t = token.casefold()
+    if not n:
+        return None
+    if n.isdigit():
+        for m in re.finditer(r"\d+", t):
+            if m.group() == n:
+                return m.start(), m.end()
+        return None
+    lead = len(t) - len(t.lstrip(STRIP))
+    core = t.strip(STRIP)
+    if core and (core == n or fuzz.ratio(n, core) >= ratio):
+        return lead, lead + len(core)
+    if n.isalpha():
+        for m in re.finditer(r"[^\W\d_]+", t):
+            if m.group() == n:
+                return m.start(), m.end()
+    return None
+
+
+def find_at_place(poly, needle: str, chars, shift=(0.0, 0.0), line_height: float | None = None,
+                  band: float = 0.5, margin: float | None = 0.25, ratio: float = 90.0,
+                  whole_token: bool = False) -> TextRun | None:
+    """Is ``needle`` in the text at the word's displayed place? The nearest accepted occurrence, or None.
+
+    The place is the word's GT polygon moved by ``shift`` (pt): centre C, along-line direction u, length
+    L, and H the line height (``line_height``, else the polygon's height). Candidate characters lie
+    within ``band`` x H of C across the line and 1.5 L + H along it. Joined in extraction order and case
+    folded, they must hold the needle (stripped of .,;:()) as a substring or, failing that, as a window
+    of n-1..n+1 characters with a rapidfuzz ratio of at least ``ratio``; with ``whole_token`` an output
+    token must hold it (:func:`token_span`). An occurrence is at the place when its centre lies within
+    ``band`` x H across and L/2 + ``margin`` x H along (``margin`` None: anywhere along the line)."""
+    pt = chars if isinstance(chars, PageText) else PageText(chars)
+    n = needle.strip(STRIP).casefold()
+    if not n or not len(pt):
+        return None
+    centre, u, v, length, height = _frame(poly)
+    h = line_height or height
+    centre = centre + np.asarray(shift, dtype=float)
+    mid = pt.mids - centre
+    al, ac = mid @ u, mid @ v
+    keep = np.abs(ac) <= band * h
+    if margin is not None:
+        keep &= np.abs(al) <= 1.5 * length + h
+    idx = [k for k in np.flatnonzero(keep) if not pt[k].c.isspace()]
+    if not idx:
+        return None
+    spans: list[list[int]] = []
+    if whole_token:
+        for t in sorted({int(pt.token_of[k]) for k in idx}):
+            ids = pt.tokens[t]
+            got = token_span(n, "".join(pt[k].c for k in ids), ratio)
+            if got is not None:
+                spans.append(ids[got[0]:got[1]])
+    else:
+        hay = "".join(pt[k].c for k in idx).casefold()
+        s = hay.find(n)
+        while s >= 0:
+            spans.append(idx[s:s + len(n)])
+            s = hay.find(n, s + 1)
+        if not spans:
+            m = len(n)
+            for w in (m - 1, m, m + 1):
+                for s in range(0, max(0, len(hay) - w) + 1) if w >= 1 else ():
+                    if fuzz.ratio(n, hay[s:s + w]) >= ratio:
+                        spans.append(idx[s:s + w])
+    best = None
+    for ids in spans:
+        corners = np.array([[(x0, y0), (x1, y0), (x1, y1), (x0, y1)] for x0, y0, x1, y1 in (pt[k].box for k in ids)],
+                           float).reshape(-1, 2) - centre
+        a, c = corners @ u, corners @ v
+        along, across = (a.min() + a.max()) / 2, (c.min() + c.max()) / 2
+        if abs(across) > band * h or (margin is not None and abs(along) > length / 2 + margin * h):
+            continue
+        run = TextRun(float(along), float(across), float((a.max() - a.min()) / length) if length else 0.0,
+                      pt[ids[0]].seq, pt[ids[-1]].seq)
+        if best is None or abs(run.along) < abs(best.along):
+            best = run
+    return best
+
+
+def tokens_in_zone(poly, chars, dilate_pt: float = 1.0) -> list[str]:
+    """The whole output tokens with a character centre inside the word polygon grown by ``dilate_pt``:
+    the token-wise form of :func:`text_in_words` (a token reaching beyond the box stays whole)."""
+    pt = chars if isinstance(chars, PageText) else PageText(chars)
+    if not len(pt):
+        return []
+    zone = to_shapely(dilate(as_poly(poly), dilate_pt))
+    inside = shapely.contains_xy(zone, pt.mids[:, 0], pt.mids[:, 1])
+    hit = sorted({int(pt.token_of[k]) for k in np.flatnonzero(inside) if pt.token_of[k] >= 0})
+    return ["".join(pt[k].c for k in pt.tokens[t]) for t in hit]
+
+
+def token_leaks(needle: str, tokens: list[str], cfg: EvalConfig) -> bool:
+    """Is the original token one of the whole output tokens (:func:`token_span`)?"""
+    return any(token_span(needle, t, cfg.text_ratio) is not None for t in tokens)
+
+
+def separated(chars, first: TextRun, second: TextRun) -> bool | None:
+    """Do two occurrences read as separate words in the extracted text: whitespace (in the file or added
+    for a gap) or a line break between them? None when they are out of order."""
+    if second.first <= first.last:
+        return None
+    by_seq = {c.seq: c for c in chars}
+    between = [by_seq[s] for s in range(first.last + 1, second.first) if s in by_seq]
+    if any(c.c.isspace() for c in between):
+        return True
+    a, b = by_seq.get(first.last), by_seq.get(second.first)
+    return bool(a and b and a.line != b.line)
 
 
 # -- image layers ---------------------------------------------------------------

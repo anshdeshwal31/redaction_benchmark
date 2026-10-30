@@ -381,6 +381,12 @@ def shared_redraw(raster_dpi=None) -> bytes:
     return build(line_ops=redraw(shared_fakes()), raster_dpi=raster_dpi)
 
 
+def retypeset_in_font(fontname: str, raster_dpi=None) -> bytes:
+    """V3/X3: every MUST word's original re-typeset at its origin and size in another font ('tiro'
+    Times, 'cour' Courier, 'hebo' Helvetica-Bold): the original text, in the text layer too."""
+    return build(word_ops={w: ("font", fontname, None) for w in must_words()}, raster_dpi=raster_dpi)
+
+
 # M1: protected dates, a dose and kept words altered in place by one look-alike character.
 LOOKALIKE = {"p0w16": "12/08/1970", "p0w45": "60mg", "p0w48": "04/06/2021.", "p0w69": "(01.02.2028)",
              "p1w39": "(07.02.2026)", "p1w14": "sir", "p1w13": "far", "p0w14": "at"}

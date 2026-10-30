@@ -107,6 +107,16 @@ class EvalConfig(BaseModel):
     searchable_min_rate: float = Field(0.95, description="Share of kept words (preserved ordinary and protected "
                                                         "words with letters or digits) that must be findable in "
                                                         "the output's text layer at their place on the page")
+    searchable_band: float = Field(0.5, description="A word's text must lie within this many line heights of "
+                                                    "its displayed place across the line (the next line, 1.32 "
+                                                    "heights away, never counts; docs/metrics.md)")
+    searchable_margin: float = Field(0.25, description="...and within half the word's length plus this many line "
+                                                       "heights along it, about one word space (a layer drifting "
+                                                       "up to 4 pt along the line stays searchable; "
+                                                       "docs/metrics.md)")
+    text_place_leak: bool = Field(True, description="A MUST or MAY word's text found at its displayed place with "
+                                                   "the searchable tolerance is a text-layer leak, besides the "
+                                                   "1 pt zone of its GT box (docs/metrics.md)")
 
     # -- file-level survival (L2) ---------------------------------------------------
     layer_ncc: float = Field(0.6, description="Image-layer cell correlates with the original content")

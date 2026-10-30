@@ -26,11 +26,24 @@ import pymupdf
 from ..forensics.inspect import revision_prefixes
 from ..geometry import as_poly, dilate, geometry_from_pikepdf_page, rasterize
 from ..gt.policy import Effective, resolve
-from ..schemas import Action, GTDocument, PolicyProfile, Requirement
+from ..schemas import Action, GTDocument, PiiType, PolicyProfile, Requirement
 from .cells import PageCells, Unit, unit_flags
 from .config import EvalConfig
 from .document import document_findings
-from .layers import layer_survival, page_chars, page_layers, text_in_words, text_leaks, vector_survival
+from .layers import (
+    PageText,
+    find_at_place,
+    layer_survival,
+    page_chars,
+    page_layers,
+    page_text,
+    separated,
+    text_in_words,
+    text_leaks,
+    token_leaks,
+    tokens_in_zone,
+    vector_survival,
+)
 from .outcomes import (
     HIDDEN,
     L1_L2_LEAKS,
@@ -205,6 +218,95 @@ def _has_alnum(s: str, n: int = 1) -> bool:
     return sum(ch.isalnum() for ch in s) >= n
 
 
+def _line_heights(gt: GTDocument) -> dict[str, float]:
+    """Word id -> H, the median height (across the line) of the GT words on its line."""
+    by_line: dict[tuple, list[tuple[str, float]]] = defaultdict(list)
+    for p in gt.pages:
+        for w in p.words:
+            q = np.asarray(w.poly, float).reshape(-1, 2)
+            by_line[(p.index, w.line) if w.line else (p.index, w.id)].append((w.id, float(np.hypot(*(q[3] - q[0])))))
+    out: dict[str, float] = {}
+    for ws in by_line.values():
+        h = float(np.median([x for _, x in ws]))
+        out.update((wid, h) for wid, _ in ws)
+    return out
+
+
+def _searchable(gt: GTDocument, word_outcomes: list[WordOutcome], page_texts: dict[int, PageText],
+                shift_pt: dict[int, tuple[float, float]], line_h: dict[str, float], cfg: EvalConfig
+                ) -> tuple[dict[str, bool], dict]:
+    """Kept words found in the text layer at their displayed place (client Q11), and the text layer's
+    alignment and word breaks, which are reported and never fail a document.
+
+    Counted: PRESERVED kept words (ORDINARY, MUST_NOT) with a letter or digit, looked for at the GT
+    polygon plus the page's registration shift with :func:`find_at_place` (searchable_band across,
+    L/2 + searchable_margin x H along). A word not found is misplaced when it is on its own line further
+    along, else missing. Word breaks: of every two consecutive GT words of a line both found, whether
+    the extracted text separates them (a space or a line break), runs them together (glued) or puts the
+    second first (out of order); examples name word ids only."""
+    status = {wo.word_id: wo for wo in word_outcomes}
+    searchable: dict[str, bool] = {}
+    runs: dict[str, tuple[int, object]] = {}
+    misplaced = missing = 0
+    empty = PageText()
+    for page in gt.pages:
+        chars = page_texts.get(page.index, empty)
+        shift = shift_pt.get(page.index, (0.0, 0.0))
+        for w in page.words:
+            wo = status.get(w.id)
+            if not (wo and wo.status is WordStatus.PRESERVED and _has_alnum(w.text)
+                    and wo.requirement in (Effective.ORDINARY.value, Effective.MUST_NOT.value)):
+                continue
+            run = find_at_place(w.poly, w.text, chars, shift, line_h.get(w.id), cfg.searchable_band,
+                                cfg.searchable_margin, cfg.text_ratio)
+            searchable[w.id] = run is not None
+            if run is not None:
+                runs[w.id] = (page.index, run)
+                wo.text_offset_pt = round(float(np.hypot(run.along, run.across)), 2)
+            elif find_at_place(w.poly, w.text, chars, shift, line_h.get(w.id), cfg.searchable_band, None,
+                               cfg.text_ratio) is not None:
+                misplaced += 1
+            else:
+                missing += 1
+    pairs = glued = out_of_order = 0
+    examples: list[str] = []
+    for page in gt.pages:
+        lines: dict = defaultdict(list)
+        for w in page.words:
+            lines[w.line].append(w)
+        for ws in lines.values():
+            ws.sort(key=lambda w: w.order)
+            for a, b in zip(ws, ws[1:]):
+                if a.id in runs and b.id in runs:
+                    pairs += 1
+                    sep = separated(page_texts.get(page.index, empty), runs[a.id][1], runs[b.id][1])
+                    if sep is None:
+                        out_of_order += 1
+                    elif not sep:
+                        glued += 1
+                        examples.append(f"{a.id}|{b.id}")
+    off = np.array([np.hypot(r.along, r.across) for _, r in runs.values()])
+    ratio = np.array([r.width_ratio for _, r in runs.values()])
+
+    def q(a, p):
+        return round(float(np.percentile(a, p)), 2) if a.size else None
+
+    return searchable, {
+        "searchable_preserved_rate": round(sum(searchable.values()) / len(searchable), 4) if searchable else None,
+        "searchable_misplaced_words": misplaced,
+        "searchable_missing_words": missing,
+        "text_offset_median_pt": q(off, 50),
+        "text_offset_p95_pt": q(off, 95),
+        "text_offset_max_pt": round(float(off.max()), 2) if off.size else None,
+        "text_width_ratio_median": q(ratio, 50),
+        "text_word_pairs": pairs,
+        "text_glued_pairs": glued,
+        "text_out_of_order_pairs": out_of_order,
+        "text_glued_rate": round(glued / pairs, 4) if pairs else None,
+        "text_glued_examples": examples[:10],
+    }
+
+
 def _flags_from(indices: dict[int, int], n: int) -> np.ndarray:
     arr = np.zeros(n, bool)
     if indices:
@@ -252,6 +354,11 @@ def evaluate_output(
     rev: dict[int, dict[Unit, bool]] = {}
     texts: dict[int, dict[str, str]] = {}
     rev_texts: dict[int, dict[str, str]] = defaultdict(dict)
+    # The output's text per page, in extraction order and in display pt of the source page, for the checks
+    # at the displayed place; the whole tokens in the 1 pt zone of address words (eval-0.4).
+    page_texts: dict[int, PageText] = {}
+    zone_tokens: dict[int, dict[str, list[str]]] = {}
+    rev_tokens: dict[int, dict[str, list[str]]] = defaultdict(dict)
     vector: dict[int, dict[str, tuple[int, int]]] = {}
     primary_out: dict[int, np.ndarray] = {}
     # (original, registered output) of the first render configuration per page, for the searches
@@ -265,7 +372,11 @@ def evaluate_output(
     strict_words = frozenset(must_or_may_words)
     mention_words = {wid for m in gt.mentions for seg in m.segments for wid in seg.words}
     mention_regions = {rid for m in gt.mentions for seg in m.segments for rid in seg.regions}
-    kept_words = {wid for wid, eff in res.words.items() if eff in (Effective.ORDINARY, Effective.MUST_NOT)}
+    # Words of addresses and localities match only as whole tokens of the output's text, numbers as
+    # maximal digit runs: '14' is not found in '214' or '142750' (E4).
+    whole_token_words = {wid for m in gt.mentions
+                         if m.type is PiiType.ADDRESS or (m.type is PiiType.LOCATION and m.subtype == "locality")
+                         for seg in m.segments for wid in seg.words}
     layer_cache: dict[int, np.ndarray] = {}
 
     for page in gt.pages:
@@ -337,8 +448,11 @@ def evaluate_output(
         if exists:
             out_page = out_doc[i]
             centres, chars = page_chars(out_page, out_geom)
-            # Mention words for leaks; kept words for the searchable-text check.
-            texts[i] = text_in_words(page, centres, chars, mention_words | kept_words)
+            texts[i] = text_in_words(page, centres, chars, mention_words)
+            (sw, sh), (ow, oh) = src_geoms[i].display_size, out_geom.display_size
+            page_texts[i] = page_text(out_page, out_geom, (sw / ow, sh / oh))
+            zone_tokens[i] = {w.id: tokens_in_zone(w.poly, page_texts[i]) for w in page.words
+                              if w.id in whole_token_words}
             mention_cells = [ci for ci, c in enumerate(pc.cells)
                              if (c.word_id in mention_words) or c.region_id is not None]
             layers = page_layers(out_doc, out_page, layer_cache)
@@ -395,9 +509,36 @@ def evaluate_output(
             centres, chars = page_chars(rdoc[i], rgeoms[i])
             for wid, got in text_in_words(page, centres, chars, mention_words).items():
                 rev_texts[i][wid] = rev_texts[i].get(wid, "") + got
+            if any(w.id in whole_token_words for w in page.words):
+                rpt = page_text(rdoc[i], rgeoms[i])
+                for w in page.words:
+                    if w.id in whole_token_words:
+                        rev_tokens[i].setdefault(w.id, []).extend(tokens_in_zone(w.poly, rpt))
 
     # -- document level --------------------------------------------------------------------
     findings, surfaces = document_findings(output, gt, res, policy) if integrity.opens else ([], [])
+
+    shift_pt = {p.index: ((p.registration_shift_px[0] / scale, p.registration_shift_px[1] / scale)
+                          if p.registration_shift_px else (0.0, 0.0)) for p in page_outcomes}
+    line_h = _line_heights(gt)
+
+    def text_leaked(pg: int, wid: str, needle: str) -> bool:
+        """The original token in the output's text: in the 1 pt zone of its word or, with text_place_leak,
+        at its displayed place (the GT polygon plus the page's registration shift, the searchable
+        tolerance)."""
+        whole = wid in whole_token_words
+        if whole and token_leaks(needle, zone_tokens.get(pg, {}).get(wid, []), cfg):
+            return True
+        if not whole and text_leaks(needle, texts.get(pg, {}).get(wid), cfg):
+            return True
+        return cfg.text_place_leak and find_at_place(
+            words[wid][1].poly, needle, page_texts.get(pg, PageText()), shift_pt.get(pg, (0.0, 0.0)),
+            line_h.get(wid), cfg.searchable_band, cfg.searchable_margin, cfg.text_ratio, whole_token=whole) is not None
+
+    def rev_text_leaked(pg: int, wid: str, needle: str) -> bool:
+        if wid in whole_token_words:
+            return token_leaks(needle, rev_tokens.get(pg, {}).get(wid, []), cfg)
+        return text_leaks(needle, rev_texts.get(pg, {}).get(wid), cfg)
 
     # -- mentions ----------------------------------------------------------------------------
     outcomes: list[MentionOutcome] = []
@@ -419,9 +560,8 @@ def evaluate_output(
         f_rev_px = _fraction([rev.get(pg, {}).get(u, False) for pg, u in units])
         req_text = _required_text(m, words)
         total_chars = sum(len(t) for t in req_text.values())
-        hit = sum(len(t) for (pg, wid), t in req_text.items() if text_leaks(t, texts.get(pg, {}).get(wid), cfg))
-        rev_hit = sum(len(t) for (pg, wid), t in req_text.items()
-                      if text_leaks(t, rev_texts.get(pg, {}).get(wid), cfg))
+        hit = sum(len(t) for (pg, wid), t in req_text.items() if text_leaked(pg, wid, t))
+        rev_hit = sum(len(t) for (pg, wid), t in req_text.items() if rev_text_leaked(pg, wid, t))
         f_text = hit / total_chars if total_chars else 0.0
         f_rev = max(f_rev_px, rev_hit / total_chars if total_chars else 0.0)
         vec_orig = vec_surv = 0
@@ -499,17 +639,13 @@ def evaluate_output(
                 ws = WordStatus.DAMAGED
             word_outcomes.append(WordOutcome(w.id, page.index, eff.value, round(frac, 4), ws))
 
-    # -- searchable text (client Q11): kept words findable in the text layer at their place -----
+    # -- searchable text (client Q11): kept words found in the text layer at their displayed place ---
     word_text = {w.id: w.text for p in gt.pages for w in p.words}
-    searchable: dict[str, bool] = {}
-    for wo in word_outcomes:
-        if (wo.status is WordStatus.PRESERVED and _has_alnum(word_text[wo.word_id])
-                and wo.requirement in (Effective.ORDINARY.value, Effective.MUST_NOT.value)):
-            searchable[wo.word_id] = text_leaks(word_text[wo.word_id].strip(".,;:()"),
-                                                texts.get(wo.page, {}).get(wo.word_id), cfg)
+    searchable, text_info = _searchable(gt, word_outcomes, page_texts, shift_pt, line_h, cfg)
 
     summary = _summarise(outcomes, word_outcomes, findings, surfaces, integrity, page_outcomes,
                          word_text=word_text, searchable=searchable, cfg=cfg)
+    summary.update(text_info)
     return DocumentEvaluation(
         doc_id=gt.doc_id, eval_version=cfg.version, eval_digest=cfg.digest(), policy=res.policy,
         source_sha256=hashlib.sha256(source).hexdigest(), output_sha256=hashlib.sha256(output).hexdigest(),
