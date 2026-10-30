@@ -21,6 +21,7 @@ from rapidfuzz import fuzz
 from .. import ocr
 from ..evaluate.layers import page_chars, text_in_words
 from ..geometry import load_page_geometries
+from ..gt.address_split import POSTCODES  # Australia Post postcode ranges by state/territory
 from ..gt.policy import Resolution
 from ..schemas import GTDocument, NameComponent, PiiType, Requirement
 
@@ -75,17 +76,6 @@ def _is_other(m) -> bool:
     return m.type in OTHER_TYPES or (m.type is PiiType.LOCATION and (m.subtype or "") == LOCALITY)
 
 
-# Australia Post postcode ranges by state/territory.
-POSTCODES = {
-    "NSW": [(1000, 2599), (2619, 2899), (2921, 2999)],
-    "ACT": [(200, 299), (2600, 2618), (2900, 2920)],
-    "VIC": [(3000, 3999), (8000, 8999)],
-    "QLD": [(4000, 4999), (9000, 9999)],
-    "SA": [(5000, 5999)],
-    "WA": [(6000, 6999)],
-    "TAS": [(7000, 7999)],
-    "NT": [(800, 999)],
-}
 _PHONE = re.compile(r"^(0[2-478]\d{8}|1[38]00\d{6}|13\d{4})$")
 _EMAIL = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 _STATE_POSTCODE = re.compile(r"\b(NSW|ACT|VIC|QLD|SA|WA|TAS|NT)\b[\s,]*(\d{4})\b", re.I)

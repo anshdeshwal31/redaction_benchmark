@@ -505,7 +505,9 @@ def _distribute(text: str, n: int) -> list[str]:
 # One fake per word, so each word region gets its own text. Lists are fictional.
 
 _FAKE_STATES = ["NSW", "VIC", "QLD", "SA", "WA", "TAS", "ACT", "NT"]
-_STATE_NAMES = {"queensland": "qld", "victoria": "vic", "tasmania": "tas"}  # full names the GT split recognises
+# Full and dotted names the GT split recognises, so the fake never picks the original's state.
+_STATE_NAMES = {"queensland": "qld", "victoria": "vic", "tasmania": "tas", "n.s.w": "nsw", "s.a": "sa", "w.a": "wa",
+                "n.t": "nt", "a.c.t": "act"}
 _SUBURBS = ["Oakvale", "Brushmere", "Tallowby", "Karribrook", "Wattlecombe", "Bimbadeen", "Fernlea", "Ironmere"]
 _STREETS = ["Banksia", "Coolabah", "Grevillea", "Jacaranda", "Kurrajong", "Waratah", "Melaleuca", "Bottlebrush"]
 _FAKE_STREET_TYPES = ["Road", "Street", "Avenue", "Parade", "Crescent", "Lane", "Close", "Terrace"]
