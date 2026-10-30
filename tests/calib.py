@@ -293,6 +293,17 @@ def fakes() -> dict[str, str]:
     return dict(_fakes())
 
 
+def fake_characters(fk: dict[str, str]) -> set[tuple[str, int]]:
+    """Characters of the faked words where the output shows fake text (or nothing), not the original's:
+    a fake that happens to have the original's character at the same index shows the original glyph."""
+    ws = words()
+    out = set()
+    for w, fake in fk.items():
+        t = ws[w].text
+        out.update((w, k) for k in range(len(t)) if k >= len(fake) or fake[k] != t[k])
+    return out
+
+
 def in_place(fk: dict[str, str]) -> dict:
     """Every MUST word with a fake replaced at its origin and size; an empty fake erases the word."""
     must = set(must_words())

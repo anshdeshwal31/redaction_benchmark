@@ -6,16 +6,22 @@ bands; the gate drops that. The original itself, shifted by a pixel, half under 
 or under a fake drawn over it, keeps its evidence. Fictional fixture content only.
 """
 
+import io
+import time
 from functools import lru_cache
 
 import cv2
 import numpy as np
+import pikepdf
+import pymupdf
 import pytest
 
-from benchmark.evaluate import EvalConfig
+from benchmark.evaluate import SAFE, EvalConfig, evaluate_output
 from benchmark.evaluate.cells import CharacterIdentity, PageCells, unit_flags
 from benchmark.evaluate.evaluator import _translate
-from benchmark.geometry import as_poly, bbox
+from benchmark.evaluate.layers import layer_survival, page_layers
+from benchmark.evaluate.render import RenderCache, RenderConfig
+from benchmark.geometry import as_poly, bbox, geometry_from_pikepdf_page
 from benchmark.mocks import MockSpec, run_mock
 from benchmark.synth import ALL_VARIANTS
 
@@ -147,6 +153,51 @@ def test_identity_thresholds_for_mention_and_kept_characters():
     # Without the strict words every word is held to the MUST thresholds.
     assert pc.gate(_identity_of(pc, {(kept_letter, 0): 0.75}), {(kept_letter, 0): {1, 2}}, None, cfg) == {
         (kept_letter, 0): ""}
+
+
+# -- image layers (S10): the same gate on the layer resampled to the render grid ----------------------
+
+
+@pytest.mark.parametrize("raster_dpi", [150, 300])
+def test_image_layer_gate_drops_same_font_fakes(raster_dpi):
+    # Every MUST word replaced in place by a same-font fake, the page rasterised (image only). The layer
+    # holds the fakes, not the originals, so no fake character keeps layer evidence that counts; the kept
+    # 'CLM-' of the claim numbers is original and keeps it (shared from S14). In the 150-DPI layer two
+    # fake letters where org1's legal form 'Pty' was pass the run clause (the documented limit of random
+    # same-font matches); the legal form is shared from S14.
+    b = calib.base()
+    out = calib.same_font_fakes(raster_dpi)
+    cfg = EvalConfig(dpi=200)
+    strict_ = strict()
+    doc = pymupdf.open("pdf", out)
+    with pikepdf.open(io.BytesIO(out)) as pdf:
+        geoms = [geometry_from_pikepdf_page(p) for p in pdf.pages]
+    ws = calib.words()
+    fake = calib.fake_characters(calib.fakes())
+    claims = {(w, k) for w in calib.mention_words("clm0") + calib.mention_words("clm1") for k in range(4)}
+    expected = {("p1w11", 0), ("p1w11", 1)} if raster_dpi == 150 else set()
+    kept = set()  # characters whose layer evidence counts (two bands and the run rule, as for a mention)
+    for page in b.gt.pages:
+        o = RenderCache(200).get("src", b.pdf, page.index, RenderConfig("mupdf", True))
+        pc = PageCells.build(page, 200, o.shape, cfg.bands, cfg.identity_subbands)
+        cells = [i for i, c in enumerate(pc.cells) if c.word_id in strict_]
+        layers = page_layers(doc, doc[page.index], {})
+        rec, lat = layer_survival(pc, cells, o, layers, geoms[page.index], cfg, strict_)
+        flags = np.zeros(len(pc.cells), bool)
+        flags[[*rec, *lat]] = True
+        informative = np.array([pc.rows[i].size >= 4 and o[pc.rows[i], pc.cols[i]].std() >= cfg.cell_min_orig_std
+                                for i in range(len(pc.cells))])
+        kept |= {u for u, v in unit_flags(pc, informative, flags).items() if v}
+    assert kept & fake == expected, sorted((u, ws[u[0]].text[u[1]]) for u in (kept & fake) ^ expected)
+    assert claims <= kept  # the original 'CLM-' keeps its layer evidence
+    t0 = time.time()
+    ev = evaluate_output(b.pdf, out, b.gt, calib.V1, cfg)
+    print(f"P1 {raster_dpi}-DPI raster evaluated at 200 DPI with the layer gate in {time.time() - t0:.1f} s")
+    text = set(calib.must_text_mentions())
+    with_layer = {m.mention_id for m in ev.mentions if m.mention_id in text
+                  and ("image_layer" in m.l2_sources or m.image_latent_residual > cfg.safe_max_residual)}
+    assert with_layer == {"clm0", "clm1"} | ({"org1"} if raster_dpi == 150 else set()), with_layer
+    assert all(m.status in SAFE for m in ev.mentions if m.mention_id in text - with_layer)
 
 
 @pytest.mark.parametrize("variant", ["digital", "rotated_content"])

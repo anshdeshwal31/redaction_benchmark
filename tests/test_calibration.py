@@ -63,16 +63,6 @@ def test_translucent_box_with_fake_on_top_is_a_leak(opacity):
 # -- correct fakes in place ---------------------------------------------------------------------------
 
 
-def _fake_characters(fakes: dict[str, str]) -> set[tuple[str, int]]:
-    """Characters of MUST words where the output shows fake text (or nothing), not the original's."""
-    ws = calib.words()
-    out = set()
-    for w, fake in fakes.items():
-        t = ws[w].text
-        out.update((w, k) for k in range(len(t)) if k >= len(fake) or fake[k] != t[k])
-    return out
-
-
 # Same-font fake characters the run clause admits at 200 DPI (measured; none of them makes its word
 # count). The prototype's offline estimate of the run clause found none; the exact pooled identity finds
 # this one in the PDFium render of the 150-DPI JPEG.
@@ -86,7 +76,7 @@ def test_partial_identity_clauses_admit_no_same_font_fake(case):
     kind, form = case.split("-")
     raster = {"vector": None, "r300": 300, "r150": 150}[form]
     out = calib.same_font_fakes(raster) if kind == "P1" else calib.shared_redraw(raster)
-    fake = _fake_characters(calib.fakes() if kind == "P1" else calib.shared_fakes())
+    fake = calib.fake_characters(calib.fakes() if kind == "P1" else calib.shared_fakes())
     b = calib.base()
     strict = frozenset(w for w, r in calib.requirements().items() if r in ("MUST", "MAY"))
     rejected, admitted, counted = 0, [], []
@@ -105,16 +95,19 @@ def test_partial_identity_clauses_admit_no_same_font_fake(case):
     assert not set(admitted) & set(counted), counted  # an admitted fake character never counts
 
 
-@pytest.mark.parametrize("dpi", [150, 200])
-def test_same_font_fakes_in_place_are_safe(dpi):
-    # Every MUST word replaced at its origin and size by a fake in the same font (P1). Until shared roles
-    # (S14) the claim numbers keep their original 'CLM-', so clm0 and clm1 are PARTIAL. At 150 DPI two
-    # fake letters where org1's legal form 'Pty' was pass the run clause (the documented limit of random
-    # same-font matches in name words); the legal form is shared from S14.
-    ev = _evaluate(calib.same_font_fakes(), EvalConfig(dpi=dpi))
+@pytest.mark.parametrize("form, dpi", [("vector", 150), ("vector", 200), ("r300", 200)])
+def test_same_font_fakes_in_place_are_safe(form, dpi):
+    # Every MUST word replaced at its origin and size by a fake in the same font (P1), as a PDF and as a
+    # 300-DPI JPEG. Until shared roles (S14) the claim numbers keep their original 'CLM-', so clm0 and
+    # clm1 are PARTIAL, and in the JPEG their image layer holds it. At 150 DPI two fake letters where
+    # org1's legal form 'Pty' was pass the run clause (the documented limit of random same-font matches
+    # in name words); the legal form is shared from S14.
+    ev = _evaluate(calib.same_font_fakes(300 if form == "r300" else None), EvalConfig(dpi=dpi))
     expected = {"clm0", "clm1"} | ({"org1"} if dpi == 150 else set())
     assert set(_not_safe(ev)) == expected, _not_safe(ev)
-    assert not any("image_layer" in m.l2_sources for m in ev.mentions)
+    layer = {m.mention_id for m in ev.mentions if m.mention_id in calib.must_text_mentions()
+             and ("image_layer" in m.l2_sources or m.image_latent_residual > CFG.safe_max_residual)}
+    assert layer == (set() if form == "vector" else {"clm0", "clm1"}), layer
 
 
 def test_random_other_state_localities_in_place_are_safe():

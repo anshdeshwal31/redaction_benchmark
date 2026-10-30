@@ -342,7 +342,7 @@ def evaluate_output(
             mention_cells = [ci for ci, c in enumerate(pc.cells)
                              if (c.word_id in mention_words) or c.region_id is not None]
             layers = page_layers(out_doc, out_page, layer_cache)
-            rec, ltn = layer_survival(pc, mention_cells, primary_o, layers, out_geom, cfg)
+            rec, ltn = layer_survival(pc, mention_cells, primary_o, layers, out_geom, cfg, strict_words)
             n = len(pc.cells)
             img[i] = unit_flags(pc, prim.informative, _flags_from(rec, n))
             img_lat[i] = {u: v and not img[i].get(u, False)

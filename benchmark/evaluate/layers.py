@@ -121,12 +121,18 @@ def layer_survival(
     layers: list[Layer],
     geom: PageGeometry,
     cfg: EvalConfig,
+    strict_words: set[str] | frozenset[str] | None = None,
 ) -> tuple[dict[int, int], dict[int, int]]:
     """Cells whose original pattern survives in some image layer.
 
     Returns ``(recoverable, latent)``: cell index -> layer xref. Recoverable means the
     layer alone shows the content with real contrast; latent means it correlates but
     is faint (MRC ghost text, near-transparent edits).
+
+    Word characters then pass the same character identity gate as in place (eval-0.4): each layer
+    that flags a word is resampled onto the render grid over the boxes of those words (2 px around),
+    and a character whose identity, presence and clauses fail there loses its layer evidence
+    (:meth:`PageCells.stats`; ``strict_words`` as there). Region slices are not gated.
     """
     recoverable: dict[int, int] = {}
     latent: dict[int, int] = {}
@@ -154,7 +160,70 @@ def layer_survival(
                 break
             if abs(ncc) >= cfg.layer_ncc and sx >= cfg.cell_latent_noise_std:
                 latent.setdefault(i, layer.xref)
-    return recoverable, latent
+    if not recoverable and not latent:
+        return recoverable, latent
+    return _gate_layer_cells(cells, original, layers, geom, cfg, strict_words, recoverable, latent)
+
+
+def _layer_on_render_grid(cells: PageCells, layer: Layer, geom: PageGeometry, shape: tuple[int, int],
+                          words: set[str]) -> np.ndarray:
+    """The layer as the output render would show it on its own, over the given words' boxes (2 px
+    around): each render pixel centre taken from display pt to unrotated pt to the layer's unit square
+    and sampled there (nearest pixel). Elsewhere, and outside the layer, the layer's paper level."""
+    g = layer.gray
+    h, w = shape
+    s = cells.dpi / 72.0
+    out = np.full((h, w), max(float(np.percentile(g, 95)), 64.0), np.float32)
+    for wid in words:
+        idx = cells.word_cells.get(wid, [])
+        rr = np.concatenate([cells.rows[i] for i in idx]) if idx else np.zeros(0, np.int64)
+        if rr.size == 0:
+            continue
+        cc = np.concatenate([cells.cols[i] for i in idx])
+        r0, r1 = max(int(rr.min()) - 2, 0), min(int(rr.max()) + 3, h)
+        c0, c1 = max(int(cc.min()) - 2, 0), min(int(cc.max()) + 3, w)
+        yy, xx = np.mgrid[r0:r1, c0:c1]
+        pts = np.column_stack([(xx.ravel() + 0.5) / s, (yy.ravel() + 0.5) / s])
+        unrot = geom.transform(pts, Frame.DISPLAY_PT, Frame.UNROTATED_PT)
+        uv = np.hstack([unrot, np.ones((len(unrot), 1))]) @ layer.inverse.T
+        px = np.floor(uv[:, 0] * layer.width).astype(np.int64)
+        py = np.floor(uv[:, 1] * layer.height).astype(np.int64)
+        inside = (px >= 0) & (px < layer.width) & (py >= 0) & (py < layer.height)
+        vals = np.where(inside, g[np.clip(py, 0, layer.height - 1), np.clip(px, 0, layer.width - 1)],
+                        out[yy.ravel(), xx.ravel()])
+        out[yy.ravel(), xx.ravel()] = vals
+    return out
+
+
+def _gate_layer_cells(cells: PageCells, original: np.ndarray, layers: list[Layer], geom: PageGeometry,
+                      cfg: EvalConfig, strict_words, recoverable: dict[int, int], latent: dict[int, int]
+                      ) -> tuple[dict[int, int], dict[int, int]]:
+    """Drop the layer evidence of word characters that fail the identity gate on the layer resampled
+    onto the render grid."""
+    informative = np.zeros(len(cells.cells), bool)
+    for i in range(len(cells.cells)):
+        rr, cc = cells.rows[i], cells.cols[i]
+        informative[i] = rr.size >= 4 and float(original[rr, cc].std()) >= cfg.cell_min_orig_std
+    by_xref = {la.xref: la for la in layers}
+    passed: dict[int, dict] = {}
+    for xref in {*recoverable.values(), *latent.values()}:
+        flagged: dict[tuple[str, int], set[int]] = {}
+        for i, x in [*recoverable.items(), *latent.items()]:
+            c = cells.cells[i]
+            if x == xref and c.word_id is not None:
+                flagged.setdefault((c.word_id, c.index), set()).add(c.band)
+        if not flagged:
+            continue
+        words = {u[0] for u in flagged}
+        out = _layer_on_render_grid(cells, by_xref[xref], geom, original.shape, words)
+        ci = cells.character_identity(original, out, informative, cfg, words=words)
+        passed[xref] = cells.gate(ci, flagged, strict_words, cfg)
+
+    def keep(i: int, xref: int) -> bool:
+        c = cells.cells[i]
+        return c.word_id is None or bool(passed.get(xref, {}).get((c.word_id, c.index)))
+
+    return ({i: x for i, x in recoverable.items() if keep(i, x)}, {i: x for i, x in latent.items() if keep(i, x)})
 
 
 # -- vector paths ---------------------------------------------------------------
