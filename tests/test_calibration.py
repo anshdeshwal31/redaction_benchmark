@@ -515,6 +515,132 @@ def test_identifying_slice_is_not_found_in_the_shared_part(kind, orig, fake, exp
         assert st == expected, st
 
 
+@pytest.mark.parametrize("kind, orig, fake, shift, expected", [
+    ("ID_CLAIM", "CLM-48213", "48213", "", "not safe"),
+    ("EMAIL", "brown@lawfirm.com.au", "brown@other.com.au", "brown@", "not safe"),
+    ("EMAIL", "smith@smithlaw.com.au", "smith@other.com.au", "smith@", "not safe"),
+    ("EMAIL", "smith@smithlaw.com.au", "ruth@smithlaw.com.au", "", "SAFE_REPLACED"),
+], ids=["prefix-dropped", "local-pushed", "local-pushed-onto-its-domain", "shorter-local-part"])
+def test_kept_slice_pushed_onto_the_shared_part_is_found(kind, orig, fake, shift, expected):
+    # Owner decision 2026-10-29 (3): shared structure excuses nothing else. In an image-only output the kept
+    # digits slid onto the dropped 'CLM-', or the kept local part pushed onto the old domain's place, are
+    # found by the slice search alone. Before, a match lying for the most part on the shared part's box was
+    # dropped, so these read SAFE_REPLACED. A match is now dropped only where the slice's text occurs in the
+    # shared part and the rest of that part is around it, so a correct fake whose shorter local part shifts
+    # the kept domain stays safe.
+    import pymupdf
+
+    from tests import address_fixtures as af
+
+    fx, ids = _one_mention(kind, [orig])
+    p, x0, y0 = fx.origin[ids[0]]
+    dx = pymupdf.get_text_length(shift, fontname=af.FONT, fontsize=af.SIZE) if shift else 0.0
+    out = af.raster(af.draw(fx, [("erase", ids[0]), ("text", p, x0 + dx, y0, fake)]), 300)
+    st = evaluate_output(fx.pdf, out, fx.gt, calib.V1, EvalConfig(dpi=150)).mention("m").status.value
+    if expected == "not safe":
+        assert st not in ("SAFE_REPLACED", "SAFE_REMOVED"), st
+    else:
+        assert st == expected, st
+
+
+def _names_on_line(line: str, names: dict[str, list[str]]):
+    """A one-line fictional page with PERSON_NAME (MUST) mentions ``names`` (id -> its words on the line)."""
+    from benchmark.schemas import GTMention, PiiType, Segment
+    from tests import address_fixtures as af
+
+    fx = af.render(af.one_case("slid", [(line, 0), ("Dated 3 May 2024", 1)], []))
+    l0 = [w for w in fx.gt.pages[0].words if w.line == "l0"]
+    ms, ids = [], {}
+    for mid, texts in names.items():
+        ids[mid] = [next(w.id for w in l0 if w.text == t) for t in texts]
+        ms.append(GTMention(id=mid, type=PiiType.PERSON_NAME, entity="E" + mid, text=" ".join(texts),
+                            segments=[Segment(page=0, words=ids[mid])]))
+    return af.Fixture(fx.pdf, fx.gt.model_copy(update={"mentions": ms}), fx.origin, fx.case), ids
+
+
+@pytest.mark.parametrize("fake", ["Will", "She", "Said", "Ruth"])
+def test_fake_equal_to_a_kept_word_on_its_line_is_a_replacement(fake):
+    # A name replaced in place by a fake that is also a word its line keeps ('Will' beside 'will'): the output
+    # line holds that word once more than the input kept it, so the fake was added, not slid. It read
+    # NOT_REPLACED on a text-layer output (and SAFE_REPLACED rasterised) before.
+    from tests import address_fixtures as af
+
+    fx, ids = _names_on_line("The claimant Jane said she will attend.", {"m": ["Jane"]})
+    out = af.draw(fx, [("replace", ids["m"][0], fake)])
+    assert evaluate_output(fx.pdf, out, fx.gt, calib.V1, EvalConfig(dpi=150)).mention("m").status.value \
+        == "SAFE_REPLACED"
+
+
+def test_fake_equal_to_another_mentions_original_is_a_replacement():
+    # 'Jones' replaced by 'Brown' while the other mention 'Brown' became 'Smith': another mention's MUST word
+    # must change and never slides, so it is no kept word of the line.
+    from tests import address_fixtures as af
+
+    fx, ids = _names_on_line("Report by Brown for Jones today.", {"mB": ["Brown"], "mJ": ["Jones"]})
+    out = af.draw(fx, [("replace", ids["mB"][0], "Smith"), ("replace", ids["mJ"][0], "Brown")])
+    ev = evaluate_output(fx.pdf, out, fx.gt, calib.V1, EvalConfig(dpi=150))
+    assert {m.mention_id: m.status.value for m in ev.mentions} == {"mB": "SAFE_REPLACED", "mJ": "SAFE_REPLACED"}
+
+
+def test_deleted_name_on_a_retypeset_line_is_not_replaced():
+    # The name deleted and the rest of the line typeset from its place: the kept words slid into it are no
+    # replacement (fix round 1), with the count rule and the whole-word rule in place.
+    from tests import address_fixtures as af
+
+    fx, ids = _names_on_line("The claimant Jane said she will attend.", {"m": ["Jane"]})
+    l0 = [w for w in fx.gt.pages[0].words if w.line == "l0"]
+    rest = l0[[w.id for w in l0].index(ids["m"][0]):]
+    p, x, y = fx.origin[rest[0].id]
+    out = af.draw(fx, [("erase", w.id) for w in rest] + [("text", p, x, y, " ".join(w.text for w in rest[1:]))])
+    assert evaluate_output(fx.pdf, out, fx.gt, calib.V1, EvalConfig(dpi=150)).mention("m").status.value \
+        == "NOT_REPLACED"
+
+
+def test_only_pieces_of_kept_words_are_new_text():
+    # A zone is slid only when it holds a whole kept word: 'Sign' where 'Signed' is kept, or a lone 'a', is
+    # new text (tool 2's squashed syn-rotate-attr and syn-rotated-content pages read NOT_REPLACED from
+    # such pieces).
+    from benchmark.evaluate.evaluator import _only_slid
+
+    kept = {"signed", "said", "she", "attend"}
+    assert not _only_slid("Sign", kept) and not _only_slid("a", kept) and not _only_slid("Lat", {"latest"})
+    assert _only_slid("said s", kept) and _only_slid("id she at", kept) and _only_slid("Said", kept)
+
+
+@pytest.mark.parametrize("fake, expected", [
+    (["Northmead NSW 2152"], "NOT_REPLACED"),
+    (["North Rocks NSW 2151"], "NOT_REPLACED"),
+    (["Port Macquarie NSW 2444"], "NOT_REPLACED"),
+    (["98 Coolabah Esplanade, North Rocks NSW 2151"], "SAFE_REPLACED"),
+], ids=["one-word-suburb", "two-word-suburb", "port-suburb", "both-faked"])
+def test_locality_fake_slid_onto_a_deleted_street_line_is_no_replacement(fake, expected):
+    # The street line '12 Smith Street,' deleted and only a locality fake typeset from its first word: E1 cuts
+    # the read-back where the splitter cuts an address, so the first word of a suburb of several words is the
+    # locality's, never new text of the street line. The read-back cut kept a one-word suburb before.
+    from tests import address_fixtures as af
+
+    fx = af.render(af.one_case("flow", [("Report prepared for the claimant.", 0),
+                                        ("Address: 12 Smith Street, Darlinghurst NSW 2150", 2),
+                                        ("The claimant attended on time.", 5)],
+                               [("A1", [[1, 1], [1, 2], [1, 3]], [[1, 4], [1, 5], [1, 6]])]))
+    ev = evaluate_output(fx.pdf, af.draw(fx, af.flowing(fx, "A1", fake)), fx.gt, calib.V1,
+                         EvalConfig(dpi=200, renderers=("mupdf",)))
+    assert {m.mention_id: m.status.value for m in ev.mentions} == {"A1": expected, "A1-loc": "SAFE_REPLACED"}
+
+
+def test_two_line_address_read_back_is_cut_at_the_line_change():
+    # A street line with no number, street type or comma ('Kilbride Station') over its locality: the read-back
+    # of a correct fake is cut at the line change, so the street line's fake is its replacement.
+    from tests import address_fixtures as af
+
+    fx = af.render(af.one_case("lines", [("Report prepared for the claimant.", 0), ("Address: Kilbride Station", 2),
+                                         ("Berrima NSW 2577", 3), ("The claimant attended on time.", 5)],
+                               [("A1", [[1, 1], [1, 2]], [[2, 0], [2, 1], [2, 2]])]))
+    out = af.draw(fx, af.flowing(fx, "A1", ["Wattle Farm", "Bowral NSW 2576"]))
+    ev = evaluate_output(fx.pdf, out, fx.gt, calib.V1, EvalConfig(dpi=200, renderers=("mupdf",)))
+    assert {m.mention_id: m.status.value for m in ev.mentions} == {"A1": "SAFE_REPLACED", "A1-loc": "SAFE_REPLACED"}
+
+
 def _locality_case(locality: str, postcode_fake: str, raster: bool = False):
     """'Address: 12 Smith Street, <locality>' on a fictional page, every identifying word replaced in place by a
     correct fake, the shared street type and state kept, the postcode written as ``postcode_fake``."""

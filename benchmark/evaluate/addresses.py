@@ -203,6 +203,34 @@ def unit_readback(unit: AddressUnit, gt: GTDocument, tokens: dict[int, list[Toke
     return [t for _, _, t in sorted(picked.values(), key=lambda x: (x[0], x[1]))]
 
 
+def line_tokens(tokens: list[Token], line: Line, shift, cfg: EvalConfig) -> list[Token]:
+    """The tokens on a GT line: centre (less the page's registration shift) within ``searchable_band`` x H
+    of the line across it, and along it within ``moved_along`` x H of its words."""
+    a0 = min(_interval(w.poly, line.u)[0] for w in line.words) - cfg.moved_along * line.h
+    a1 = max(_interval(w.poly, line.u)[1] for w in line.words) + cfg.moved_along * line.h
+    sh = np.asarray(shift, float)
+    out = []
+    for t in tokens:
+        c = np.asarray(t.centre, float) - sh
+        if abs(float(c @ line.v) - line.across) <= cfg.searchable_band * line.h and a0 <= float(c @ line.u) <= a1:
+            out.append(t)
+    return out
+
+
+def readback_lines(unit: AddressUnit, rb: list[Token], lines: dict[int, list[Line]],
+                   shift_pt: dict[int, tuple[float, float]]) -> list[str]:
+    """The unit line each read-back token lies on (the nearest across it), so a cut of the read-back sees
+    its line changes."""
+    mine = [ln for pg, key in unit.lines for ln in lines.get(pg, []) if ln.key == key]
+    out = []
+    for t in rb:
+        c = np.asarray(t.centre, float) - np.asarray(shift_pt.get(t.page, (0.0, 0.0)), float)
+        ln = min((ln for ln in mine if ln.page == t.page), key=lambda ln: abs(float(c @ ln.v) - ln.across),
+                 default=None)
+        out.append(f"{t.page}:{ln.key if ln is not None else ''}")
+    return out
+
+
 def _suburb_word(text: str, comma_ok: bool) -> bool:
     """A word that can end a suburb: letters and no digit; a street type closed by a comma ('Road,') only
     where the original suburb was closed by one too ('Glenelg, South Australia')."""

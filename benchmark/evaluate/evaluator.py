@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import io
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import cv2
 import numpy as np
@@ -27,7 +27,7 @@ import shapely
 from .. import ocr
 from ..forensics.inspect import revision_prefixes
 from ..geometry import as_poly, dilate, geometry_from_pikepdf_page, rasterize, to_shapely
-from ..gt.address_split import STATE_CODES, postcode_in_state, read_end
+from ..gt.address_split import STATE_CODES, locality_start, postcode_in_state
 from ..gt.policy import Effective, resolve
 from ..gt.shared_roles import STRIP as SHARED_STRIP
 from ..gt.shared_roles import SharedUnits, document_shared_units
@@ -37,11 +37,13 @@ from .addresses import (
     Token,
     at_place,
     is_new_text,
+    line_tokens,
     locality_roles,
     locality_shape,
     ocr_tokens,
     page_lines,
     page_tokens,
+    readback_lines,
     token_survivals,
     unit_readback,
     unit_regions,
@@ -205,23 +207,22 @@ def _is_new_text(word_text: str, needle: str, got: str | None, cfg: EvalConfig) 
 
 
 def _only_slid(got: str | None, slid: set[str]) -> bool:
-    """Is the text at a word (letters and digits) made only of words its line kept, whole, with at most the
-    end of one before them and the start of one after them? A line re-typeset after a deletion slides
-    those words (the mention's shared words, the line's other words) into an erased word's place; they
-    are never its replacement. Kept words of one character are left out, so a fake is never cut up."""
+    """Is the text at a word (letters and digits) made of words its line kept, at least one of them whole,
+    with at most the end of one before them and the start of one after them? A line re-typeset after a
+    deletion slides those words (the mention's shared words, the line's other kept words) into an erased
+    word's place; they are never its replacement. Kept words of one character are left out, and pieces of
+    kept words alone are new text ('Sign' where 'Signed' is kept), so a fake is never cut up."""
     left = _alnum(got or "")
     whole = {t for t in slid if len(t) >= 2}
     if not left or not whole:
         return False
     n = len(left)
-    # ok[i]: left[:i] is an end fragment, then whole kept words
-    ok = [False] * (n + 1)
-    ok[0] = True
+    # end[i]: left[:i] is empty or the end of a kept word; run[i]: left[:i] is that, then whole kept words
+    end = [i == 0 or any(t.endswith(left[:i]) for t in whole) for i in range(n + 1)]
+    run = [False] * (n + 1)
     for i in range(1, n + 1):
-        ok[i] = any(t.endswith(left[:i]) for t in whole) or any(ok[i - len(t)] and left[i - len(t):i] == t
-                                                               for t in whole if len(t) <= i)
-    return any(ok[i] and (i == n or any(t.startswith(left[i:]) for t in whole)) for i in range(n + 1)
-               if i > 0 or any(t.startswith(left) for t in whole))
+        run[i] = any(left[i - len(t):i] == t and (end[i - len(t)] or run[i - len(t)]) for t in whole if len(t) <= i)
+    return any(run[i] and (i == n or any(t.startswith(left[i:]) for t in whole)) for i in range(1, n + 1))
 
 
 def _text_like_ink(gray: np.ndarray, polys: list[np.ndarray], scale: float, min_transitions: int = 4) -> bool:
@@ -887,11 +888,13 @@ def evaluate_output(
         # The street line's own new text: read-back tokens before the locality's, never the words its lines
         # keep. A line re-typeset after a deletion slides those, and the locality's fake, into an erased street
         # word's place; their ink is blanked for the pixel tests too.
+        # The read-back is cut where the splitter would cut it (a street type, a comma or a line change before
+        # the suburb, else the suburb rules), so a suburb of several words ('North Rocks') stays whole.
         street_rb, other_rb = list(rb), []
         if unit.locality is not None and rb:
-            end = read_end([t.text for t in rb], overseas=True)
-            if end is not None and end.anchor is not None and end.anchor >= 1:
-                street_rb, other_rb = rb[:end.anchor - 1], rb[end.anchor - 1:]
+            k = locality_start([t.text for t in rb], readback_lines(unit, rb, lines, shift_pt))
+            if k is not None:
+                street_rb, other_rb = rb[:k], rb[k:]
         other_rb += [t for t in street_rb if _alnum(t.text) in slid]
         street_rb = [t for t in street_rb if _alnum(t.text) not in slid]
         polys = defaultdict(list)
@@ -918,6 +921,20 @@ def evaluate_output(
     for page in gt.pages:
         for w in page.words:
             line_words[(page.index, w.line)].append(w)
+    # Words a line keeps: those no MUST rule decides, and shared words (whatever their pair check).
+    kept_shared = {wid for su in shared.values() for wid in su.full}
+    line_of = {(pg, ln.key): ln for pg, lns in lines.items() for ln in lns}
+    on_line_n: dict[tuple[int, str | None], Counter] = {}
+
+    def tokens_on_line(pg: int, key: str | None) -> Counter:
+        """The output's tokens (letters and digits) on a GT line, counted."""
+        if (pg, key) not in on_line_n:
+            ln = line_of.get((pg, key)) if key is not None else None
+            sh = shift_pt.get(pg, (0.0, 0.0))
+            on_line_n[(pg, key)] = Counter() if ln is None else Counter(
+                _alnum(t.text) for t in line_tokens(tokens_by_page.get(pg) or [], ln, sh, cfg))
+        return on_line_n[(pg, key)]
+
     outcomes: list[MentionOutcome] = []
     excused_words: set[str] = set()  # whole words excused as shared structure (pairs that held)
     for m in gt.mentions:
@@ -1031,12 +1048,19 @@ def evaluate_output(
         polys_by_page: dict[int, list[np.ndarray]] = defaultdict(list)
         for seg in m.segments:
             polys_by_page[seg.page].extend(as_poly(words[wid][1].poly) for wid in seg.words)
-        # The words the mention's lines keep (its shared words, the lines' other words): a line re-typeset
-        # after a deletion slides them into an erased word's place, and they are never its replacement.
+        # The words the mention's lines keep (its shared words, the lines' other kept words): a line re-typeset
+        # after a deletion slides them into an erased word's place, and they are never its replacement. Another
+        # mention's MUST words must change and never slide, and a word the output's lines hold more often than
+        # the input's lines kept it was added there: a fake equal to a kept word ('Will' for 'Jane' on a line
+        # keeping 'will') is a replacement.
         ident_ids = {wid for (_, wid) in ident} if unit is not None else \
             {wid for (_, wid) in req_all if wid not in su.full}
-        slid = {_alnum(x.text) for pg, wid in req_all for x in line_words.get((pg, words[wid][1].line), ())
-                if x.id not in ident_ids and _alnum(x.text)}
+        mine_lines = {(pg, words[wid][1].line) for pg, wid in req_all}
+        kept_n = Counter(_alnum(x.text) for key in mine_lines for x in line_words.get(key, ())
+                         if x.id not in ident_ids and _alnum(x.text)
+                         and (requirement[x.id] != Effective.MUST.value or x.id in kept_shared))
+        out_n = sum((tokens_on_line(*key) for key in mine_lines), Counter())
+        slid = {t for t, n in kept_n.items() if out_n[t] <= n}
 
         def got_new(pg: int, wid: str, t: str) -> bool:
             # A word's shared characters (an email's domain, an identifier's prefix), and any fragment of
@@ -1063,7 +1087,9 @@ def evaluate_output(
             replaced, shape, more = e1(m, unit, ident, su.full, slid)
             review_flags += more
         else:
-            new_text = any(got_new(pg, wid, t) for (pg, wid), t in req_all.items())
+            # New text is looked for at the identifying words: a shared word's place ('Pty' of a kept legal form)
+            # is kept structure, and what a re-typeset line slides there is no replacement.
+            new_text = any(got_new(pg, wid, t) for (pg, wid), t in req_all.items() if wid not in su.full)
             replaced = new_text or any(_text_like_ink(blanked(pg, slid_tokens(pg, polys, slid)), polys, scale)
                                        for pg, polys in polys_by_page.items() if pg in primary_out)
         region_polys: dict[int, list[np.ndarray]] = defaultdict(list)

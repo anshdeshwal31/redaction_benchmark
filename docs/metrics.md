@@ -389,11 +389,22 @@ paths), E3's searched words, and detection's and the effective-token metrics' to
 neutral: neither required nor an extra). A word with shared characters is searched in the text layer
 by its identifying slice, with the text's own copy of each shared part cut out first and a slice of
 digits matched only as a whole digit run ('04' of '0404' is not found in a fake '0498', nor 'smith' in
-a kept '@smithlaw.com.au'); a template match of the slice lying for the most part on the word's
-shared characters is the fake's own shared part. Shared units are never the replacement: a mention
+a kept '@smithlaw.com.au'). In pixels a template match of the slice is the fake's own shared part only
+where the slice's text occurs in the shared part ('smith' in '@smithlaw') and the rest of that shared
+part is the original's glyphs around the match at the same transform (identity gate), wherever the
+fake put it; with nothing else shared ('04' of '0404' on a kept '04') the match must lie for the most
+part on that occurrence's place. A slice that never occurs in its shared part ('48213' in 'CLM-') is
+never excused, so kept digits slid onto a dropped prefix, or a kept local part pushed onto the old
+domain's place, are found in an image-only output. Shared units are never the replacement: a mention
 left with only a domain, a prefix, a state or a street type is `NOT_REPLACED`, also when a line
 re-typeset after the deletion slides them (or the line's other kept words, or the locality's fake)
-into an erased word's place: their text and ink there are left out of the replacement tests. A mention whose every letter and digit would be
+into an erased word's place: their text and ink there are left out of the replacement tests, and new
+text is looked for at the identifying words only. The line's kept words are the words no MUST rule
+decides and the shared words of any mention (another mention's MUST words must change and never
+slide). A word counts as slid only when the output's lines hold it no more often than the input's
+lines kept it (a fake 'Will' for 'Jane' on a line keeping 'will' adds one and is a replacement), and
+the text at an erased word is slid only when it holds at least one whole kept word: pieces of kept
+words alone ('Sign' where 'Signed' is kept) are new text. A mention whose every letter and digit would be
 shared is judged in full.
 
 **The pair.** The state and the postcode's prefix digits are excused only together: when the prefix
@@ -427,7 +438,10 @@ locality on its own, or an unsplit address. Each part is judged with three rules
 
 - **E1, replacement per part.** The unit's read-back is the output's text-layer tokens on the unit's
   lines, between the nearest kept words before and after the unit at their displayed place (else
-  `moved_along` word heights). A street line is replaced when an identifying word (the part's words
+  `moved_along` word heights). The read-back is cut into street line and locality where the splitter
+  cuts an address (after a street type, a comma, a PO box number or a line change, else by the suburb
+  rules), so a suburb of several words ('North Rocks NSW 2151') re-typeset onto a deleted street line
+  is the locality's, never the street line's new text. A street line is replaced when an identifying word (the part's words
   less its shared ones) has new text in the read-back at its place, or new ink on at least
   `address_new_ink_fraction` 0.5 of its informative bands (visible original bands and displaced
   originals' boxes left out) where that ink looks like text (the edges of a plain box make a word's
@@ -506,7 +520,7 @@ the same evaluation version and digest, and the same summary keys:
    original text holds it outside the required mentions plus the required words kept in place: its
    characters are visible in every mention holding it, since the text does not say which one moved. A
    mention is **replaced** when the diff puts new text with a letter or digit at it (read as the whole
-   tokens of the redacted text over the mention) that is not a placeholder: a bracketed tag ('[REDACTED]', '<PERSON>', '{NAME_1}': letters in capitals, or only words for a PII type or a redaction), never a fake written in brackets ('(Ruth)', '<ruth.dunbar@example.com>'); a run of X, asterisks
+   tokens of the redacted text over the mention) that is not a placeholder: a bracketed tag ('[REDACTED]', '<PERSON>', '{NAME_1}', '[Claimant]': only words for a PII type, a role or a redaction in any case, or letters in capitals with no digit), never a fake written in brackets ('(Ruth)', '<ruth.dunbar@example.com>', an identifier '(CLM-70596)'); a run of X, asterisks
    or block characters, a tag in capitals naming a PII type or a redaction ('PERSON_2', 'REDACTED'), or
    one text standing for every replaced required mention with different originals; an address's
    locality also needs E1's locality shape on the new text over the unit. Otherwise the status follows
@@ -565,7 +579,13 @@ for review; none lowers a pass mark.
   neither can pair (OCR never decides): the locality reads `PARTIAL` (0.2, about 0.16). A state with no
   postcode after it is excused unchecked. A street type in a corner form is not
   shared, so a correct fake keeping 'Streets' in 'Corner of Smith and King Streets' reads `PARTIAL`.
-  'Mount Victoria 2786' shares the postcode's '2' as a plain character (no state word).
+  'Mount Victoria 2786' shares the postcode's '2' as a plain character (no state word). A kept
+  identifying slice whose text and surroundings equal the shared part's ('smith' pushed onto the
+  domain of 'smith@smith.com.au' with the domain kept) cannot be told from it in pixels.
+- **Re-typeset lines.** A word erased from a line typeset again is `NOT_REPLACED` only when its place
+  holds at least one whole kept word: where only pieces of kept words land there (a short erased word),
+  they read as new text and the mention as replaced. On an image-only output nothing says which word
+  slid there, so a kept word's ink at an erased place reads as replacement ink.
 - **Address units.** The rules are checked on the fictional address case table and synthetic
   addresses; no tool output has yet exercised box, DX, corner, multi-line or form addresses. The text
   layer decides E1 and E3: a correct locality drawn only in pixels under a text layer that holds no

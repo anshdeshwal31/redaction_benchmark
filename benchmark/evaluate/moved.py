@@ -706,7 +706,9 @@ def find_slices(gt: GTDocument, needle_cut: Mapping[str, tuple[int, int]], pcs: 
     visible in place and its whole word was not found: its own original image, the moved search's
     window and scales, moved_match, and the band test at the transform finding at least
     word_preserved_fraction of its characters; matches at scale 1 within moved_zero_px of the GT place
-    are left to the in-place test."""
+    are left to the in-place test. A match on the fake's own shared part (the slice's text occurring in
+    it, with the rest of the shared part around the match: :func:`_on_own_shared`) is dropped; a slice
+    that never occurs in its shared part ('48213' in 'CLM-') never is."""
     scale = cfg.dpi / 72.0
     words = gt.word_index()
     out: list[tuple[int, tuple[str, int]]] = []
@@ -738,32 +740,64 @@ def find_slices(gt: GTDocument, needle_cut: Mapping[str, tuple[int, int]], pcs: 
         if t.size == 0 or t.std() < 1.0:
             continue
         tpl = dict(t=t, c0=c0, r0=r0, c1=c1, r1=r1, box=(x0, y0, x1, y1), hpt=hpt, ang=ang, vertical=vertical)
-        # The word's shared characters (the prefix or domain a fake may keep, in place): a match lying for
-        # the most part on them is the fake's own shared part ('04' of '0404' on a fake's '04', 'smith' in
-        # '@smithlaw'), never the slice pushed along.
-        rest = [i for i in pc.word_cells.get(wid, []) if not a <= pc.cells[i].index < b]
-        rest_r = np.concatenate([pc.rows[i] for i in rest]) if rest else np.zeros(0, np.int64)
-        rest_c = np.concatenate([pc.cols[i] for i in rest]) if rest else np.zeros(0, np.int64)
-        shared_box = ((float(rest_c.min()), float(rest_r.min()), float(rest_c.max() + 1), float(rest_r.max() + 1))
-                      if rest_r.size else None)
+        own = _own_shared_parts(pc, wid, w.text, a, b)
         best = None
         for c in candidates(o, x, w, cfg, None, None, [], tpl=tpl):
             if c["score"] < cfg.moved_match:
                 continue
             if abs(c["s"] - 1.0) < 1e-6 and math.hypot(c["dx_pt"], c["dy_pt"]) * scale <= cfg.moved_zero_px:
                 continue
-            if shared_box is not None:
-                fb = (x0 * c["s"] + c["tx"], y0 * c["s"] + c["ty"], x1 * c["s"] + c["tx"], y1 * c["s"] + c["ty"])
-                iw = min(fb[2], shared_box[2]) - max(fb[0], shared_box[0])
-                ih = min(fb[3], shared_box[3]) - max(fb[1], shared_box[1])
-                if iw > 0 and ih > 0 and iw * ih >= 0.5 * (fb[2] - fb[0]) * (fb[3] - fb[1]):
-                    continue
+            if best is not None and c["score"] <= best["score"]:
+                continue
             v = pc.word_fraction_at(wid, o, x, c["s"], c["tx"], c["ty"], cfg, chars=(a, b))
-            if v is not None and v >= cfg.word_preserved_fraction and (best is None or c["score"] > best["score"]):
-                best = c
+            if v is None or v < cfg.word_preserved_fraction:
+                continue
+            if any(_on_own_shared(pc, wid, o, x, c, (x0, y0, x1, y1), ob, around, cfg) for ob, around in own):
+                continue
+            best = c
         if best is not None:
             out.extend((pg, u) for u in us)
     return out
+
+
+def _own_shared_parts(pc: PageCells, wid: str, text: str, a: int, b: int
+                      ) -> list[tuple[tuple[float, float, float, float], frozenset[int]]]:
+    """Where the identifying slice ``text[a:b]`` also occurs inside the word's shared part ('04' of '0404'
+    in its prefix '04', 'smith' in the domain '@smithlaw'): each occurrence's glyph box on the original's
+    grid, with the word's other shared characters around it."""
+    sl, out = text[a:b], []
+    for j in range(len(text) - len(sl) + 1):
+        if text[j:j + len(sl)] != sl or a - len(sl) < j < b:
+            continue
+        idxs = [i for i in pc.word_cells.get(wid, []) if j <= pc.cells[i].index < j + len(sl)]
+        rr = np.concatenate([pc.rows[i] for i in idxs]) if idxs else np.zeros(0, np.int64)
+        cc = np.concatenate([pc.cols[i] for i in idxs]) if idxs else np.zeros(0, np.int64)
+        if rr.size == 0:
+            continue
+        around = frozenset(k for k in range(len(text)) if not a <= k < b and not j <= k < j + len(sl))
+        out.append(((float(cc.min()), float(rr.min()), float(cc.max() + 1), float(rr.max() + 1)), around))
+    return out
+
+
+def _on_own_shared(pc: PageCells, wid: str, o: np.ndarray, x: np.ndarray, c: Mapping,
+                   box: tuple[float, float, float, float], ob: tuple[float, float, float, float],
+                   around: frozenset[int], cfg: EvalConfig) -> bool:
+    """Is a slice's match (candidate ``c``, the slice's original box ``box``) the fake's own shared part at
+    the occurrence ``ob``? The rest of the shared part must be the original's glyphs around the match at the
+    same transform (identity gate), wherever the shared part sits: a fake local part of another width shifts
+    the domain whole, while a kept local part pushed onto the old domain's place has no domain around it.
+    With no other shared character (the prefix '04' is the whole occurrence) the match must lie for the most
+    part on the occurrence's own place."""
+    s, tx, ty = c["s"], c["tx"], c["ty"]
+    if around:
+        v = pc.word_fraction_at(wid, o, x, s, tx + (box[0] - ob[0]) * s, ty + (box[1] - ob[1]) * s, cfg,
+                                gated=True, chars=around)
+        if v is not None:
+            return v >= cfg.word_preserved_fraction
+    fb = (box[0] * s + tx, box[1] * s + ty, box[2] * s + tx, box[3] * s + ty)
+    iw = min(fb[2], ob[2]) - max(fb[0], ob[0])
+    ih = min(fb[3], ob[3]) - max(fb[1], ob[1])
+    return iw > 0 and ih > 0 and iw * ih >= 0.5 * (fb[2] - fb[0]) * (fb[3] - fb[1])
 
 
 def refine_chars(pc: PageCells, wid: str, ks, o: np.ndarray, x: np.ndarray, s: float, tx: float, ty: float

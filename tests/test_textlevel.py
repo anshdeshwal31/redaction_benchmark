@@ -132,6 +132,21 @@ def test_placeholder_forms():
         assert is_placeholder(t), t
     for t in ("<ruth.dunbar@example.com>", "<ruth.dunbar@example.com>,", "(Ruth)", "(Marsden),", "[Dunbar]"):
         assert not is_placeholder(t), t
+    # A role or redaction word in brackets is a tag in any case; an identifier in brackets is a fake.
+    for t in ("[Claimant]", "[Patient]", "[Client]", "[Deleted]", "[Omitted]", "[Private]", "<Confidential>",
+              "[CLAIMANT_1]", "{PERSON_2}"):
+        assert is_placeholder(t), t
+    for t in ("(CLM-70596)", "[CLM-70596]", "(CLM-70596),"):
+        assert not is_placeholder(t), t
+
+
+def test_a_role_tag_in_brackets_is_not_a_replacement():
+    # 'Ruth Dunbar' written as '[Claimant]' (every other required mention faked): a title-case role tag is
+    # no realistic fake. It read SAFE_REPLACED and the document clean before.
+    m2 = _words_of("m2")
+    ev = evaluate(texts(faked(**{m2[0]: "[Claimant]", **dict.fromkeys(m2[1:], "")})))
+    assert ev.mention("m2").status is MentionStatus.NOT_REPLACED
+    assert not ev.summary["clean_document"]
 
 
 def test_one_text_for_every_mention_is_a_placeholder():
@@ -212,10 +227,12 @@ def _words_of(mid: str) -> list[str]:
 def test_fakes_written_in_brackets_are_replacements():
     # 'From: Ruth Dunbar <ruth.dunbar@example.com>': a realistic fake in angle brackets or parentheses is a
     # replacement, not a placeholder (it read NOT_REPLACED, and the document could never be clean).
-    em, m2 = _words_of("em1"), _words_of("m2")
-    ev = evaluate(texts(faked(**{em[0]: "<ruth.dunbar@example.com>", m2[-1]: "(Dunbar)"})))
+    em, m2, clm0 = _words_of("em1"), _words_of("m2"), _words_of("clm0")
+    ev = evaluate(texts(faked(**{em[0]: "<ruth.dunbar@example.com>", m2[-1]: "(Dunbar)", clm0[0]: "(CLM-70596)"})))
     assert ev.mention("em1").status is MentionStatus.SAFE_REPLACED
     assert ev.mention("m2").status is MentionStatus.SAFE_REPLACED
+    # An identifier in capitals in brackets is a fake too (it read NOT_REPLACED as a capitals tag).
+    assert ev.mention("clm0").status is MentionStatus.SAFE_REPLACED
     assert ev.summary["clean_document"]
 
 

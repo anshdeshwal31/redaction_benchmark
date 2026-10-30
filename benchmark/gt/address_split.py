@@ -367,6 +367,16 @@ def _boundary(toks: list[_Tok], overseas: bool = False) -> tuple[int | None, boo
     return anchor - 1, False, "no boundary before the suburb; assumed a one-word suburb"
 
 
+def locality_start(texts: list[str], lines: list | None = None) -> int | None:
+    """Where the locality starts among an address's words read back from an output (in reading order;
+    ``lines`` the line each was read on), cut as the splitter cuts an unsplit address: after a street
+    type, a comma, a PO box number or a line change, else by the suburb rules (foreign countries and 'IN
+    YOUR CAPITAL CITY' included). 0 when the words are a place on their own ('North Rocks NSW 2151');
+    None when no state, postcode or country ends them."""
+    toks = [_Tok(0, 0, f"t{k}", t, None if lines is None else lines[k]) for k, t in enumerate(texts)]
+    return _boundary(toks, overseas=True)[0]
+
+
 def _locality_start(toks: list[_Tok]) -> tuple[int | None, bool, str]:
     """Index of the first locality token, whether the rules are confident, and why."""
     k, confident, reason = _boundary(toks)

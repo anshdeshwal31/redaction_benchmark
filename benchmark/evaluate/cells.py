@@ -325,17 +325,18 @@ class PageCells:
 
     def word_fraction_at(self, word_id: str, original: np.ndarray, output: np.ndarray, s: float, tx: float,
                          ty: float, cfg: EvalConfig, gated: bool = False, strict_words=None,
-                         chars: tuple[int, int] | None = None) -> float | None:
-        """Share of the word's characters (those in [a, b) with ``chars``) the band test finds when the
-        output is read at output_px = s * original_px + (tx, ty), sampled bilinearly (None: no
-        informative character).
+                         chars: tuple[int, int] | frozenset[int] | None = None) -> float | None:
+        """Share of the word's characters (those in [a, b) with ``chars`` a pair, those listed with a set)
+        the band test finds when the output is read at output_px = s * original_px + (tx, ty), sampled
+        bilinearly (None: no informative character).
 
         With ``gated`` the character identity gate of :meth:`stats` judges the flagged characters too
         (``strict_words`` as there), on the output resampled to the original's grid around the word.
         At the identity transform the band-only share equals the in-place test's."""
         idxs = self.word_cells.get(word_id, [])
         if chars is not None:
-            idxs = [i for i in idxs if chars[0] <= self.cells[i].index < chars[1]]
+            keep = chars if isinstance(chars, (set, frozenset)) else range(*chars)
+            idxs = [i for i in idxs if self.cells[i].index in keep]
         if not idxs:
             return None
         inf, vis = self._band_test_at(idxs, original, output, s, tx, ty, cfg)

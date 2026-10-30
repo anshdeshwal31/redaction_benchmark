@@ -65,6 +65,10 @@ EVIDENCE = "text"
 _TAG_WORDS = ({p.value for p in PiiType} | {w for p in PiiType for w in p.value.split("_")}
               | {"REDACTED", "REMOVED", "WITHHELD", "HIDDEN", "MASKED", "ANONYMISED", "ANONYMIZED", "NAME", "PERSON",
                  "PII", "ID", "NUMBER", "ORGANIZATION"})
+# In brackets, in any case, a role or redaction word is a tag too ('[Claimant]', '<Confidential>').
+_BRACKET_TAG_WORDS = _TAG_WORDS | {"CLAIMANT", "PATIENT", "CLIENT", "DOCTOR", "PLAINTIFF", "DEFENDANT", "APPLICANT",
+                                   "RESPONDENT", "WITNESS", "EMPLOYER", "INSURER", "SOLICITOR", "WORKER", "DELETED",
+                                   "OMITTED", "PRIVATE", "CONFIDENTIAL", "SUPPRESSED"}
 _BLOCKS = set("Xx*#█▇▆▅▄▃▂▁■□▓▒░▉▊▋▌▍▎▏-_.·•")
 _BRACKETED = re.compile(r"^[\[<{(].*[^\W\d_].*[\]>})][.,;:]*$")
 
@@ -77,9 +81,10 @@ def _key(token: str) -> str:
 
 def is_placeholder(token: str) -> bool:
     """A redaction placeholder rather than a fake: a bracketed tag ('[REDACTED]', '<PERSON>', '{NAME_1}',
-    '[Redacted]': letters in capitals, or only words for a PII type or a redaction), a run of X, asterisks
-    or block characters, or a tag in capitals naming a PII type or a redaction ('PERSON_1', 'REDACTED'). A
-    fake written in brackets is no tag: '(Ruth)', '[Dunbar]', '<ruth.dunbar@example.com>'."""
+    '[Redacted]', '[Claimant]': only words for a PII type, a role or a redaction in any case, or letters in
+    capitals with no digit), a run of X, asterisks or block characters, or a tag in capitals naming a PII
+    type or a redaction ('PERSON_1', 'REDACTED'). A fake written in brackets is no tag: '(Ruth)',
+    '[Dunbar]', '<ruth.dunbar@example.com>', and an identifier '(CLM-70596)'."""
     t = token.strip(".,;:")
     if not t:
         return True
@@ -87,9 +92,11 @@ def is_placeholder(token: str) -> bool:
         inside = t.rstrip(".,;:")[1:-1]
         words = re.sub(r"[^\W\d_]+", lambda m: " " + m.group() + " ", inside).split()
         letters = [w for w in words if w.isalpha()]
-        if "@" not in inside and (inside.upper() == inside or all(w.upper() in _TAG_WORDS for w in letters)):
+        if "@" in inside:
+            return False
+        if all(w.upper() in _BRACKET_TAG_WORDS for w in letters):
             return True
-        return False
+        return inside.upper() == inside and not any(ch.isdigit() for ch in inside)
     if set(t) <= _BLOCKS:
         return True
     letters = re.sub(r"[\d_\-]+", " ", t).split()
