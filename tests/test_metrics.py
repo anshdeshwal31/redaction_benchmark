@@ -518,11 +518,11 @@ def _address_case(case_id="t-e6", line="Address: 12 Smith Street, Parramatta NSW
 def _pseud(fx, out, evaluated=False):
     from tests import calib
 
-    res = resolve(fx.gt, calib.V1_SHARED)
+    res = resolve(fx.gt, calib.V1)
     if not evaluated:
         return evaluate_pseudonyms(fx.gt, res, out)
     cfg = EvalConfig(dpi=200, renderers=("mupdf",))
-    return evaluate_pseudonyms(fx.gt, res, out, evaluate_output(fx.pdf, out, fx.gt, calib.V1_SHARED, cfg), cfg)
+    return evaluate_pseudonyms(fx.gt, res, out, evaluate_output(fx.pdf, out, fx.gt, calib.V1, cfg), cfg)
 
 
 @pytest.mark.parametrize("evaluated", [False, True])

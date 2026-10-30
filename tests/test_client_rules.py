@@ -1,4 +1,4 @@
-"""The client's decisions (policies/au-medicolegal-v1.yaml, eval-0.4-dev).
+"""The client's decisions (policies/au-medicolegal-v1.yaml, policy 1.2.0, eval-0.4).
 
 - Q7: hiding a required item instead of replacing it is NOT_REPLACED: not a leak, not a pass.
 - Q6: signatures and other marks count as replaced only when a stand-in is drawn in their place;
@@ -7,8 +7,9 @@
 - Q11: kept words must stay searchable; a changed page size is accepted.
 - Q16: damaging more than 1% of a document's ordinary words fails it.
 - The tool's own safety check is graded against the evaluator's verdict.
-- Policy 1.1.1 (the rules of 1.1.0, reworded) departs from two answers on purpose (whole addresses
-  replaced, role words kept); every report shows the departures. Its rules digest ignores wording.
+- Policy 1.2.0 departs from two answers on purpose (whole addresses replaced, role words kept); every
+  report shows the departures. Its rules digest ignores wording; 1.1.1 had the rules of 1.1.0, reworded,
+  and 1.2.0 adds the shared roles a realistic fake may keep and the place-kind and street subtypes.
 - A mock that follows the client's rules completely is clean on every encoding: the ceiling. It
   gives each person one fake across a matter, and each phone and Medicare number a fake of its own.
 """
@@ -100,6 +101,10 @@ def test_v1_requires_replacement_of_the_whole_address_and_keeps_dates():
     ("locality", Requirement.MUST), ("suburb", Requirement.MUST_NOT), ("city", Requirement.MUST_NOT),
     ("region", Requirement.MUST_NOT), ("state", Requirement.MUST_NOT), ("country", Requirement.MUST_NOT),
     ("postcode", Requirement.MUST_NOT), ("place_of_declaration", Requirement.MUST_NOT),
+    # policy 1.2.0: places after a label naming their kind, and streets in running text (owner rulings 2 and 3)
+    ("place_of_birth", Requirement.MUST_NOT), ("place_of_injury", Requirement.MUST_NOT),
+    ("place_of_accident", Requirement.MUST_NOT), ("place_of_incident", Requirement.MUST_NOT),
+    ("street", Requirement.MUST_NOT),
 ])
 def test_a_place_on_its_own_is_kept_but_the_locality_of_an_address_is_replaced(subtype, requirement):
     # No fixture has a place mentioned on its own, so one is added to an ordinary word.
@@ -428,12 +433,12 @@ def test_matter_consistency_compares_documents_of_a_matter():
     assert rows[0]["documents"] == "DPI,IME" and rows[0]["distinct_replacements"] == 2
 
 
-# -- departures from the client's answers (policy 1.1.1, the rules of 1.1.0) ------------------------
+# -- departures from the client's answers, and the shared roles (policy 1.2.0) ---------------------
 
 
 def test_v1_records_its_two_departures_from_the_client():
     by_id = {d.id: d for d in V1.deviations}
-    assert V1.version == "1.1.1" and set(by_id) == {"whole-address", "role-words"}
+    assert V1.version == "1.2.0" and set(by_id) == {"whole-address", "role-words"}
     assert by_id["whole-address"].question == "Q4" and by_id["whole-address"].rules == ["address-locality-replaced"]
     assert by_id["role-words"].question == "Q10" and by_id["role-words"].rules == []
     assert all(d.client_answer and d.applied and d.reason for d in V1.deviations)
@@ -465,17 +470,67 @@ def test_rules_digest_ignores_wording():
     assert rules_digest(edited(lambda d: d["rules"][0].update(requirement="MAY"))) != digest
     assert rules_digest(edited(lambda d: d["rules"][-1]["when"].update(cls=["MEDICATION"]))) != digest
     places = next(i for i, r in enumerate(V1.rules) if r.id == "places-kept")
-    assert rules_digest(edited(lambda d: d["rules"][places]["when"]["subtype"].append("street"))) != digest
+    assert rules_digest(edited(lambda d: d["rules"][places]["when"]["subtype"].remove("street"))) != digest
     assert rules_digest(edited(lambda d: d.update(default_mention="MUST"))) != digest
     assert rules_digest(edited(lambda d: d["deviations"][0].update(rules=[]))) != digest
     assert rules_digest(DRAFT) != digest
     # Shared roles (eval-0.4) are rules; their notes are wording. No shared roles hash as before them.
+    assert rules_digest(edited(lambda d: [r.update(note="Another.") for r in d["shared_roles"]])) == digest
+    none = rules_digest(edited(lambda d: d.update(shared_roles=[])))
+    assert none != digest and rules_digest(edited(lambda d: d.pop("shared_roles"))) == none
     roles = [{"types": ["EMAIL"], "roles": ["email_domain"], "note": "Owner Q3."}]
     shared = rules_digest(edited(lambda d: d.update(shared_roles=roles)))
-    assert shared != digest and rules_digest(edited(lambda d: d.update(shared_roles=[]))) == digest
+    assert shared not in (digest, none)
     assert rules_digest(edited(lambda d: d.update(shared_roles=[dict(roles[0], note="Another.")]))) == shared
     other = [{"types": ["ORGANISATION"], "roles": ["legal_form"], "note": "Owner Q3."}]
     assert rules_digest(edited(lambda d: d.update(shared_roles=other))) != shared
+
+
+def _policy_1_1_1() -> PolicyProfile:
+    """Policy 1.1.1 rebuilt from 1.2.0: no shared roles, places-kept without the place-kind and street
+    subtypes."""
+    data = V1.model_dump(mode="json", by_alias=True)
+    data.update(version="1.1.1", shared_roles=[])
+    new = {"place_of_birth", "place_of_injury", "place_of_accident", "place_of_incident", "street"}
+    places = next(r for r in data["rules"] if r["id"] == "places-kept")
+    places["when"]["subtype"] = [s for s in places["when"]["subtype"] if s not in new]
+    return PolicyProfile.model_validate(data)
+
+
+def test_v1_shares_structure_roles():
+    # Policy 1.2.0: the structure a realistic fake may keep (owner decisions of 2026-10-22 and 2026-10-29; the
+    # phone prefix by the owner's answer of 2026-10-29). The draft shares nothing.
+    got = [(sorted(t.value for t in r.types), r.subtypes, r.roles) for r in V1.shared_roles]
+    assert got == [
+        (["ADDRESS"], None, ["box_kind", "designator", "street_type", "corner", "via", "dx", "country",
+                             "capital_city_phrase"]),
+        (["LOCATION"], ["locality"], ["state", "pc_prefix", "country"]),
+        (["ORGANISATION"], None, ["legal_form"]),
+        (["EMAIL"], None, ["email_domain"]),
+        (sorted(["ID_CLAIM", "ID_PROVIDER", "ID_LEGAL_REF", "ID_GOVERNMENT", "ID_BUSINESS", "ID_FINANCIAL",
+                 "ID_OTHER"]), None, ["id_prefix"]),
+        (["PHONE"], None, ["phone_prefix"]),
+    ]
+    assert all("2026-10-22" in r.note or "2026-10-29" in r.note for r in V1.shared_roles)
+    assert DRAFT.shared_roles == []
+    places = next(r for r in V1.rules if r.id == "places-kept")
+    assert {"place_of_birth", "place_of_injury", "place_of_accident", "place_of_incident", "street"} <= set(
+        places.when.subtype)
+
+
+def test_policy_1_2_0_changes_the_rules_of_1_1_1():
+    # 1.2.0 adds rules (shared roles, place subtypes), so its digest differs from 1.1.1's, which is still
+    # 1.1.0's. A run given 1.1.1 and scored under 1.2.0 is judged against rules it was not given.
+    from benchmark.gt import rules_digest
+    from benchmark.runner.scoring import policy_warning
+
+    old = _policy_1_1_1()
+    assert rules_digest(old).startswith("2b0340fbc439") and rules_digest(V1) != rules_digest(old)
+    given = {"name": old.name, "version": old.version, "sha256": "a" * 64, "rules_sha256": rules_digest(old)}
+    used = {"name": V1.name, "version": V1.version, "sha256": "b" * 64, "rules_sha256": rules_digest(V1)}
+    assert policy_warning(given, used) == (
+        "The tool was given policy au-medicolegal@1.1.1 when it ran, but these scores use policy "
+        "au-medicolegal@1.2.0: its output is judged against rules it was not given.")
 
 
 def _with_deviations(*devs) -> dict:
@@ -553,9 +608,18 @@ def test_reference_replace_makes_valid_fakes_of_every_kind():
     assert c["phone_valid_rate"] == c["email_valid_rate"] == c["email_from_new_name_rate"] == 1.0
     assert c["medicare_checksum_valid_rate"] == 1.0 and c["postcode_state_valid_rate"] == 1.0
     assert c["invalid_replacements"] == 0
-    # Identifiers keep their format with every letter and digit changed.
+    # Identifiers keep their format with every letter and digit changed, but for the prefix the policy shares
+    # (id_prefix, policy 1.2.0: 'CLM-' stays as written).
     gt_mention = {f"d{i}": m for i, m in enumerate(out.targeted)}  # detections in GT order, none spurious
     claim = next(m.text for m in fx.gt.mentions if m.id == "clm0")
+    fake = next(x.replacement for x in out.plan.regions if gt_mention[x.mentions[0]] == "clm0")
+    assert len(fake) == len(claim) and fake[:4] == claim[:4] == "CLM-" and fake[4:].isdigit()
+    assert all(a != b for a, b in zip(fake[4:], claim[4:]))
+    # With no shared roles every letter and digit changes.
+    from tests import calib
+
+    out = run_mock(fx.pdf, fx.gt, calib.V1_NO_SHARED, REFERENCE)
+    gt_mention = {f"d{i}": m for i, m in enumerate(out.targeted)}
     fake = next(x.replacement for x in out.plan.regions if gt_mention[x.mentions[0]] == "clm0")
     assert len(fake) == len(claim) and fake[3] == claim[3] == "-"
     assert all(a != b for a, b in zip(fake, claim) if a.isalnum())
@@ -574,7 +638,7 @@ def test_the_ceilings_locality_fake_follows_the_state_rule_of_the_policy(shared)
     from benchmark.gt.address_split import postcode_in_state
     from tests import calib
 
-    policy = calib.V1_SHARED if shared else V1
+    policy = V1 if shared else calib.V1_NO_SHARED
     fx = fixture("digital")
     out = run_mock(fx.pdf, fx.gt, policy, REFERENCE)
     words = fx.gt.word_index()
@@ -788,11 +852,24 @@ def test_a_drawn_stand_in_with_true_redaction_counts_as_replaced():
 @pytest.mark.parametrize("dpi", [150, 200])
 def test_true_redaction_with_fakes_at_the_original_size_is_clean(dpi):
     # Fakes written in the original's font, size and place can line up with its glyph bands ('SA' over
-    # 'QLD' at 150 DPI was PARTIAL under eval-0.3.1); the character identity gate rejects such matches.
+    # 'QLD' at 150 DPI was PARTIAL under eval-0.3.1); the character identity gate rejects such matches. The
+    # mock writes another state's fake under a policy that shares no state.
+    from tests import calib
+
     fx = fixture("digital")
-    out = mocked("digital", MockSpec("true-replace", replace_all=True, stand_ins=True))
-    ev = evaluate_output(fx.pdf, out, fx.gt, V1, EvalConfig(dpi=dpi))
+    spec = MockSpec("true-replace", replace_all=True, stand_ins=True)
+    out = run_mock(fx.pdf, fx.gt, calib.V1_NO_SHARED, spec).pdf
+    ev = evaluate_output(fx.pdf, out, fx.gt, calib.V1_NO_SHARED, EvalConfig(dpi=dpi))
     assert {m.status for m in must(ev)} == {MentionStatus.SAFE_REPLACED} and ev.summary["clean_document"]
+    # Under policy 1.2.0 the mock keeps 'QLD' and writes a same-state postcode, but at three quarters of the line
+    # height: its '4' is not the original glyph, so at 200 DPI the pair fails where the state is seen and the
+    # kept 'QLD' counts (PARTIAL 0.2; docs/metrics.md, known limits). At 150 DPI the pair holds. Every other fake
+    # at the original size is safe.
+    ev = evaluate_output(fx.pdf, mocked("digital", spec), fx.gt, V1, EvalConfig(dpi=dpi))
+    assert {m.status for m in must(ev) if m.mention_id != "addr1-loc"} == {MentionStatus.SAFE_REPLACED}
+    loc = ev.mention("addr1-loc")
+    want = {150: (MentionStatus.SAFE_REPLACED, 0.0, True), 200: (MentionStatus.PARTIAL, 0.2, False)}[dpi]
+    assert (loc.status, loc.visible_residual, loc.shared_pairs[0][1]) == want
 
 
 def test_reference_replace_fills_injected_oracle_regions_with_its_fakes():

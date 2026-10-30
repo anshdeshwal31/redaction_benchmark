@@ -8,9 +8,8 @@ from benchmark.gt.shared_roles import ROLE_NAMES, document_shared_units
 from benchmark.schemas import GTDocument, GTMention, GTPage, GTWord, PiiType, Segment, SharedRoles, WordSource
 from tests import address_cases, calib
 
-V1_SHARED = calib.V1_SHARED
-V1_PHONE_OFF = V1_SHARED.model_copy(update={"shared_roles": [r for r in V1_SHARED.shared_roles
-                                                             if PiiType.PHONE not in r.types]})
+V1 = calib.V1
+V1_PHONE_OFF = calib.V1_PHONE_OFF
 V0 = calib.V0
 
 
@@ -39,7 +38,7 @@ def _doc(kind: str, text: str, split_at: int | None = None) -> tuple[GTDocument,
     return gt, ws
 
 
-def _shared(kind: str, text: str, policy=V1_SHARED, split_at=None) -> tuple[list[str], list, dict]:
+def _shared(kind: str, text: str, policy=V1, split_at=None) -> tuple[list[str], list, dict]:
     """(shared parts as text, pairs as (state, postcode, prefix), identifying slices) of every mention."""
     gt, ws = _doc(kind, text, split_at)
     t = {w.id: w.text for w in ws}
@@ -91,7 +90,7 @@ PHONE = [("PHONE", "0400 123 456", ["04"]), ("PHONE", "+61 412 345 678", ["+61"]
 
 @pytest.mark.parametrize("kind, text, want", READER + PHONE, ids=[f"{k}:{t}" for k, t, _ in READER + PHONE])
 def test_shared_roles_reader(kind, text, want):
-    policy = V1_PHONE_OFF if (kind, text, want) in READER else V1_SHARED
+    policy = V1_PHONE_OFF if (kind, text, want) in READER else V1
     got, _, _ = _shared(kind, text, policy)
     assert got == sorted(want)
 
@@ -152,7 +151,7 @@ def test_shared_roles_never_excuse_identifying_words():
         if case["tier"] != "core" or case["id"] in OCR_UNITS:
             continue
         gt = address_cases.build_split_gt(case)
-        shared = document_shared_units(gt, V1_SHARED)
+        shared = document_shared_units(gt, V1)
         for u in case["expect"]["addresses"]:
             role = {address_cases.word_id(w[:2]): w[3] for w in u["words"]}
             text = {address_cases.word_id(w[:2]): w[2] for w in u["words"]}

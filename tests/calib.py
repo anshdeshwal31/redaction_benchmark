@@ -44,6 +44,7 @@ from benchmark.geometry import as_poly, bbox
 from benchmark.gt import load_policy, resolve
 from benchmark.gt.address_split import POSTCODES
 from benchmark.gt.policy import Effective
+from benchmark.schemas import PiiType
 from benchmark.synth.fixtures import FONT, _digital_pages, build_digital_doc, digital
 from benchmark.synth.spec import medico_legal_spec
 
@@ -683,29 +684,18 @@ def damage_case(name: str) -> bytes:
 # -- shared structure (eval-0.4 S14) ---------------------------------------------------------------------
 
 V0 = load_policy(ROOT / "policies" / "au-medicolegal-v0.yaml")
-# The shared roles policy 1.2.0 enables (owner decisions of 2026-10-22 and 2026-10-29). Until the
-# policy file carries them (release 1.2.0), the tests use a copy of the client's policy with them.
-SHARED_ROLES_1_2_0 = [
-    dict(types=["ADDRESS"], roles=["box_kind", "designator", "street_type", "corner", "via", "dx", "country",
-                                   "capital_city_phrase"]),
-    dict(types=["LOCATION"], subtypes=["locality"], roles=["state", "pc_prefix", "country"]),
-    dict(types=["ORGANISATION"], roles=["legal_form"]),
-    dict(types=["EMAIL"], roles=["email_domain"]),
-    dict(types=["ID_CLAIM", "ID_PROVIDER", "ID_LEGAL_REF", "ID_GOVERNMENT", "ID_BUSINESS", "ID_FINANCIAL",
-                "ID_OTHER"], roles=["id_prefix"]),
-    dict(types=["PHONE"], roles=["phone_prefix"]),
-]
+# The client's policy (V1, 1.2.0) carries the shared roles the owner decided on 2026-10-22 and 2026-10-29.
+# Two copies of it for the tests that need less: one without the phone prefix (a fake mobile keeping '04'
+# then shows the original's glyphs), and one sharing nothing (the shared structure of 1.1.1).
 
 
-def _with_shared_roles():
-    from benchmark.schemas import PolicyProfile
-
-    data = V1.model_dump(mode="json", by_alias=True)
-    data.update(version=data["version"] + "+shared-roles", shared_roles=SHARED_ROLES_1_2_0)
-    return PolicyProfile.model_validate(data)
+def _with_shared_roles(keep, suffix):
+    return V1.model_copy(update={"version": f"{V1.version}+{suffix}",
+                                 "shared_roles": [r for r in V1.shared_roles if keep(r)]})
 
 
-V1_SHARED = _with_shared_roles()
+V1_PHONE_OFF = _with_shared_roles(lambda r: PiiType.PHONE not in r.types, "no-phone-prefix")
+V1_NO_SHARED = _with_shared_roles(lambda r: False, "no-shared-roles")
 
 
 def shared_in_place(fk: dict[str, str] | None = None, raster_dpi=None) -> bytes:

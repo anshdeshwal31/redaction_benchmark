@@ -109,7 +109,7 @@ def test_same_font_fakes_in_place_are_safe(form, dpi):
     # locality is NOT_REPLACED (S15), never a leak.
     b = calib.base()
     out = calib.same_font_fakes(300 if form == "r300" else None)
-    ev = evaluate_output(b.pdf, out, b.gt, calib.V1_SHARED, EvalConfig(dpi=dpi))
+    ev = evaluate_output(b.pdf, out, b.gt, calib.V1, EvalConfig(dpi=dpi))
     assert _not_safe(ev) == ({} if form == "r300" else {"addr1-loc": "NOT_REPLACED"})
     assert ev.mention("addr1-loc").locality_shape == ("no_text_at_unit" if form == "r300" else "none")
     layer = {m.mention_id for m in ev.mentions if m.mention_id in calib.must_text_mentions()
@@ -260,12 +260,12 @@ def test_restyled_search_finds_no_fake(case):
 
 
 # -- shared structure (holes 10 and 11, owner decisions of 2026-10-22 and 2026-10-29) ---------------------
-# Policy: the client's with the shared roles of 1.2.0 (calib.V1_SHARED).
+# Policy: the client's, 1.2.0, with its shared roles (calib.V1).
 
 
 def _shared(out, cfg=CFG):
     b = calib.base()
-    return evaluate_output(b.pdf, out, b.gt, calib.V1_SHARED, cfg)
+    return evaluate_output(b.pdf, out, b.gt, calib.V1, cfg)
 
 
 def _st(ev, mid) -> tuple[str, float]:
@@ -379,8 +379,8 @@ def test_shared_structure_alone_is_not_a_replacement(dpi):
 
     b = calib.base()
     cfg = EvalConfig(dpi=dpi)
-    out = run_mock(b.pdf, b.gt, calib.V1_SHARED, MockSpec("partial", partial=0.5)).pdf
-    ev = evaluate_output(b.pdf, out, b.gt, calib.V1_SHARED, cfg)
+    out = run_mock(b.pdf, b.gt, calib.V1, MockSpec("partial", partial=0.5)).pdf
+    ev = evaluate_output(b.pdf, out, b.gt, calib.V1, cfg)
     assert ev.mention("em1").status.value == "NOT_REPLACED"
     out0 = run_mock(b.pdf, b.gt, calib.V0, MockSpec("partial", partial=0.5)).pdf
     ev0 = evaluate_output(b.pdf, out0, b.gt, calib.V0, cfg)
@@ -389,8 +389,8 @@ def test_shared_structure_alone_is_not_a_replacement(dpi):
 
 def test_mobile_prefix_is_shared():
     # Owner answer (a), 2026-10-29: a fake mobile may keep its '04'. A realistic fake typed in place
-    # ('0412 987 654') is a replacement under the 1.2.0 roles (without them it is PARTIAL); the number kept
-    # whole, or its other digits kept behind a changed first word, still count.
+    # ('0412 987 654') is a replacement under policy 1.2.0 (without the phone prefix it is PARTIAL); the number
+    # kept whole, or its other digits kept behind a changed first word, still count.
     ph = calib.mention_words("ph1")
     ws = calib.words()
     assert ws[ph[0]].text.startswith("04")
@@ -398,7 +398,8 @@ def test_mobile_prefix_is_shared():
     fk.update(zip(ph, ["0412", "987", "654"]))
     out = calib.build(word_ops=calib.in_place(fk))
     assert _st(_shared(out), "ph1")[0] == "SAFE_REPLACED"
-    assert _st(_evaluate(out), "ph1")[0] == "PARTIAL"
+    b = calib.base()
+    assert _st(evaluate_output(b.pdf, out, b.gt, calib.V1_PHONE_OFF, CFG), "ph1")[0] == "PARTIAL"
     kept = calib.build(word_ops=calib.in_place(calib.keep(fk, ph)))
     assert _st(_shared(kept), "ph1")[0] == "LEAK_VISIBLE"
     rest = calib.build(word_ops=calib.in_place(calib.keep({**fk, ph[0]: "0491"}, ph[1:])))

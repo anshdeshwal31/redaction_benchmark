@@ -44,10 +44,11 @@ def _counted(pc, st, words):
 
 
 def test_a_fake_state_over_the_erased_original_counts_no_character():
-    # The true-replace mock writes 'SA' where 'QLD' was, in the same font and size. At 150 DPI the band
-    # test sees the tops of Q and L (eval-0.3.1 judged the locality PARTIAL); identity rejects them.
+    # The true-replace mock writes 'SA' where 'QLD' was, in the same font and size, under a policy that
+    # shares no state (policy 1.2.0 lets the fake keep 'QLD'). At 150 DPI the band test sees the tops of Q and L
+    # (eval-0.3.1 judged the locality PARTIAL); identity rejects them.
     fx = ALL_VARIANTS["digital"]()
-    out = run_mock(fx.pdf, fx.gt, calib.V1, MockSpec("true-replace", replace_all=True, stand_ins=True)).pdf
+    out = run_mock(fx.pdf, fx.gt, calib.V1_NO_SHARED, MockSpec("true-replace", replace_all=True, stand_ins=True)).pdf
     o, x = calib.render_pair(fx.pdf, out, 0, EvalConfig(dpi=150))
     cfg, pc = _cells(o, 150)
     qld = {"p0w22"}
@@ -56,6 +57,30 @@ def test_a_fake_state_over_the_erased_original_counts_no_character():
     st = pc.stats(o, x, cfg, strict())
     assert _counted(pc, st, qld) == set()
     assert {st.gate[u] for u in st.gate if u[0] == "p0w22"} == {""}
+
+
+def test_shared_characters_never_pool_with_identifying_ones_in_the_run_clause():
+    # Found on the MRC fixture under policy 1.2.0 (150 DPI, MuPDF): the ceiling keeps the postcode's shared
+    # prefix '4' as written and draws a fake digit right after it. Pooled along a run with the real '4', the
+    # fake digit passed the run clause, and the locality read PARTIAL 0.09. Shared characters hold nothing
+    # identifying, so a run holds only shared characters or only identifying ones (PageCells.apart); the run
+    # rule still counts them.
+    from benchmark.gt.shared_roles import document_shared_units
+    from benchmark.mocks.named import NAMED
+
+    fx = ALL_VARIANTS["mrc"]()
+    out = run_mock(fx.pdf, fx.gt, calib.V1, NAMED["reference-replace"]).pdf
+    cfg = EvalConfig(dpi=150, renderers=("mupdf",))
+    o, x = calib.render_pair(fx.pdf, out, 0, cfg)
+    pc = PageCells.build(fx.gt.page(0), cfg.dpi, o.shape, cfg.bands, cfg.identity_subbands)
+    su = document_shared_units(fx.gt, calib.V1)["addr1-loc"]
+    postcode = next(w for w, k in su.chars)
+    assert fx.gt.word_index()[postcode][1].text == "4000" and su.chars == {(postcode, 0)}
+    fake = (postcode, 1)
+    assert pc.stats(o, x, cfg, strict()).gate.get(fake) == "run"  # carried by the real '4'
+    pc.apart = frozenset(su.chars)
+    assert pc.stats(o, x, cfg, strict()).gate.get(fake) in ("", None)
+    assert evaluate_output(fx.pdf, out, fx.gt, calib.V1, cfg).mention("addr1-loc").status.value == "SAFE_REPLACED"
 
 
 def _must_on_page0():
@@ -192,7 +217,7 @@ def test_image_layer_gate_drops_same_font_fakes(raster_dpi):
     assert kept & fake == expected, sorted((u, ws[u[0]].text[u[1]]) for u in (kept & fake) ^ expected)
     assert claims <= kept  # the original 'CLM-' keeps its layer evidence
     t0 = time.time()
-    ev = evaluate_output(b.pdf, out, b.gt, calib.V1_SHARED, cfg)
+    ev = evaluate_output(b.pdf, out, b.gt, calib.V1, cfg)
     print(f"P1 {raster_dpi}-DPI raster evaluated at 200 DPI with the layer gate in {time.time() - t0:.1f} s")
     text = set(calib.must_text_mentions())
     with_layer = {m.mention_id for m in ev.mentions if m.mention_id in text

@@ -365,7 +365,7 @@ def test_the_run_records_its_policy_and_scoring_warns_when_another_is_used(env, 
     res = score_run("given-draft", CLIENT_POLICY, CFG)
     warning = json.loads((res / "scoring.json").read_text(encoding="utf-8"))["policy_warning"]
     assert warning == ("The tool was given policy au-medicolegal@0.1.0-draft when it ran, but these scores use "
-                       "policy au-medicolegal@1.1.1: its output is judged against rules it was not given.")
+                       "policy au-medicolegal@1.2.0: its output is judged against rules it was not given.")
     report = build_report("given-draft", res).read_text(encoding="utf-8")
     assert html.escape(warning) in report and report.index(html.escape(warning)) < report.index("<h2>Scorecard")
     board = build_board(["given-draft"], tmp_path / "board.html").read_text(encoding="utf-8")
@@ -393,10 +393,10 @@ def test_a_policy_file_changed_after_the_run_is_flagged(env, tmp_path):
         f.write("# edited after the run\n")  # same name and version, other content, same rules
     res = score_run("edited", policy, CFG)
     warning = json.loads((res / "scoring.json").read_text(encoding="utf-8"))["policy_warning"]
-    assert warning.startswith("Same rules, wording changed: the tool was given au-medicolegal@1.1.1 and these "
-                              "scores use au-medicolegal@1.1.1")
+    assert warning.startswith("Same rules, wording changed: the tool was given au-medicolegal@1.2.0 and these "
+                              "scores use au-medicolegal@1.2.0")
     board = build_board(["edited"], tmp_path / "board.html").read_text(encoding="utf-8")
-    assert "tool given au-medicolegal@1.1.1 with other content (file " in board and ", same rules</b>" in board
+    assert "tool given au-medicolegal@1.2.0 with other content (file " in board and ", same rules</b>" in board
     # A rule changed after the run: same name and version, other rules.
     text = policy.read_text(encoding="utf-8")
     age_rule = "      type: [AGE]\n    requirement: MUST_NOT"
@@ -404,21 +404,24 @@ def test_a_policy_file_changed_after_the_run_is_flagged(env, tmp_path):
     policy.write_text(text.replace(age_rule, "      type: [AGE]\n    requirement: MAY"), encoding="utf-8")
     res = score_run("edited", policy, CFG)
     warning = json.loads((res / "scoring.json").read_text(encoding="utf-8"))["policy_warning"]
-    assert warning.startswith("The policy file au-medicolegal@1.1.1 was changed between the run and scoring")
+    assert warning.startswith("The policy file au-medicolegal@1.2.0 was changed between the run and scoring")
     # Name and version alone look the same, so the board names the two files by their hashes.
     board = build_board(["edited"], tmp_path / "board.html").read_text(encoding="utf-8")
-    assert "tool given au-medicolegal@1.1.1 with other content (file " in board and "same rules" not in board
+    assert "tool given au-medicolegal@1.2.0 with other content (file " in board and "same rules" not in board
 
 
 def test_same_rules_wording_changed_warning(env, tmp_path):
-    # A run given policy 1.1.0 (the same rules as 1.1.1, other wording) and scored under 1.1.1 is told only
-    # the wording changed; a copy with a changed rule is judged against rules it was not given.
+    # A run given another version of the policy with the same rules and other wording (as 1.1.0 was to 1.1.1;
+    # here a reworded copy of 1.2.0, '1.2.0-rc1') and scored under 1.2.0 is told only the wording changed; a
+    # copy with a changed rule is judged against rules it was not given. (A run given 1.1.1 is judged against
+    # rules it was not given: tests/test_client_rules.py.)
     from benchmark.gt import rules_digest
     from benchmark.report.board import build_board
 
     client = CLIENT_POLICY.read_text(encoding="utf-8")
     old, changed = tmp_path / "v1-old.yaml", tmp_path / "v1-changed.yaml"
-    old.write_text(client.replace("version: 1.1.1", "version: 1.1.0").replace("tools 1 and 2", "every tool"),
+    assert client.count("version: 1.2.0") == 1 and "tools 1 and 2" in client
+    old.write_text(client.replace("version: 1.2.0", "version: 1.2.0-rc1").replace("tools 1 and 2", "every tool"),
                    encoding="utf-8")
     age_rule = "      type: [AGE]\n    requirement: MUST_NOT"
     changed.write_text(old.read_text(encoding="utf-8").replace(age_rule, "      type: [AGE]\n    requirement: MAY"),
@@ -429,10 +432,10 @@ def test_same_rules_wording_changed_warning(env, tmp_path):
     def scoring(run_id):
         return json.loads((score_run(run_id, CLIENT_POLICY, CFG) / "scoring.json").read_text(encoding="utf-8"))
 
-    same = ("Same rules, wording changed: the tool was given au-medicolegal@1.1.0 and these scores use "
-            f"au-medicolegal@1.1.1; the rules digest is the same ({digest[:8]}).")
-    other = ("The tool was given policy au-medicolegal@1.1.0 when it ran, but these scores use policy "
-             "au-medicolegal@1.1.1: its output is judged against rules it was not given.")
+    same = ("Same rules, wording changed: the tool was given au-medicolegal@1.2.0-rc1 and these scores use "
+            f"au-medicolegal@1.2.0; the rules digest is the same ({digest[:8]}).")
+    other = ("The tool was given policy au-medicolegal@1.2.0-rc1 when it ran, but these scores use policy "
+             "au-medicolegal@1.2.0: its output is judged against rules it was not given.")
     for path, run_id in ((old, "reworded"), (changed, "rule-changed")):
         run = run_candidate(candidate(env, "reference", follow_policy=True), "synthetic@0.0.1",
                             ROOT / "experiments" / "e2e.yaml", path, run_id=run_id)
@@ -440,7 +443,7 @@ def test_same_rules_wording_changed_warning(env, tmp_path):
     s = scoring("reworded")
     assert s["policy_warning"] == same and s["policy_rules_sha256"] == s["run_policy_rules_sha256"] == digest
     board = build_board(["reworded"], tmp_path / "board.html").read_text(encoding="utf-8")
-    assert "tool given au-medicolegal@1.1.0, same rules" in board
+    assert "tool given au-medicolegal@1.2.0-rc1, same rules" in board
     assert scoring("rule-changed")["policy_warning"] == other
     # A run recorded before the digest was kept: computed from its policy file while that file is unchanged,
     # unknown once the file has changed.
@@ -467,10 +470,10 @@ def test_a_tool_that_does_not_read_the_policy_is_never_said_to_have_been_given_o
     run = run_candidate(candidate(env, "reference"), "synthetic@0.0.1", ROOT / "experiments" / "e2e.yaml", policy,
                         run_id="unread")
     assert run.policy.given_to_tool is False
-    policy.write_text(policy.read_text(encoding="utf-8").replace("version: 1.1.1", "version: 1.2.0"), encoding="utf-8")
+    policy.write_text(policy.read_text(encoding="utf-8").replace("version: 1.2.0", "version: 1.2.1"), encoding="utf-8")
     res = score_run("unread", policy, CFG)
     scoring = json.loads((res / "scoring.json").read_text(encoding="utf-8"))
-    assert scoring["policy_id"] == "au-medicolegal@1.2.0" and scoring["run_policy"]["version"] == "1.1.1"
+    assert scoring["policy_id"] == "au-medicolegal@1.2.1" and scoring["run_policy"]["version"] == "1.2.0"
     assert scoring["policy_given_to_tool"] is False and scoring["policy_warning"] is None
     board = build_board(["unread"], tmp_path / "board.html").read_text(encoding="utf-8")
     assert "tool given" not in board and "Scored under another policy" not in board
@@ -543,7 +546,7 @@ def _evaluation_with_eval04_fields():
     words = [WordOutcome("w1", 0, "ORDINARY", 0.95, WordStatus.MOVED, in_place_fraction=0.1, dx_pt=12.5, dy_pt=0.3,
                          scale=1.04, match_score=0.91, text_offset_pt=1.5, restyled=False),
              WordOutcome("w2", 0, "ORDINARY", 1.0, WordStatus.PRESERVED)]
-    return DocumentEvaluation("syn-digital", "eval-0.4-dev", "0" * 16, "p@1", "", "", [], Integrity(True, True, [], []),
+    return DocumentEvaluation("syn-digital", "eval-0.4", "0" * 16, "p@1", "", "", [], Integrity(True, True, [], []),
                               [mention], words, [], [], [], 0, {"clean_document": True})
 
 
@@ -660,7 +663,7 @@ def test_the_ceiling_mock_follows_the_run_policy_and_reports_show_the_departures
         score_run(run_id, CLIENT_POLICY, CFG)
     res = env / "results" / "ceiling"
     scoring = json.loads((res / "scoring.json").read_text(encoding="utf-8"))
-    assert scoring["policy_id"] == "au-medicolegal@1.1.1"
+    assert scoring["policy_id"] == "au-medicolegal@1.2.0"
     assert [d["id"] for d in scoring["deviations"]] == ["whole-address", "role-words"]
     rows, _ = query(res, "SELECT clean_document FROM documents WHERE must_mentions IS NOT NULL")
     assert rows == [(True,)]

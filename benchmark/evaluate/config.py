@@ -24,11 +24,16 @@ class EvalConfig(BaseModel):
     # the word are not counted (a typed "____" line in the text layer has no such glyphs). Results
     # labelled eval-0.3 either ignored drawn strokes (scored before the check was added, early on
     # 2026-10-22) or matched them by bounding box alone; rescore them.
-    # eval-0.4-dev: development label of the eval-0.4 build (the calibration fixes listed in
-    # docs/metrics.md: character identity, MOVED words and displaced originals, text at the displayed
-    # place, shared roles, address units). Results scored under it are never reported; eval-0.4
-    # replaces it once every part has landed.
-    version: str = "eval-0.4-dev"
+    # eval-0.4 (2026-10-30; docs/metrics.md): band evidence passes a character identity gate (edge and
+    # run clauses, near-black ink variant) in place and in image layers resampled to the render grid;
+    # kept and leaked text is looked for at its displayed place; words are found MOVED, displaced
+    # originals and identifying slices are leaks, and words re-typeset in a substitute font are looked
+    # for (the restyled search); shared roles the policy enables are excused, the state with its
+    # postcode prefix only as a checked pair; addresses are judged as units (E1 replacement per part,
+    # E3 token survival, E4 short words). Results labelled eval-0.3, eval-0.3.1 or eval-0.4-dev must be
+    # rescored; no re-run is needed except where a mock's default changed (the ceiling,
+    # reference-replace, now draws its fakes at the original size).
+    version: str = "eval-0.4"
     dpi: float = Field(200, ge=150, le=600, description="Rendering resolution for pixel evidence. Calibrated "
                                                           "for 150-300 DPI; below ~120 DPI the character bands of "
                                                           "8 pt text are too coarse and produce false leaks")

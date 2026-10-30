@@ -1,9 +1,8 @@
 """Addresses judged as units (eval-0.4 S15: E1 replacement, E3 token survival, E4 short words).
 
 Fictional cases from docs/address_cases.json, or written in its format here, rendered by
-tests/address_fixtures.py and changed by simulated tools. Policy: the client's policy with the shared roles of
-policy 1.2.0 (calib.V1_SHARED), so a fake keeps the state with a same-state postcode prefix, a street type
-and the box words.
+tests/address_fixtures.py and changed by simulated tools. Policy: the client's policy 1.2.0 (calib.V1) with its
+shared roles, so a fake keeps the state with a same-state postcode prefix, a street type and the box words.
 """
 
 import random
@@ -19,7 +18,7 @@ from benchmark.ocr import OcrWord
 from tests import address_fixtures as af
 from tests import calib
 
-P = calib.V1_SHARED
+P = calib.V1
 CFG = EvalConfig(dpi=200, renderers=("mupdf",))
 
 # 'Address: 12 Smith Street, Parramatta NSW 2150' on row 2, nothing on the next two rows.

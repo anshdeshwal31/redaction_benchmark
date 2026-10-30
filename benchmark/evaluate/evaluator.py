@@ -405,6 +405,11 @@ def evaluate_output(
     unreliable: set[int] = set()
 
     must_or_may_words = {wid for wid, eff in res.words.items() if eff in (Effective.MUST, Effective.MAY)}
+    # -- shared structure (eval-0.4): what a realistic fake may keep, for the roles the policy enables ---
+    shared: dict[str, SharedUnits] = document_shared_units(gt, policy)
+    # Its characters never pool with identifying ones in the identity gate's run clause (PageCells.apart).
+    apart = frozenset({(wid, k) for su in shared.values() for wid in su.full for k in range(len(words[wid][1].text))}
+                      | {u for su in shared.values() for u in su.chars})
     # Held to the stricter identity thresholds and clauses of the character gate (cells.PageCells.stats).
     strict_words = frozenset(must_or_may_words)
     mention_words = {wid for m in gt.mentions for seg in m.segments for wid in seg.words}
@@ -421,6 +426,7 @@ def evaluate_output(
         notes: list[str] = []
         base = cache.get("src", source, i, configs[0])
         pc = PageCells.build(page, cfg.dpi, base.shape, cfg.bands, cfg.identity_subbands)
+        pc.apart = apart
         pcs[i] = pc
         region_units[i] = defaultdict(list)
         for c in pc.cells:
@@ -576,8 +582,6 @@ def evaluate_output(
                   else WordStatus.REMOVED if frac <= cfg.word_removed_fraction else WordStatus.DAMAGED)
             inplace[w.id] = (ws.value, frac)
     requirement = {w.id: res.words.get(w.id, Effective.ORDINARY).value for p in gt.pages for w in p.words}
-    # -- shared structure (eval-0.4): what a realistic fake may keep, for the roles the policy enables ---
-    shared: dict[str, SharedUnits] = document_shared_units(gt, policy)
     # A word with shared characters is found away from its place only where its glyphs pass the identity gate:
     # a fake keeping those characters (a mobile's '04', a postcode's prefix) is not the original moved.
     gated = frozenset(wid for su in shared.values() for wid, _ in su.chars)

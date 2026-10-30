@@ -134,6 +134,10 @@ class PageCells:
     subbands: int = SUBBANDS
     # identity sub-band of each pixel of a word cell (empty for region cells)
     subs: list[np.ndarray] = field(default_factory=list)
+    # Characters of shared structure the policy lets a fake keep (eval-0.4, set by the evaluator): they hold
+    # nothing identifying, so the run clause never pools them with identifying characters (a kept postcode
+    # prefix would otherwise carry a fake digit beside it). The run rule still counts them.
+    apart: frozenset = field(default_factory=frozenset)
     _cache: dict = field(default_factory=dict, repr=False, compare=False)
 
     @classmethod
@@ -632,7 +636,7 @@ class PageCells:
                 out[u] = ""
             elif len(bs) >= 2 and _edge(bs, self.bands) and abs(ci.pooled([u], bs)) >= cfg.identity_edge_min + x:
                 out[u] = "edge"
-            elif self._run_clause(ci, flagged, u, chars.get(u[0], []), cfg.identity_run_min + x):
+            elif self._run_clause(ci, flagged, u, chars.get(u[0], []), cfg.identity_run_min + x, self.apart):
                 out[u] = "run"
             else:
                 out[u] = ""
@@ -640,20 +644,22 @@ class PageCells:
 
     @staticmethod
     def _run_clause(ci: CharacterIdentity, flagged: dict[Unit, set[int]], u: Unit, ks: list[int],
-                    threshold: float) -> bool:
+                    threshold: float, apart: frozenset = frozenset()) -> bool:
         """Is a band of ``u`` flagged along a run of consecutive characters of its word long enough
         (max(2, run_needed(word length)), the whole word if shorter), with the identity pooled over that
-        band along the run reaching ``threshold``? The longest run counts, then the higher identity."""
+        band along the run reaching ``threshold``? The longest run counts, then the higher identity. A run
+        holds only shared characters (``apart``) or only identifying ones."""
         w, k = u
+        side = u in apart
         best_v, best_len = 0.0, 0
         for b in sorted(flagged.get(u, ())):
             run = [k]
             j = k - 1
-            while b in flagged.get((w, j), ()):
+            while b in flagged.get((w, j), ()) and ((w, j) in apart) == side:
                 run.insert(0, j)
                 j -= 1
             j = k + 1
-            while b in flagged.get((w, j), ()):
+            while b in flagged.get((w, j), ()) and ((w, j) in apart) == side:
                 run.append(j)
                 j += 1
             v = ci.pooled([(w, kk) for kk in run], [b])

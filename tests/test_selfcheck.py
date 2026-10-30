@@ -82,14 +82,16 @@ EVAL04 = ["replace-in-place", "retypeset", "retypeset-keep", "overprint", "overp
 
 def test_the_eval04_checks_follow_the_shared_roles_of_the_policy_passed_in():
     # Under the shared roles of policy 1.2.0 (owner, 2026-10-29) a fake mobile may keep its '04': the fakes
-    # typeset in place are all replacements. Under 1.1.1 the kept '04' shows the original's glyphs (PARTIAL),
-    # and the check expects that. The address checks see a same-state fake (1.2.0) or another state's (1.1.1).
+    # typeset in place are all replacements. With no shared roles (the shared structure of 1.1.1), or under
+    # 1.2.0 without the phone prefix, the kept '04' shows the original's glyphs (PARTIAL), and the check
+    # expects that. The address checks see a same-state fake (1.2.0) or another state's (no shared roles).
     from tests import calib
 
     fx = digital()
-    for policy, mobile in ((calib.V1_SHARED, "SAFE_REPLACED"), (CLIENT, "PARTIAL")):
-        results = {r.name: r for r in selfcheck(fx.pdf, fx.gt, policy, CFG, only=EVAL04)}
-        assert {n: r.passed for n, r in results.items()} == dict.fromkeys(EVAL04, True), [
+    for policy, mobile, only in ((CLIENT, "SAFE_REPLACED", EVAL04), (calib.V1_NO_SHARED, "PARTIAL", EVAL04),
+                                 (calib.V1_PHONE_OFF, "PARTIAL", ["replace-in-place"])):
+        results = {r.name: r for r in selfcheck(fx.pdf, fx.gt, policy, CFG, only=only)}
+        assert {n: r.passed for n, r in results.items()} == dict.fromkeys(only, True), [
             (r.name, r.observed) for r in results.values() if r.passed is not True]
         ev = evaluate_output(fx.pdf, run_mock(fx.pdf, fx.gt, policy, NAMED["replace-in-place"]).pdf, fx.gt, policy,
                              CFG)

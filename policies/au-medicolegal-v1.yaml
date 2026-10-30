@@ -23,20 +23,33 @@
 # - role-words (Q10): role words such as "the claimant" are left as they are; they are not in GT,
 #   so changing them only counts as damage to ordinary words. To be confirmed with the client.
 #
-# 1.1.1 changes wording only ('tools 1 and 2', one more sentence in the whole-address effect): its
+# 1.1.1 changed wording only ('tools 1 and 2', one more sentence in the whole-address effect): its
 # rules digest is the same as 1.1.0's, so a run given 1.1.0 and scored under 1.1.1 is told only the
 # wording changed.
+#
+# Differences from 1.1.1 (1.2.0, released with eval-0.4; new rules, so a new rules digest):
+# - shared_roles: the structure a realistic fake may keep at the same place, read from GT by position
+#   (docs/metrics.md, "Shared words"): an address's box, designator, street-type, corner, 'via', DX,
+#   country and capital-city words; the state of a locality together with its postcode's prefix digits
+#   (a same-state fake) and its country word; an organisation's legal form; an email's domain; an
+#   identifier's letter prefix; a phone number's national prefix. The owner decided these on
+#   2026-10-22 and 2026-10-29. Every other character of a required item must still change;
+# - places-kept also keeps places named after a label of their kind (place_of_birth, place_of_injury,
+#   place_of_accident, place_of_incident) and streets named without a house number in running text
+#   (street), as the owner ruled on 2026-10-22 (rulings 2 and 3); in 1.1.1 they were MAY.
 #
 # Still open: quasi-identifiers the questionnaire did not ask about (religion, education,
 # qualifications, marital, benefit or employment status, accreditation, courses) stay MAY.
 schema: rb.policy/0.1
 name: au-medicolegal
-version: 1.1.1
+version: 1.2.0
 description: >
   The client's decisions of 2026-10-18: replace every person, organisation, contact detail,
   identifier, signature and image of a person with a fake; keep every date, age, occupation and
   clinical or legal content, and suburbs and towns mentioned on their own. Departs from the
   answers in two places (see deviations): whole addresses are replaced, and role words are kept.
+  A fake may keep the structure listed under shared_roles (the owner's decisions of 2026-10-22 and
+  2026-10-29).
 consistency_scope: matter          # Q8: same fake for a person across the matter's documents
 
 rules:
@@ -103,9 +116,12 @@ rules:
   - id: places-kept
     when:
       type: [LOCATION]
-      subtype: [suburb, city, region, state, country, postcode, place_of_declaration]
+      subtype: [suburb, city, region, state, country, postcode, place_of_declaration, place_of_birth,
+                place_of_injury, place_of_accident, place_of_incident, street]
     requirement: MUST_NOT
-    note: Suburbs, towns and places of birth mentioned on their own (Q4).
+    note: Suburbs, towns and places of birth mentioned on their own (Q4). A place written right after a label
+      naming its kind (birth, injury, accident, incident, declaration) is kept, postcode included, and so is a
+      street named without a house number in running text (the owner's rulings 2 and 3 of 2026-10-22).
 
   - id: quasi-identifiers-kept
     when:
@@ -124,6 +140,49 @@ rules:
 default_mention: MAY
 default_classified: MUST_NOT
 optional_words: MAY
+
+# Structure a realistic fake may keep (eval-0.4; docs/metrics.md, "Shared words"). The words and
+# characters holding these roles are read from GT by their place in the mention, never from a tool's
+# output; they are left out of every residual and are never the replacement on their own. A title
+# ('Dr') needs no entry: GT holds it as an optional (MAY) word.
+shared_roles:
+  - types: [ADDRESS]
+    roles: [box_kind, designator, street_type, corner, via, dx, country, capital_city_phrase]
+    note: The owner decided on 2026-10-22 that a realistic fake may share a word with the original at the
+      same place, such as a street-type word or the 'PO Box' words. The same holds for the other structure
+      words of the street line (unit, level and building designators, corner and 'via' words, 'DX', the
+      country and 'IN YOUR CAPITAL CITY'). The street type is shared only as the street's last word after a
+      name word; house, unit, box and DX numbers and every name word must change.
+
+  - types: [LOCATION]
+    subtypes: [locality]
+    roles: [state, pc_prefix, country]
+    note: Fake addresses stay in the same state (the owner, 2026-10-22). The state, in any written form, and
+      the postcode's prefix digits ('2' NSW and ACT, '3' VIC, '4' QLD, '5' SA, '6' WA, '7' TAS, '08' NT) are
+      shared only together, and only where the prefix is still the original's glyph; every later postcode
+      digit and the suburb must change. The country word stays (the owner's ruling on overseas addresses,
+      2026-10-22).
+
+  - types: [ORGANISATION]
+    roles: [legal_form]
+    note: A fake organisation may keep its trailing legal form (Pty, Ltd, Limited, Proprietary, Inc,
+      Incorporated) after a name word (the owner, 2026-10-29).
+
+  - types: [EMAIL]
+    roles: [email_domain]
+    note: A fake may keep the email's '@' and domain after a non-empty local part (the owner, 2026-10-29).
+      The local part is still searched on its own, so a changed domain cannot hide a kept local part.
+
+  - types: [ID_CLAIM, ID_PROVIDER, ID_LEGAL_REF, ID_GOVERNMENT, ID_BUSINESS, ID_FINANCIAL, ID_OTHER]
+    roles: [id_prefix]
+    note: A fake may keep an identifier's prefix of one to four capitals and its separator when digits
+      follow ('CLM-'; the owner, 2026-10-29). The digits are still searched on their own.
+
+  - types: [PHONE]
+    roles: [phone_prefix]
+    note: A fake phone number may keep its national structure prefix (a mobile's '04', '+61', the '13' of a
+      6-digit number, '1300' or '1800', a bracketed area code '(0X)'; the owner, 2026-10-29). The remaining
+      digits must change and are searched on their own, so a changed prefix cannot hide them.
 
 # Deliberate departures from the client's answers. Scoring copies them into its results and every
 # run report and comparison board shows them, so nobody reads these scores as the client's rules.

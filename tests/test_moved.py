@@ -72,11 +72,11 @@ def test_a_fake_sharing_characters_with_its_original_is_no_displaced_original():
     from benchmark.mocks.named import NAMED
 
     fx = digital()
-    out = run_mock(fx.pdf, fx.gt, calib.V1_SHARED, NAMED["retypeset"])
+    out = run_mock(fx.pdf, fx.gt, calib.V1, NAMED["retypeset"])
     fake = {r.mention.split(":")[1]: r.replacement for r in out.pseudonyms.mentions}
     first = next(m for m in fx.gt.mentions if m.id == "ph1").segments[0].words[0]
     assert fake[first].startswith("04")
-    ev = evaluate_output(fx.pdf, out.pdf, fx.gt, calib.V1_SHARED, EvalConfig(dpi=150, renderers=("mupdf",)))
+    ev = evaluate_output(fx.pdf, out.pdf, fx.gt, calib.V1, EvalConfig(dpi=150, renderers=("mupdf",)))
     # (the shared words the line keeps as written, 'Street,', 'Pty' and 'Ltd', are found moved, and excused)
     assert first not in ev.summary["must_words_displaced"] and ev.mention("ph1").status.value == "SAFE_REPLACED"
 

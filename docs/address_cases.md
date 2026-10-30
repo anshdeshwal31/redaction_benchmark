@@ -190,8 +190,8 @@ block such as NSW 1300, or a cross-border code) shares no digit.
   `benchmark/gt/address_split.py`). `place_of_birth`, `place_of_injury`, `place_of_accident`,
   `place_of_incident` and `place_of_declaration` keep their kind as the subtype, over the whole place,
   postcode included; `street_in_prose` becomes `street`; `suburb_and_state` becomes `suburb`, or
-  `suburb` plus `state`. Policy 1.1.1's places-kept rule (MUST_NOT) does not list the place-kind
-  subtypes or `street` yet, so they fall to `default_mention` (MAY) until a policy version adds them.
+  `suburb` plus `state`. Policy 1.2.0's places-kept rule (MUST_NOT) lists the place-kind subtypes and
+  `street`; under 1.1.1 they fell to `default_mention` (MAY).
   `rb gt validate` warns about a place written with a state and postcode that no place-kind label
   comes right before, and about a place right after or below a street line of the same entity.
 - Look-alikes carry no address mention. Their own mentions follow their `follows` rule.
