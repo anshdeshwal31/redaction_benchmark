@@ -94,6 +94,21 @@ def test_union_find_inference_from_replacements():
     assert inferred["m1"] == inferred["m2"] != inferred["m3"]
 
 
+def test_unclustered_predictions_are_singletons():
+    # Five mentions of E1: two whose predictions the tool linked, three whose predictions it put in no
+    # cluster. Left out, the two linked ones would read as a perfect resolution.
+    key = {f"g{i}": "E1" for i in range(5)}
+    best_pred = {f"g{i}": f"p{i}" for i in range(5)}
+    best_pred["g5"] = None  # not detected: left out, as before
+    key["g5"] = "E1"
+    r = evaluate_resolution(key, response_from_artifacts(best_pred, {"p0": "c0", "p1": "c0"}))
+    assert r.mentions_scored == 5 and r.pairwise["recall"] < 1.0
+    assert [s["entity"] for s in r.false_splits] == ["E1"]
+    # Two GT mentions matched to the same unclustered prediction share its singleton.
+    shared = response_from_artifacts({"g0": "p9", "g1": "p9", "g2": "p8"}, {})
+    assert shared["g0"] == shared["g1"] != shared["g2"]
+
+
 # -- detection -------------------------------------------------------------------------------
 
 

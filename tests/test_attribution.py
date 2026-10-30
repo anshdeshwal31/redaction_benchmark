@@ -115,6 +115,27 @@ def test_split_clusters_with_inconsistent_pseudonyms_is_a_resolution_split():
     assert blind.attribution.counts["tags"].get("PSEUDONYM_INCONSISTENT", 0) > 0
 
 
+def test_an_inconsistent_mention_the_tool_left_unclustered_is_a_resolution_split():
+    # The tool detects every name but puts one of the claimant's mentions in no cluster: it failed to
+    # link it, so its different fake is a resolution split, not only a pseudonym inconsistency.
+    from benchmark.schemas import EntitiesArtifact
+
+    fx = digital()
+    out = run_mock(fx.pdf, fx.gt, POLICY, MockSpec("pi", pseudonyms="inconsistent"))
+    artifacts = out.artifacts()
+    linked = score_document(fx.pdf, out.pdf, fx.gt, POLICY, artifacts, config=CFG)
+    tags = {a.mention_id: a.tags for a in linked.attribution.mentions}
+    assert "PSEUDONYM_INCONSISTENT" in tags["m1"] and not linked.resolution.false_splits
+    pred = next(x.best_pred for x in linked.detection.matches if x.mention_id == "m1")
+    clusters = [c.model_copy(update={"mentions": [p for p in c.mentions if p != pred]})
+                for c in artifacts["entities"].clusters]
+    artifacts["entities"] = EntitiesArtifact(clusters=[c for c in clusters if c.mentions])
+    s = score_document(fx.pdf, out.pdf, fx.gt, POLICY, artifacts, config=CFG)
+    assert [x["entity"] for x in s.resolution.false_splits] == ["E1"]
+    tags = {a.mention_id: a.tags for a in s.attribution.mentions}
+    assert "RESOLUTION_SPLIT" in tags["m1"] and "PSEUDONYM_INCONSISTENT" not in tags["m1"]
+
+
 def test_interaction_when_own_plan_is_right_and_gt_regions_work():
     fx = digital()
     out = run_mock(fx.pdf, fx.gt, POLICY, MockSpec("annot", method="annotation"))

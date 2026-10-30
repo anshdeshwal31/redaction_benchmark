@@ -1,8 +1,9 @@
 """Entity-resolution metrics over PII-bearing mentions (PLAN.md §3.5).
 
 Key = GT mention -> GT entity. Response = GT mention -> predicted cluster, obtained by
-mapping each detected GT mention to the cluster of its best-matching prediction (or,
-for black-box pseudonymisers, inferred from shared replacement values). Standard
+mapping each detected GT mention to the cluster of its best-matching prediction, a
+prediction in no cluster being a singleton (or, for black-box pseudonymisers, inferred
+from shared replacement values). Standard
 CoNLL metrics (MUC, B³, CEAF-e) plus LEA and pairwise links, with the false merges and
 false splits listed explicitly.
 """
@@ -127,8 +128,11 @@ def evaluate_resolution(key: Assignment, resp: Assignment, source: str = "entiti
 
 
 def response_from_artifacts(best_pred: dict[str, str | None], clusters: dict[str, str]) -> Assignment:
-    """GT mention -> cluster of its best prediction (undetected mentions are left out)."""
-    return {g: clusters[p] for g, p in best_pred.items() if p is not None and p in clusters}
+    """GT mention -> cluster of its best prediction. A prediction the tool put in no cluster is a
+    cluster of its own (``__single_<prediction id>``; two GT mentions with the same unclustered
+    prediction share it), so a tool that fails to link its names is scored as splitting them, not
+    left out. Undetected mentions (no prediction) are left out."""
+    return {g: clusters.get(p, f"__single_{p}") for g, p in best_pred.items() if p is not None}
 
 
 def response_from_replacements(replacements: dict[str, dict[str, str]]) -> Assignment:
