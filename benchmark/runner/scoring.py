@@ -14,8 +14,8 @@ from ..gt.io import find_gt, load_policy
 from ..gt.policy import rules_digest
 from ..metrics import InkIndex, compare_runs
 from ..report.store import rows_for_score, write_tables
-from ..schemas import CandidateManifest, PiiType
-from ..score import score_document
+from ..schemas import ARTIFACT_FILENAMES, ArtifactKind, CandidateManifest, PiiType
+from ..score import score_document, score_text
 from .artifacts import load_artifacts, sha256_file
 from .runner import ROOT, load_run, policy_given, policy_record, runs_root
 
@@ -76,13 +76,14 @@ def policy_was_given(run, manifest: CandidateManifest) -> bool:
     return policy_given(manifest.command, run.experiment.mode, run.experiment.inject_from)
 
 
-def _no_output_reason(item, out_pdf: Path) -> str | None:
-    """Why an item has no output to grade: none was written, or output.pdf appeared or changed after
-    the runner recorded the item (for example a tool still writing after its timeout)."""
-    if not out_pdf.exists():
-        return item.error or "no output.pdf"
-    if sha256_file(out_pdf) != item.artifacts.get("output_pdf"):
-        late = "output.pdf was written or changed after the run recorded it"
+def _no_output_reason(item, out_path: Path, kind: str = ArtifactKind.OUTPUT_PDF.value) -> str | None:
+    """Why an item has no output to grade: none was written, or its primary output (output.pdf, or
+    redacted_text.json for a text-only tool) appeared or changed after the runner recorded the item (for
+    example a tool still writing after its timeout)."""
+    if not out_path.exists():
+        return item.error or f"no {out_path.name}"
+    if sha256_file(out_path) != item.artifacts.get(kind):
+        late = f"{out_path.name} was written or changed after the run recorded it"
         return f"{item.error}; {late}" if item.error else late
     return None
 
@@ -172,6 +173,9 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
     out_root = results_root() / run_id
     (out_root / "scores").mkdir(parents=True, exist_ok=True)
     label_map = {k: PiiType(v) for k, v in manifest.label_map.items()} or None
+    # The primary output: the output PDF, or the redacted text of a text-only tool (eval-0.4).
+    primary = manifest.primary_output
+    as_text = primary is ArtifactKind.REDACTED_TEXT
     ident = {"run_id": run_id, "candidate": run.candidate["name"], "candidate_version": run.candidate["version"],
              "experiment": run.experiment.name, "mode": run.experiment.mode,
              "dataset": f"{run.dataset['name']}@{run.dataset['version']}"}
@@ -197,8 +201,11 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
         per_rep = []
         for item in sorted(items, key=lambda i: i.repeat):
             workdir = runs_root() / run_id / item.workdir / "out"
-            out_pdf = workdir / "output.pdf"
-            reason = _no_output_reason(item, out_pdf)
+            out_path = workdir / ARTIFACT_FILENAMES[primary]
+            reason = _no_output_reason(item, out_path, primary.value)
+            artifacts, hashes, errors = ({}, {}, {}) if reason else load_artifacts(workdir, manifest)
+            if not reason and as_text and primary.value not in artifacts:
+                reason = errors.get(primary.value) or f"{out_path.name} could not be read"
             if reason:
                 skipped.append({"doc_id": doc_id, "repeat": item.repeat, "reason": reason})
                 no_out = _no_output_rows(ident, doc_id, item.repeat, gt, policy, reason)
@@ -206,15 +213,15 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
                 for name, rows in no_out.items():
                     tables[name].extend(rows)
                 continue
-            artifacts, hashes, errors = load_artifacts(workdir, manifest)
             artifacts.pop("output_pdf", None)
             for kind, digest in hashes.items():  # graded as recorded by the run, never as changed later
                 if kind in artifacts and digest != item.artifacts.get(kind):
                     artifacts.pop(kind)
                     errors[kind] = f"{kind} was written or changed after the run recorded it"
-            per_rep.append((item, out_pdf.read_bytes(), artifacts, errors))
+            out = artifacts.pop(primary.value) if as_text else out_path.read_bytes()
+            per_rep.append((item, out, artifacts, errors))
         unstable = None
-        if len(per_rep) > 1:
+        if len(per_rep) > 1 and not as_text:  # determinism compares output PDFs
             index = InkIndex.build(gt, source, 100)
             from ..evaluate import evaluate_output
 
@@ -227,9 +234,13 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
                                               d3_identical=det.d3_decisions_identical, flip_rate=det.flip_rate,
                                               unstable=",".join(det.unstable_mentions)))
         for item, out, artifacts, errors in per_rep:
-            score = score_document(source, out, gt, policy, artifacts, label_map=label_map, config=cfg,
-                                   oracle={m: o.get(doc_id, {}) for m, o in oracle.items()} or None,
+            oracle_doc = {m: o.get(doc_id, {}) for m, o in oracle.items()} or None
+            if as_text:
+                score = score_text(gt, policy, out, label_map=label_map, config=cfg, oracle=oracle_doc,
                                    unstable=unstable)
+            else:
+                score = score_document(source, out, gt, policy, artifacts, label_map=label_map, config=cfg,
+                                       oracle=oracle_doc, unstable=unstable)
             if item.repeat == 0 and gt.matter and score.pseudonyms is not None and score.pseudonyms.evaluable:
                 for r in score.pseudonyms.replacements:
                     if r.entity and r.replacement and r.component != "title":

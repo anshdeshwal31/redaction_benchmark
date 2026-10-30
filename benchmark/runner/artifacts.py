@@ -20,6 +20,7 @@ from ..schemas import (
     MentionsArtifact,
     PlanArtifact,
     PseudonymsArtifact,
+    RedactedTextArtifact,
     RunInfo,
     TextArtifact,
 )
@@ -31,6 +32,7 @@ MODELS = {
     ArtifactKind.PLAN: PlanArtifact,
     ArtifactKind.PSEUDONYMS: PseudonymsArtifact,
     ArtifactKind.RUN_INFO: RunInfo,
+    ArtifactKind.REDACTED_TEXT: RedactedTextArtifact,
 }
 
 

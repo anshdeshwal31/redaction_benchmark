@@ -1,0 +1,70 @@
+{
+ "$defs": {
+  "TextMapping": {
+   "additionalProperties": false,
+   "description": "A replacement the tool says it made. Reported, never evidence.",
+   "properties": {
+    "label": {
+     "title": "Label",
+     "type": "string"
+    },
+    "original": {
+     "title": "Original",
+     "type": "string"
+    },
+    "replacement": {
+     "title": "Replacement",
+     "type": "string"
+    }
+   },
+   "required": [
+    "label",
+    "original",
+    "replacement"
+   ],
+   "title": "TextMapping",
+   "type": "object"
+  }
+ },
+ "additionalProperties": false,
+ "description": "The output of a tool that redacts text rather than a PDF, graded by the text-level path\n(docs/metrics.md, \"Text-level evaluation\"): GT words are aligned to ``original_text`` and the\nredacted text is diffed against it.",
+ "properties": {
+  "schema": {
+   "const": "rb.redacted_text/0.1",
+   "default": "rb.redacted_text/0.1",
+   "title": "Schema",
+   "type": "string"
+  },
+  "original_text": {
+   "description": "The text the tool redacted: as it extracted it from the input, or as the benchmark injected it",
+   "title": "Original Text",
+   "type": "string"
+  },
+  "redacted_text": {
+   "description": "The tool's redacted text",
+   "title": "Redacted Text",
+   "type": "string"
+  },
+  "page_break": {
+   "default": "\f",
+   "description": "Separates the pages in both texts (form feed by default)",
+   "title": "Page Break",
+   "type": "string"
+  },
+  "mappings": {
+   "default": [],
+   "description": "The replacements the tool says it made; reported, never evidence",
+   "items": {
+    "$ref": "#/$defs/TextMapping"
+   },
+   "title": "Mappings",
+   "type": "array"
+  }
+ },
+ "required": [
+  "original_text",
+  "redacted_text"
+ ],
+ "title": "RedactedTextArtifact",
+ "type": "object"
+}

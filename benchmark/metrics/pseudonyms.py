@@ -226,6 +226,17 @@ def _read_all(gt: GTDocument, res: Resolution, output: bytes, evaluation=None, c
         any_text |= bool(chars)
         page = gt.page(pg)
         texts.update(text_in_words(page, centres, chars, wids))
+    parts, idents = _address_parts(gt, res, doc, geoms, output, evaluation, config or EvalConfig(), notes)
+    any_text |= any(text is not None for text, _, _ in parts.values())
+    out, other = _entries(gt, res, texts, parts)
+    return out, other, any_text, notes, idents
+
+
+def _entries(gt: GTDocument, res: Resolution, texts: dict[str, str | None],
+             parts: dict[str, tuple[str | None, str, str]]) -> tuple[list[ComponentReplacement], list[OtherReplacement]]:
+    """The name components (and titles) of every required name, and every other required replacement, with the
+    text read at each GT word (``texts``) or, for an address part, per unit (``parts``)."""
+    words = gt.word_index()
     out = []
     for m in gt.mentions:
         if m.type is not PiiType.PERSON_NAME or res.mentions[m.id].requirement is not Requirement.MUST:
@@ -239,8 +250,6 @@ def _read_all(gt: GTDocument, res: Resolution, output: bytes, evaluation=None, c
                 out.append(ComponentReplacement(m.id, m.entity, wid, comp.value, text, texts.get(wid)))
         for wid in m.optional_words:
             out.append(ComponentReplacement(m.id, m.entity, wid, "title", words[wid][1].text, texts.get(wid)))
-    parts, idents = _address_parts(gt, res, doc, geoms, output, evaluation, config or EvalConfig(), notes)
-    any_text |= any(text is not None for text, _, _ in parts.values())
     other = []
     for m in gt.mentions:
         if not _is_other(m) or res.mentions[m.id].requirement is not Requirement.MUST:
@@ -252,7 +261,7 @@ def _read_all(gt: GTDocument, res: Resolution, output: bytes, evaluation=None, c
         got = [texts.get(wid) for seg in m.segments for wid in seg.words]
         other.append(OtherReplacement(m.id, m.entity, m.type.value, m.subtype, m.text,
                                       " ".join(t for t in got if t) or None))
-    return out, other, any_text, notes, idents
+    return out, other
 
 
 # -- addresses read per unit (eval-0.4, E6) -----------------------------------------------------------------
@@ -380,23 +389,30 @@ def _address_parts(gt: GTDocument, res: Resolution, doc, geoms, output: bytes, e
     idents: list[dict] = []
     for u in units:
         rb = unit_readback(u, gt, tokens, places, shifts, {}, cfg, lines)
-        texts = [t.text for t in rb]
-        roles = _role_words(texts) if texts else []
-        cut = next((k for k, (_, r) in enumerate(roles) if r in LOCALITY_ROLES), len(roles))
-        street_txt = " ".join(texts[:cut]) or None
-        loc_txt = " ".join(texts[cut:]) or None
-        for m in u.mentions:
-            if res.mentions[m.id].requirement is not Requirement.MUST:
-                continue
-            if u.street is not None and u.locality is not None:
-                part = "street" if m is u.street else "locality"
-                parts[m.id] = (street_txt if part == "street" else loc_txt, u.key, part)
-            else:
-                parts[m.id] = (" ".join(texts) or None, u.key, "locality" if m is u.locality else "whole")
-        original = [(words[w][1].text, u.roles[w]) for w in u.word_ids if w in u.roles]
-        idents.append({"unit": u.key, "identity": _key(address_identity(original)),
-                       "fake": _key(address_identity(roles)) if roles else None})
+        idents.append(_unit_parts(u, [t.text for t in rb], res, words, parts))
     return parts, idents
+
+
+def _unit_parts(u: AddressUnit, texts: list[str], res: Resolution, words: dict,
+                parts: dict[str, tuple[str | None, str, str]]) -> dict:
+    """One unit's read-back (``texts``, in reading order) cut into its street line and locality where the GT
+    role reader puts the locality's first word: each required part's fake goes into ``parts``. Returns the
+    unit's hashed identity and hashed canonical fake."""
+    roles = _role_words(texts) if texts else []
+    cut = next((k for k, (_, r) in enumerate(roles) if r in LOCALITY_ROLES), len(roles))
+    street_txt = " ".join(texts[:cut]) or None
+    loc_txt = " ".join(texts[cut:]) or None
+    for m in u.mentions:
+        if res.mentions[m.id].requirement is not Requirement.MUST:
+            continue
+        if u.street is not None and u.locality is not None:
+            part = "street" if m is u.street else "locality"
+            parts[m.id] = (street_txt if part == "street" else loc_txt, u.key, part)
+        else:
+            parts[m.id] = (" ".join(texts) or None, u.key, "locality" if m is u.locality else "whole")
+    original = [(words[w][1].text, u.roles[w]) for w in u.word_ids if w in u.roles]
+    return {"unit": u.key, "identity": _key(address_identity(original)),
+            "fake": _key(address_identity(roles)) if roles else None}
 
 
 def _prefix(original: str) -> int:
@@ -463,7 +479,24 @@ def evaluate_pseudonyms(gt: GTDocument, res: Resolution, output: bytes, evaluati
                         config: EvalConfig | None = None) -> PseudonymResult:
     """``evaluation``: the output's evaluation, whose word statuses place the kept words that bound an address
     unit's read-back (without it, the kept words found in the text at their GT place)."""
-    reps, other, any_text, notes, idents = _read_all(gt, res, output, evaluation, config)
+    return _checks(gt, *_read_all(gt, res, output, evaluation, config))
+
+
+def evaluate_text_pseudonyms(gt: GTDocument, res: Resolution, texts: dict[str, str | None],
+                             units: dict[str, list[str]]) -> PseudonymResult:
+    """The same checks on a tool's redacted text (eval-0.4, the text-level path): ``texts`` is the text the
+    diff puts at each GT word (benchmark.evaluate.textlevel.word_replacements), ``units`` each address unit's
+    new text as whitespace tokens (its read-back)."""
+    words = gt.word_index()
+    parts: dict[str, tuple[str | None, str, str]] = {}
+    idents = [_unit_parts(u, units.get(u.key, []), res, words, parts) for u in units_of(gt)
+              if any(res.mentions[m.id].requirement is Requirement.MUST for m in u.mentions)]
+    reps, other = _entries(gt, res, texts, parts)
+    return _checks(gt, reps, other, True, [], idents)
+
+
+def _checks(gt: GTDocument, reps: list[ComponentReplacement], other: list[OtherReplacement], any_text: bool,
+            notes: list[str], idents: list[dict]) -> PseudonymResult:
     names = [r for r in reps if r.component != "title"]
     if not any_text:
         why = "; ".join(notes) or "output has no text layer and the measurement OCR found no text"

@@ -10,15 +10,17 @@ from .artifacts import (
     PredMention,
     PseudonymEntry,
     PseudonymsArtifact,
+    RedactedTextArtifact,
     RegionAnchor,
     ReleaseInfo,
     RunInfo,
     TextArtifact,
+    TextMapping,
     TextPage,
     TextSpanAnchor,
     TextToken,
 )
-from .candidate import ARTIFACT_FILENAMES, ArtifactKind, CandidateManifest, InjectionKind
+from .candidate import ARTIFACT_FILENAMES, PRIMARY_OUTPUTS, ArtifactKind, CandidateManifest, InjectionKind
 from .common import (
     Action,
     ClassifiedClass,
@@ -59,6 +61,7 @@ EXPORTED = {
     "entities.schema.json": EntitiesArtifact,
     "plan.schema.json": PlanArtifact,
     "pseudonyms.schema.json": PseudonymsArtifact,
+    "redacted_text.schema.json": RedactedTextArtifact,
     "run_info.schema.json": RunInfo,
     "experiment.schema.json": ExperimentSpec,
     "run.schema.json": RunManifest,

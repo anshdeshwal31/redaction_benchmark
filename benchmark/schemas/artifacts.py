@@ -2,7 +2,8 @@
 
 Every artifact declares its coordinate frame. ``display_pt`` is canonical; ``pdf_user``
 and ``image_px`` (with ``dpi``) are accepted and converted by the evaluator. The
-output PDF itself is always required and always evaluated, whatever these claim.
+primary output itself is always required and always evaluated, whatever these claim: the
+output PDF, or, for a tool that emits redacted text instead (eval-0.4), ``redacted_text.json``.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ ENTITIES_SCHEMA = "rb.entities/0.1"
 PLAN_SCHEMA = "rb.plan/0.1"
 PSEUDONYMS_SCHEMA = "rb.pseudonyms/0.1"
 RUNINFO_SCHEMA = "rb.runinfo/0.1"
+REDACTED_TEXT_SCHEMA = "rb.redacted_text/0.1"
 
 
 class _Framed(StrictModel):
@@ -143,6 +145,31 @@ class PseudonymsArtifact(StrictModel):
     schema_id: Literal["rb.pseudonyms/0.1"] = Field(PSEUDONYMS_SCHEMA, alias="schema")
     entries: list[PseudonymEntry] = []
     mentions: list[MentionReplacement] = []
+
+
+# -- redacted text: the primary output of a text-only tool (eval-0.4) ------------
+
+
+class TextMapping(StrictModel):
+    """A replacement the tool says it made. Reported, never evidence."""
+
+    label: str
+    original: str
+    replacement: str
+
+
+class RedactedTextArtifact(StrictModel):
+    """The output of a tool that redacts text rather than a PDF, graded by the text-level path
+    (docs/metrics.md, "Text-level evaluation"): GT words are aligned to ``original_text`` and the
+    redacted text is diffed against it."""
+
+    schema_id: Literal["rb.redacted_text/0.1"] = Field(REDACTED_TEXT_SCHEMA, alias="schema")
+    original_text: str = Field(description="The text the tool redacted: as it extracted it from the input, or "
+                                           "as the benchmark injected it")
+    redacted_text: str = Field(description="The tool's redacted text")
+    page_break: str = Field("\f", description="Separates the pages in both texts (form feed by default)")
+    mappings: list[TextMapping] = Field([], description="The replacements the tool says it made; reported, "
+                                                        "never evidence")
 
 
 # -- run information -----------------------------------------------------------

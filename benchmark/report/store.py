@@ -16,6 +16,7 @@ import pyarrow.parquet as pq
 TABLES = ("documents", "mentions", "words", "components", "determinism", "findings", "matters")
 # Columns added in eval-0.4. Tables written before it lack them; read_rows gives them as None.
 EVAL04_COLUMNS = {
+    "documents": ("evidence",),
     "mentions": ("displaced_residual", "shared_words", "shared_chars", "shared_visible", "shared_pairs",
                  "address_unit", "locality_shape", "review_flags"),
     "words": ("in_place_fraction", "dx_pt", "dy_pt", "scale", "match_score", "text_offset_pt", "restyled"),
@@ -46,7 +47,8 @@ def rows_for_score(run: dict, item: dict, score, doc_entry=None) -> dict[str, li
     _flat("", ev.summary, doc)
     doc.update({"integrity_ok": ev.integrity.ok, "revisions_checked": ev.revisions_checked,
                 "eval_version": ev.eval_version, "eval_digest": ev.eval_digest, "policy": ev.policy,
-                "output_sha256": ev.output_sha256, "stages_exposed": ",".join(score.stages_exposed)})
+                "output_sha256": ev.output_sha256, "stages_exposed": ",".join(score.stages_exposed),
+                "evidence": ev.evidence})
     if score.attribution is not None:
         _flat("funnel.", score.attribution.funnel, doc)
         _flat("over.", score.attribution.counts.get("over_redaction", {}), doc)

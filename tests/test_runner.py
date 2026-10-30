@@ -688,3 +688,65 @@ def test_the_ceiling_mock_follows_the_run_policy_and_reports_show_the_departures
     assert "<td>ceiling, remover</td>" in board  # the departures' runs; ref was scored under the draft
     assert "departs" not in board  # the plural, never "the policies ... departs"
     assert title not in build_board(["ref"], tmp_path / "draft.html").read_text(encoding="utf-8")
+
+
+# -- a text-only tool: its primary output is redacted_text.json (eval-0.4, the text-level path) -------------
+
+TEXT_TOOL = '''import json, re, sys
+from pathlib import Path
+import pymupdf
+src, out = Path(sys.argv[1]), Path(sys.argv[2])
+original = "\\f".join(p.get_text("text") for p in pymupdf.open(src))
+fakes = {"Smithers": "Dunbar", "SMITHERS": "DUNBAR", "Jane": "Ruth"}
+redacted = re.sub(r"\\b(" + "|".join(fakes) + r")\\b", lambda m: fakes[m.group(1)], original)
+if "--none" not in sys.argv:
+    (out / "redacted_text.json").write_text(json.dumps({"schema": "rb.redacted_text/0.1", "original_text": original,
+                                                        "redacted_text": redacted}), encoding="utf-8")
+'''
+
+
+def _text_candidate(tmp: Path, name: str, extra: str = "") -> Path:
+    script = tmp / "text_tool.py"
+    script.write_text(TEXT_TOOL, encoding="utf-8")
+    path = tmp / f"{name}.yaml"
+    path.write_text(f"""schema: rb.candidate/0.1
+name: {name}
+version: "0.1.0"
+command: '{{python}} {script.as_posix()} {{input}} {{workdir}}{extra}'
+provides: [redacted_text]
+""", encoding="utf-8")
+    return path
+
+
+def test_a_manifest_has_exactly_one_primary_output():
+    base = {"schema": "rb.candidate/0.1", "name": "t", "version": "1", "command": "x"}
+    assert CandidateManifest.model_validate(dict(base, provides=["redacted_text"])).primary_output.value == \
+        "redacted_text"
+    assert CandidateManifest.model_validate(dict(base, provides=["output_pdf", "mentions"])).primary_output.value == \
+        "output_pdf"
+    for provides in (["output_pdf", "redacted_text"], ["mentions"]):
+        with pytest.raises(ValidationError, match="exactly one primary output"):
+            CandidateManifest.model_validate(dict(base, provides=provides))
+
+
+def test_a_text_only_tool_is_scored_on_its_redacted_text(env, tmp_path):
+    run = run_candidate(_text_candidate(tmp_path, "text-tool"), "synthetic@0.0.1", ROOT / "experiments" / "e2e.yaml",
+                        CLIENT_POLICY, run_id="text-tool")
+    assert all(not i.error and not i.invalid_artifacts for i in run.items), run.items
+    assert set(run.items[0].artifacts) == {"redacted_text"}
+    res = score_run("text-tool", CLIENT_POLICY, CFG)
+    rows, _ = query(res, "SELECT evidence, stages_exposed, clean_document FROM documents")
+    assert rows == [("text", "redacted_text", False)]
+    status = dict(query(res, "SELECT mention_id, status FROM mentions WHERE requirement='MUST'")[0])
+    # The surname-only mentions are replaced; the phone and email are left as they were; the signature has no
+    # text and is left out.
+    assert status["m2"] == status["m8"] == "SAFE_REPLACED"
+    assert status["ph1"] == status["em1"] == "LEAK_VISIBLE" and "sig1" not in status
+    assert build_report("text-tool", res).exists()
+    # A text-only tool that writes nothing has no output, named by its primary output's file.
+    run_candidate(_text_candidate(tmp_path, "text-none", " --none"), "synthetic@0.0.1",
+                  ROOT / "experiments" / "e2e.yaml", CLIENT_POLICY, run_id="text-none")
+    res = score_run("text-none", CLIENT_POLICY, CFG)
+    skipped = json.loads((res / "scoring.json").read_text(encoding="utf-8"))["skipped"]
+    assert [s["reason"] for s in skipped] == ["no redacted_text.json"]
+    assert {r[0] for r in must_rows(res)} == {"NO_OUTPUT"}

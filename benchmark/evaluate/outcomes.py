@@ -139,6 +139,9 @@ class DocumentEvaluation:
     surfaces: list[SurfaceOutcome]
     revisions_checked: int
     summary: dict
+    # What the verdicts rest on (eval-0.4): 'pdf', the output PDF's pixels, text layer and file; or 'text', the
+    # redacted text of a text-only tool (benchmark.evaluate.textlevel).
+    evidence: str = "pdf"
 
     def mention(self, mention_id: str) -> MentionOutcome:
         return next(m for m in self.mentions if m.mention_id == mention_id)

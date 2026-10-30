@@ -28,7 +28,8 @@ from .metrics import (
     response_from_artifacts,
     response_from_replacements,
 )
-from .schemas import GTDocument, PiiType, PolicyProfile, Requirement
+from .metrics.pseudonyms import evaluate_text_pseudonyms
+from .schemas import GTDocument, PiiType, PolicyProfile, RedactedTextArtifact, Requirement
 
 
 @dataclass
@@ -111,4 +112,37 @@ def score_document(
                                   loc=score.localization, fid=score.fidelity, pseud=score.pseudonyms,
                                   resolution=score.resolution,
                                   oracle=oracle, unstable=unstable, plan_regions_by_mention=regions_by_mention)
+    return score
+
+
+def score_text(
+    gt: GTDocument,
+    policy: PolicyProfile,
+    art: RedactedTextArtifact,
+    label_map: dict[str, PiiType] | None = None,
+    config: EvalConfig | None = None,
+    oracle: dict[str, dict[str, str]] | None = None,
+    unstable: set[str] | None = None,
+) -> DocumentScore:
+    """Score a text-only tool's redacted text (eval-0.4; docs/metrics.md, "Text-level evaluation"): the
+    evaluation from the text alone, detection from the changed spans, the pseudonym checks on the text the
+    diff puts at each GT word and address unit, and resolution inferred from the fakes."""
+    from .evaluate import textlevel
+
+    res = resolve(gt, policy)
+    diff = textlevel.align(gt, art)
+    ev = textlevel.score_text_document(gt, policy, art, config, diff=diff)
+    score = DocumentScore(gt.doc_id, ev, stages_exposed=["redacted_text"])
+    preds = textlevel.changed_spans(gt, diff, ev, art, label_map)
+    score.detection = evaluate_detection(gt, res, preds, shared={w for m in ev.mentions for w in m.shared_words})
+    score.pseudonyms = evaluate_text_pseudonyms(gt, res, textlevel.word_replacements(gt, diff),
+                                                textlevel.unit_texts(gt, diff))
+    names = {m.id: m.entity for m in gt.mentions if m.type is PiiType.PERSON_NAME and m.entity
+             and res.mentions[m.id].requirement is Requirement.MUST}
+    inferred = {k: v for k, v in replacements_by_mention(score.pseudonyms).items() if k in names}
+    if inferred:
+        score.resolution = evaluate_resolution(names, response_from_replacements(inferred),
+                                               source="inferred_from_pseudonyms")
+    score.attribution = attribute(gt, policy, res, ev, det=score.detection, pseud=score.pseudonyms,
+                                  resolution=score.resolution, oracle=oracle, unstable=unstable)
     return score

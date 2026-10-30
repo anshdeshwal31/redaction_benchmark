@@ -21,6 +21,7 @@ class ArtifactKind(str, Enum):
     PLAN = "plan"
     PSEUDONYMS = "pseudonyms"
     RUN_INFO = "run_info"
+    REDACTED_TEXT = "redacted_text"
 
 
 ARTIFACT_FILENAMES = {
@@ -31,7 +32,11 @@ ARTIFACT_FILENAMES = {
     ArtifactKind.PLAN: "plan.json",
     ArtifactKind.PSEUDONYMS: "pseudonyms.json",
     ArtifactKind.RUN_INFO: "run_info.json",
+    ArtifactKind.REDACTED_TEXT: "redacted_text.json",
 }
+# A candidate's primary output, graded end to end: the output PDF, or the redacted text of a tool that
+# emits text instead (eval-0.4, the text-level path). Exactly one of them.
+PRIMARY_OUTPUTS = (ArtifactKind.OUTPUT_PDF, ArtifactKind.REDACTED_TEXT)
 
 
 class InjectionKind(str, Enum):
@@ -63,10 +68,16 @@ class CandidateManifest(StrictModel):
     timeout_s: int = Field(900, gt=0)
     env: dict[str, str] = {}
 
+    @property
+    def primary_output(self) -> ArtifactKind:
+        """The output graded end to end: redacted_text for a text-only tool, else output_pdf."""
+        return ArtifactKind.REDACTED_TEXT if ArtifactKind.REDACTED_TEXT in self.provides else ArtifactKind.OUTPUT_PDF
+
     @model_validator(mode="after")
     def _check(self) -> "CandidateManifest":
-        if ArtifactKind.OUTPUT_PDF not in self.provides:
-            raise ValueError("every candidate must provide output_pdf")
+        if sum(k in self.provides for k in PRIMARY_OUTPUTS) != 1:
+            raise ValueError("every candidate must provide exactly one primary output: output_pdf, or "
+                             "redacted_text for a tool that emits redacted text")
         if self.frame is Frame.IMAGE_PX and self.dpi is None:
             raise ValueError("frame image_px requires dpi")
         if not (self.version or self.version_command):
