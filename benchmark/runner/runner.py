@@ -26,6 +26,7 @@ import yaml
 from .. import __version__
 from ..dataset import document_pdf, load_manifest, manifest_path
 from ..gt.io import find_gt, load_policy, read_model, write_model
+from ..gt.policy import rules_digest
 from ..schemas import CandidateManifest, InjectionKind
 from ..schemas.run import MODE_INJECTS, ExperimentSpec, RunItem, RunManifest, RunPolicy
 from .artifacts import load_artifacts, sha256_file
@@ -194,11 +195,11 @@ def resolve_version(manifest: CandidateManifest) -> str:
 
 
 def policy_record(policy_path: str | Path, given_to_tool: bool | None = None) -> RunPolicy:
-    """Name, version, content hash and absolute path of a policy file."""
+    """Name, version, content hash, rules digest and absolute path of a policy file."""
     path = Path(policy_path).resolve()
     policy = load_policy(path)
     return RunPolicy(name=policy.name, version=policy.version, sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-                     path=str(path), given_to_tool=given_to_tool)
+                     rules_sha256=rules_digest(policy), path=str(path), given_to_tool=given_to_tool)
 
 
 def policy_given(command: str, mode: str, inject_from: str = "gt") -> bool:

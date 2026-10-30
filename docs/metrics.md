@@ -146,23 +146,38 @@ purpose; each departure is recorded under `deviations` in the policy file (quest
 answer, what is applied instead, why, and the effect on scores). Scoring copies the policy id and
 its departures into `scoring.json`, and the run report and the comparison board show them in a
 marked section, "Departures from the client's answers", above the scorecard, so a score is never
-read as the client's own rules when it is not. Policy 1.1.0 has two: the whole address is replaced
-(Q4; its locality is MUST: the project owner decided on 2026-10-22 that every tool replaces whole
-addresses, and only the owner can lift it) and role words are left as they are (Q10). A board shows
+read as the client's own rules when it is not. Policy 1.1.1, like 1.1.0, has two: the whole address
+is replaced (Q4; its locality is MUST: the project owner decided on 2026-10-22 that tools 1 and 2
+replace whole addresses, the scores hold every tool scored under the policy to that rule, and only
+the owner can lift it) and role words are left as they are (Q10). A board shows
 the policy each run was scored under; when its runs were scored under different policies it says so,
 and each departure names the runs it applies to.
 
 **The run's policy.** `run.json` records the policy a run was started with (name, version, SHA-256
-of the file) and whether it reached the tool (`given_to_tool`): it does when the tool's command
-passes `{policy}`, or when an oracle experiment injects mentions, entities or regions built from GT
-under it. `scoring.json` copies it as `policy_given_to_tool`; for a run recorded before
-`given_to_tool` was kept, or before the run's policy was recorded at all, it is worked out the same
-way from the recorded command and experiment. `rb score` uses that policy unless `--policy` names another (or the file is gone, then the
-client's policy). When the tool was given the policy and the scoring policy differs in name, version
-or file content, `scoring.json` (`policy_warning`), the run report and the board say plainly that
-the tool was given one policy and is scored against another. A tool that never receives the policy
-(no `{policy}`, no oracle inputs, like tool 2) follows its own rules whatever policy the run was
-started with: it gets no warning and can be rescored under any policy without a new run.
+of the file, rules digest) and whether it reached the tool (`given_to_tool`): it does when the
+tool's command passes `{policy}`, or when an oracle experiment injects mentions, entities or regions
+built from GT under it. `scoring.json` copies it as `policy_given_to_tool`; for a run recorded
+before `given_to_tool` was kept, or before the run's policy was recorded at all, it is worked out
+the same way from the recorded command and experiment. `rb score` uses that policy unless
+`--policy` names another (or the file is gone, then the client's policy). When the tool was given
+the policy and the scoring policy differs in name, version or file content, `scoring.json`
+(`policy_warning`), the run report and the board say plainly that the tool was given one policy and
+is scored against another. A tool that never receives the policy (no `{policy}`, no oracle inputs,
+like tool 2) follows its own rules whatever policy the run was started with: it gets no warning and
+can be rescored under any policy without a new run.
+
+**The rules digest.** A policy's rules digest (`rules_sha256` in the run's policy record,
+`policy_rules_sha256` for the scoring policy in `scoring.json`) is the SHA-256 of the policy without
+its prose: the version, the description, every rule's note and every deviation's client answer,
+applied text, reason and effect are left out; the name, the rules, the defaults, the consistency
+scope, the deviation ids and the rules each deviation names stay in. A wording-only release keeps
+it: 1.1.0 and 1.1.1 have the same digest. When the version or the file differs but both digests are
+known and equal, the warning says only the wording changed ("Same rules, wording changed: the tool
+was given ... and these scores use ...; the rules digest is the same (...)"), and the board marks
+the given policy "same rules"; when the names differ, or a rule changed, the warnings above stand.
+For a run recorded before the digest was kept, scoring computes it from the run's policy file when
+that file still has the recorded SHA-256 (`run_policy_rules_sha256` in `scoring.json`), and leaves it
+unknown otherwise.
 
 ## Over-redaction
 

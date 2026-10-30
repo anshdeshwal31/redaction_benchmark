@@ -14,19 +14,24 @@
 #   a LOCATION/locality;
 # - handwriting follows the type rules: a handwritten date or suburb is kept like its typed form.
 #
-# Departures from the client's answers (1.1.0; listed under `deviations`, shown in every report):
+# Departures from the client's answers (since 1.1.0; listed under `deviations`, shown in every report):
 # - whole-address (Q4): the whole address is replaced, street line and locality alike. The project
-#   owner decided on 2026-10-22 that every tool replaces whole addresses; it is not tied to the check
-#   of the rule-based address splits of GT 0.2, and only the owner can lift it. A suburb or town
-#   mentioned on its own is still kept.
+#   owner decided on 2026-10-22 that tools 1 and 2 replace whole addresses, and the scores hold every
+#   tool scored under this policy to that rule; it is not tied to the check of the rule-based address
+#   splits of GT 0.2, and only the owner can lift it. A suburb or town mentioned on its own is still
+#   kept.
 # - role-words (Q10): role words such as "the claimant" are left as they are; they are not in GT,
 #   so changing them only counts as damage to ordinary words. To be confirmed with the client.
+#
+# 1.1.1 changes wording only ('tools 1 and 2', one more sentence in the whole-address effect): its
+# rules digest is the same as 1.1.0's, so a run given 1.1.0 and scored under 1.1.1 is told only the
+# wording changed.
 #
 # Still open: quasi-identifiers the questionnaire did not ask about (religion, education,
 # qualifications, marital, benefit or employment status, accreditation, courses) stay MAY.
 schema: rb.policy/0.1
 name: au-medicolegal
-version: 1.1.0
+version: 1.1.1
 description: >
   The client's decisions of 2026-10-18: replace every person, organisation, contact detail,
   identifier, signature and image of a person with a fake; keep every date, age, occupation and
@@ -91,8 +96,9 @@ rules:
       subtype: [locality]
     requirement: MUST
     action: replace
-    note: The suburb, state and postcode of an address are replaced with its street line; every tool replaces
-      whole addresses (deviation whole-address, the project owner's rule; the client keeps them, Q4).
+    note: The suburb, state and postcode of an address are replaced with its street line; the project owner
+      decided on 2026-10-22 that tools 1 and 2 replace whole addresses, and the scores hold every tool scored
+      under this policy to that rule (deviation whole-address; the client keeps them, Q4).
 
   - id: places-kept
     when:
@@ -129,11 +135,15 @@ deviations:
       The whole address is replaced: street line, suburb, state and postcode. A suburb or town
       mentioned on its own is still kept.
     reason: >-
-      The project owner's rule: on 2026-10-22 the owner decided that every tool replaces whole
-      addresses, and the scores hold every tool to it. It began on 2026-10-21, when GT 0.2 split each
-      address into street line and locality by a rule no person had checked; checking the splits does
-      not end it. Only the owner can lift it, and the localities of addresses would then be kept again.
-    effect: A tool that keeps the suburb and postcode of an address, as the client asked, is scored as leaking them.
+      The project owner's rule: on 2026-10-22 the owner decided that tools 1 and 2 replace whole
+      addresses, and the scores hold every tool scored under this policy to that rule. It began on
+      2026-10-21, when GT 0.2 split each address into street line and locality by a rule no person had
+      checked; checking the splits does not end it. Only the owner can lift it, and the localities of
+      addresses would then be kept again.
+    effect: >-
+      A tool that keeps the suburb and postcode of an address, as the client asked, is scored as leaking
+      them. A suburb kept on its own elsewhere can still reveal the real suburb of the address it
+      accompanies.
     rules: [address-locality-replaced]
 
   - id: role-words

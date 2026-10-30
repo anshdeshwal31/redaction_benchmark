@@ -7,9 +7,10 @@ ADDRESS fact becomes two mentions of the same entity:
 - the locality (suburb, state, postcode, country), ``LOCATION`` with subtype ``locality`` and the
   condition ``address_locality``. That subtype is reserved for this part of an address: a place
   mentioned on its own takes ``suburb``, ``city``, ``region``, ``state``, ``country``, ``postcode`` or
-  ``place_of_declaration`` (``rb gt validate`` warns otherwise). Policy 1.1.0 replaces the locality
-  too (deviation ``whole-address``): the project owner decided on 2026-10-22 that every tool replaces
-  whole addresses. A check of the splits does not end that; only the owner can.
+  ``place_of_declaration`` (``rb gt validate`` warns otherwise). Policy 1.1.0 and later replace the
+  locality too (deviation ``whole-address``): the project owner decided on 2026-10-22 that tools 1
+  and 2 replace whole addresses, and the scores hold every tool scored under the policy to that rule.
+  A check of the splits does not end that; only the owner can.
 
 Australian addresses end in ``<suburb> <state> <postcode>``; the locality is found from
 the end, and its start is the nearest boundary before the state: a street-type word, a

@@ -11,6 +11,7 @@ from pathlib import Path
 from ..dataset import load_manifest
 from ..evaluate import EvalConfig
 from ..gt.io import find_gt, load_policy
+from ..gt.policy import rules_digest
 from ..metrics import InkIndex, compare_runs
 from ..report.store import rows_for_score, write_tables
 from ..schemas import CandidateManifest, PiiType
@@ -23,15 +24,40 @@ def results_root() -> Path:
     return Path(os.environ.get("RB_RESULTS_DIR", ROOT / "results"))
 
 
-def policy_warning(run_policy: dict | None, scored: dict, reached_tool: bool = True) -> str | None:
+def given_rules_sha256(run_policy: dict | None) -> str | None:
+    """The rules digest of the policy a run was given: as the run recorded it, or, for a run recorded
+    before the digest was kept, computed from its policy file when that file still has the recorded
+    content. None when it cannot be known (no record, or the file is gone or has changed)."""
+    if not run_policy:
+        return None
+    if run_policy.get("rules_sha256"):
+        return run_policy["rules_sha256"]
+    path = Path(run_policy.get("path") or "")
+    try:
+        if path.is_file() and sha256_file(path) == run_policy["sha256"]:
+            return rules_digest(load_policy(path))
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def policy_warning(run_policy: dict | None, scored: dict, reached_tool: bool = True,
+                   given_rules: str | None = None) -> str | None:
     """A plain warning when a run is scored under another policy than the one its tool was given
     (``{policy}`` in its command, oracle inputs built under it). None when they match, when the run
     predates the record, or when the policy never reached the tool: such a tool follows its own rules
-    whatever policy the run was started with."""
+    whatever policy the run was started with. When only the version or the file differs and both rules
+    digests are known and equal, it says that only the wording changed. ``given_rules`` is the given
+    policy's digest as worked out by :func:`given_rules_sha256`; without it the recorded one is used."""
     if not run_policy or not reached_tool:
         return None
     given = f"{run_policy['name']}@{run_policy['version']}"
     used = f"{scored['name']}@{scored['version']}"
+    if run_policy["name"] == scored["name"] and (given != used or run_policy["sha256"] != scored["sha256"]):
+        rules = given_rules or run_policy.get("rules_sha256")
+        if rules and rules == scored.get("rules_sha256"):
+            return (f"Same rules, wording changed: the tool was given {given} and these scores use {used}; the "
+                    f"rules digest is the same ({rules[:8]}).")
     if given != used:
         return (f"The tool was given policy {given} when it ran, but these scores use policy {used}: its output "
                 f"is judged against rules it was not given.")
@@ -138,6 +164,7 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
     scored_policy = policy_record(policy_path).model_dump(mode="json")
     run_policy = run.policy.model_dump(mode="json") if run.policy else None
     given = policy_was_given(run, manifest)
+    given_rules = given_rules_sha256(run_policy)
     ds = load_manifest(run.dataset["name"], run.dataset["version"])
     oracle = {mode: _oracle_status(rid) for mode, rid in (oracle_runs or {}).items()}
     out_root = results_root() / run_id
@@ -229,11 +256,12 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
     (out_root / "scoring.json").write_text(json.dumps({
         "run_id": run_id, "eval_config": cfg.model_dump(mode="json"), "eval_digest": cfg.digest(),
         "policy": str(policy_path), "policy_id": f"{policy.name}@{policy.version}",
-        "policy_sha256": scored_policy["sha256"],
-        # The policy the run was started with, whether it reached the tool, and a warning when the tool
-        # was given it and the scores use another one.
-        "run_policy": run_policy, "policy_given_to_tool": given,
-        "policy_warning": policy_warning(run_policy, scored_policy, given),
+        "policy_sha256": scored_policy["sha256"], "policy_rules_sha256": scored_policy["rules_sha256"],
+        # The policy the run was started with, whether it reached the tool, its rules digest (recorded,
+        # or computed from its unchanged file; null when unknown), and a warning when the tool was given
+        # it and the scores use another one.
+        "run_policy": run_policy, "policy_given_to_tool": given, "run_policy_rules_sha256": given_rules,
+        "policy_warning": policy_warning(run_policy, scored_policy, given, given_rules),
         # Deliberate departures from the client's answers, kept with the scores for every report.
         "deviations": [d.model_dump(mode="json") for d in policy.deviations],
         "oracle_runs": oracle_runs or {}, "gt": gt_used,

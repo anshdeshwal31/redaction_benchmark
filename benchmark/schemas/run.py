@@ -59,6 +59,11 @@ class RunPolicy(StrictModel):
     name: str
     version: str
     sha256: Sha256 = Field(description="SHA-256 of the policy file's bytes")
+    rules_sha256: Sha256 | None = Field(None, description="Rules digest: SHA-256 of the policy without its wording "
+                                                          "(version, description, notes, the deviations' texts), so "
+                                                          "a wording-only change keeps it. Absent in runs recorded "
+                                                          "before it was kept; scoring then computes it from the "
+                                                          "policy file when that file is unchanged")
     path: str = Field(description="Absolute path of the policy file when the run was made")
     given_to_tool: bool | None = Field(None, description="Whether the tool received this policy: its command passes "
                                                          "{policy}, or the experiment injected mentions, entities or "

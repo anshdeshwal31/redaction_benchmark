@@ -7,8 +7,8 @@
 - Q11: kept words must stay searchable; a changed page size is accepted.
 - Q16: damaging more than 1% of a document's ordinary words fails it.
 - The tool's own safety check is graded against the evaluator's verdict.
-- Policy 1.1.0 departs from two answers on purpose (whole addresses replaced, role words kept);
-  every report shows the departures.
+- Policy 1.1.1 (the rules of 1.1.0, reworded) departs from two answers on purpose (whole addresses
+  replaced, role words kept); every report shows the departures. Its rules digest ignores wording.
 - A mock that follows the client's rules completely is clean on every encoding: the ceiling. It
   gives each person one fake across a matter, and each phone and Medicare number a fake of its own.
 """
@@ -17,6 +17,7 @@ import dataclasses
 import io
 import json
 import math
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -427,16 +428,47 @@ def test_matter_consistency_compares_documents_of_a_matter():
     assert rows[0]["documents"] == "DPI,IME" and rows[0]["distinct_replacements"] == 2
 
 
-# -- departures from the client's answers (policy 1.1.0) -------------------------------------------
+# -- departures from the client's answers (policy 1.1.1, the rules of 1.1.0) ------------------------
 
 
 def test_v1_records_its_two_departures_from_the_client():
     by_id = {d.id: d for d in V1.deviations}
-    assert V1.version == "1.1.0" and set(by_id) == {"whole-address", "role-words"}
+    assert V1.version == "1.1.1" and set(by_id) == {"whole-address", "role-words"}
     assert by_id["whole-address"].question == "Q4" and by_id["whole-address"].rules == ["address-locality-replaced"]
     assert by_id["role-words"].question == "Q10" and by_id["role-words"].rules == []
     assert all(d.client_answer and d.applied and d.reason for d in V1.deviations)
     assert DRAFT.deviations == []
+    # The owner's rule of 2026-10-22 is for tools 1 and 2; the scores hold every tool to it.
+    reason = " ".join(by_id["whole-address"].reason.split())
+    assert "2026-10-22" in reason and "tools 1 and 2" in reason
+    assert "still reveal the real suburb" in by_id["whole-address"].effect
+    text = (ROOT / "policies" / "au-medicolegal-v1.yaml").read_text(encoding="utf-8").replace("#", " ")
+    assert not re.search(r"every\s+tool\s+replaces", text)  # also across wrapped comment lines
+
+
+def test_rules_digest_ignores_wording():
+    from benchmark.gt import rules_digest
+
+    def edited(fn) -> PolicyProfile:
+        data = V1.model_dump(mode="json", by_alias=True)
+        fn(data)
+        return PolicyProfile.model_validate(data)
+
+    def reword(data):
+        data["version"], data["description"] = "9.9.9", "Another description."
+        data["rules"][0]["note"] = "Another note."
+        data["deviations"][0].update(client_answer="x", applied="y", reason="Another reason.", effect="z")
+
+    digest = rules_digest(V1)
+    assert len(digest) == 64 and rules_digest(edited(reword)) == digest
+    # What the policy decides changes it.
+    assert rules_digest(edited(lambda d: d["rules"][0].update(requirement="MAY"))) != digest
+    assert rules_digest(edited(lambda d: d["rules"][-1]["when"].update(cls=["MEDICATION"]))) != digest
+    places = next(i for i, r in enumerate(V1.rules) if r.id == "places-kept")
+    assert rules_digest(edited(lambda d: d["rules"][places]["when"]["subtype"].append("street"))) != digest
+    assert rules_digest(edited(lambda d: d.update(default_mention="MUST"))) != digest
+    assert rules_digest(edited(lambda d: d["deviations"][0].update(rules=[]))) != digest
+    assert rules_digest(DRAFT) != digest
 
 
 def _with_deviations(*devs) -> dict:

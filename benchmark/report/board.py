@@ -111,7 +111,8 @@ def _bootstrap(per_doc: list[tuple[int, int]], n: int = 2000) -> tuple[float, fl
 
 def _given_policy(r: RunData) -> str | None:
     """The policy a run's tool was given, when scoring warned that the scores use another one; with the
-    file hashes when only the file's content differs (same name and version)."""
+    file hashes when only the file's content differs (same name and version), and 'same rules' when
+    the two policies' rules digests are known and equal (only the wording changed)."""
     given = r.scoring.get("run_policy") or {}
     if not r.scoring.get("policy_warning") or not given:
         return None
@@ -119,6 +120,9 @@ def _given_policy(r: RunData) -> str | None:
     if label == r.policy:
         label += (f" with other content (file {given['sha256'][:8]}; scored with "
                   f"{(r.scoring.get('policy_sha256') or '')[:8]})")
+    rules = r.scoring.get("run_policy_rules_sha256") or given.get("rules_sha256")
+    if rules and rules == r.scoring.get("policy_rules_sha256"):  # the digest covers the name too
+        label += ", same rules"
     return label
 
 

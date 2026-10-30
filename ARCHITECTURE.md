@@ -28,7 +28,7 @@ tool's files. So when the GT, the policy or a metric changes, a run can be score
 without running the tool again. One caveat: a tool that follows the run's policy (it is passed
 as `{policy}`; every mock does) was given that policy, so scoring its run under another one
 judges it against rules it never saw. The run records its policy, and scoring warns when the two
-differ.
+differ; when only their wording differs (the same rules digest), the warning says so.
 
 These rules hold across the whole codebase:
 
@@ -48,7 +48,7 @@ These rules hold across the whole codebase:
   not scored. Files a tool did not declare in its manifest are ignored, except `run_info.json`,
   whose release verdict is always graded.
 - **The client's rules are the yardstick.** The default policy is the client's decisions
-  (`au-medicolegal-v1.yaml`, 1.1.0): every required item must be replaced by a realistic fake,
+  (`au-medicolegal-v1.yaml`, 1.1.1): every required item must be replaced by a realistic fake,
   and hiding it without one is its own verdict, `NOT_REPLACED`. Where the policy departs from the
   client's answers on purpose, every report says so.
 - **Confirmed and inferred causes are kept apart.** Every root cause is labelled
@@ -233,7 +233,9 @@ sequenceDiagram
   - the hash of the dataset manifest;
   - the candidate's version and the hash of its manifest;
   - the environment and package versions;
-  - the policy the run was made with: name, version, SHA-256 of the file and its path;
+  - the policy the run was made with: name, version, SHA-256 of the file, its rules digest (the
+    policy without its wording, so a wording-only release such as 1.1.0 to 1.1.1 keeps it) and
+    its path;
   - the SHA-256 of every input, injected file and output file.
 
 ## Scoring a run
@@ -457,13 +459,13 @@ flowchart LR
   so this is how they are checked against real layouts, scans and fonts. A check that breaks
   is recorded as an error, named by its exception's class only, and the other checks and
   documents still run.
-- **The policy is the client's.** The default, `au-medicolegal-v1.yaml` (1.1.0), encodes the
+- **The policy is the client's.** The default, `au-medicolegal-v1.yaml` (1.1.1), encodes the
   client's questionnaire answers; only quasi-identifiers the questionnaire did not ask about stay
   MAY, neither rewarding nor penalising a tool. It departs from the answers in two places, each
   recorded under `deviations` and shown in every report and board: the whole address is
-  replaced (Q4), because the project owner decided on 2026-10-22 that every tool replaces whole
-  addresses (a check of the rule-based address splits of GT 0.2 does not end it; only the owner
-  can), while a suburb or town mentioned on its own is still kept; and role words such as "the
+  replaced (Q4), because the project owner decided on 2026-10-22 that tools 1 and 2 replace whole
+  addresses and the scores hold every tool scored under the policy to that rule (a check of the
+  rule-based address splits of GT 0.2 does not end it; only the owner can), while a suburb or town mentioned on its own is still kept; and role words such as "the
   claimant" are left as they are (Q10). The GT's LOCATION subtype decides keep or replace, so
   `locality` is reserved for the locality part of an address and `rb gt validate` warns
   otherwise. The draft policy (`au-medicolegal-v0.yaml`) stays for re-scoring old runs and for
@@ -796,8 +798,9 @@ Gaps:
 - **Small seed set.** There are five documents, one per encoding, so the effects of
   document conditions cannot be separated from the effects of the individual documents.
   Confidence intervals are wide, and the seed documents cannot serve as a blind test set.
-- **Policy departures.** Policy 1.1.0 replaces whole addresses: the project owner's rule for
-  every tool since 2026-10-22, which a check of the GT address splits does not end. Only the
+- **Policy departures.** Policy 1.1.1, like 1.1.0, replaces whole addresses: the project owner
+  decided on 2026-10-22 that tools 1 and 2 replace whole addresses, and the scores hold every tool
+  scored under the policy to that rule, which a check of the GT address splits does not end. Only the
   owner can lift it; localities would then become kept items and scores would change. A tool
   that never reads the policy (no `{policy}`, no oracle inputs) can be rescored under a new
   policy rather than rerun; a tool or mock that follows `{policy}` should be run again, and
@@ -820,7 +823,7 @@ Gaps:
 - The candidate manifests in the repo are the mocks, the ceiling mock and tool 2's
   `mlredact-client.yaml`; tool 2 has been run on the synthetic dataset only, and no real tool on
   the seed documents.
-- The default policy is `au-medicolegal-v1.yaml` 1.1.0 with two departures; every mock manifest
+- The default policy is `au-medicolegal-v1.yaml` 1.1.1 with two departures; every mock manifest
   passes `{policy}`.
 - Leak verdicts use no OCR.
 - The GT version and hash are recorded in scoring records; the run's policy, and whether it

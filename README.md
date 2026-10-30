@@ -123,20 +123,20 @@ Built: the full evaluation pipeline, validated against fault-injecting mocks on 
 documents in every encoding seen in the seed set.
 
 **Policy.** The default policy is the client's decisions, `policies/au-medicolegal-v1.yaml`
-(version 1.1.0): every person, organisation, contact detail, identifier, signature and image of a
+(version 1.1.1, the rules of 1.1.0 reworded): every person, organisation, contact detail, identifier, signature and image of a
 person is replaced with a fake; dates, ages, occupation, clinical or legal content, and suburbs
 and towns mentioned on their own are kept. Hiding a required item without replacing it is its own
 verdict (`NOT_REPLACED`); a document also has to stay searchable and keep 99% of its ordinary
 words. The draft (`au-medicolegal-v0.yaml`) stays for re-scoring old runs. Definitions:
 [docs/metrics.md](docs/metrics.md).
 
-**Policy 1.1.0 departs from the client's answers in two places, on purpose.** Both are recorded
+**Policy 1.1.1, like 1.1.0, departs from the client's answers in two places, on purpose.** Both are recorded
 under `deviations` in the policy file, and every run report and comparison board shows them in a
 marked section, "Departures from the client's answers", above the scorecard:
 
 | Question | The client's answer | Applied instead | Why |
 |---|---|---|---|
-| Q4 | Suburbs and towns are kept, and postcodes too | The whole address is replaced: street line, suburb, state and postcode. A suburb or town mentioned on its own is still kept. | The project owner decided on 2026-10-22 that every tool replaces whole addresses, and the scores hold every tool to it. It began when GT 0.2 split each address into street line and locality by a rule no person had checked; checking the splits does not end it, only the owner can. A tool that keeps the suburb and postcode of an address, as the client asked, is scored as leaking them. |
+| Q4 | Suburbs and towns are kept, and postcodes too | The whole address is replaced: street line, suburb, state and postcode. A suburb or town mentioned on its own is still kept. | The project owner decided on 2026-10-22 that tools 1 and 2 replace whole addresses, and the scores hold every tool scored under this policy to that rule. A suburb kept on its own elsewhere can still reveal the real suburb of the address it accompanies. It began when GT 0.2 split each address into street line and locality by a rule no person had checked; checking the splits does not end it, only the owner can. A tool that keeps the suburb and postcode of an address, as the client asked, is scored as leaking them. |
 | Q10 | Role words such as "the claimant" also count | Role words are left as they are | They are not in the ground truth, so changing them only counts as damage to ordinary words. Decided by the project owner on 2026-10-21; to be confirmed with the client. |
 
 Ground truth for the five seed documents exists as `gt_version 0.2-ai`: an AI annotator

@@ -181,6 +181,20 @@
      "title": "Sha256",
      "type": "string"
     },
+    "rules_sha256": {
+     "anyOf": [
+      {
+       "pattern": "^[0-9a-f]{64}$",
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Rules digest: SHA-256 of the policy without its wording (version, description, notes, the deviations' texts), so a wording-only change keeps it. Absent in runs recorded before it was kept; scoring then computes it from the policy file when that file is unchanged",
+     "title": "Rules Sha256"
+    },
     "path": {
      "description": "Absolute path of the policy file when the run was made",
      "title": "Path",

@@ -4,10 +4,15 @@ Word-level effective requirement uses the precedence MUST > MAY > MUST_NOT > ORD
 a word inside any required mention must go even if it is also part of a protected
 span; a word covered only by protected spans must stay; uncovered words are
 ORDINARY (their loss is collateral damage, weighted below protected damage).
+
+A policy's rules digest hashes what it decides without its wording, so a wording-only
+release (1.1.0 -> 1.1.1) is known to judge outputs by the same rules.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -146,3 +151,26 @@ def resolve(gt: GTDocument, policy: PolicyProfile) -> Resolution:
 
 def pending_rules(policy: PolicyProfile) -> list[PolicyRule]:
     return [r for r in policy.rules if r.pending]
+
+
+# Prose that explains a policy without changing what it decides; left out of the rules digest.
+PROSE_FIELDS = ("version", "description")
+RULE_PROSE_FIELDS = ("note",)
+DEVIATION_PROSE_FIELDS = ("client_answer", "applied", "reason", "effect")
+
+
+def rules_digest(policy: PolicyProfile) -> str:
+    """SHA-256 (hex) of the policy without its prose: the version, the description, every rule's note
+    and every deviation's client answer, applied text, reason and effect. Its name, rules, defaults,
+    consistency scope, deviation ids and the rules each deviation names stay in, so two files with the
+    same digest judge every output by the same rules. (YAML comments are never part of the policy.)"""
+    data = policy.model_dump(mode="json", by_alias=True)
+    for key in PROSE_FIELDS:
+        data.pop(key, None)
+    for rule in data["rules"]:
+        for key in RULE_PROSE_FIELDS:
+            rule.pop(key, None)
+    for dev in data["deviations"]:
+        for key in DEVIATION_PROSE_FIELDS:
+            dev.pop(key, None)
+    return hashlib.sha256(json.dumps(data, sort_keys=True).encode("utf-8")).hexdigest()

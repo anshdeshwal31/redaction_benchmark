@@ -1,7 +1,7 @@
 """Ground-truth tooling: IO, policy resolution, validation."""
 
 from .io import dump_json, load_gt, load_policy, read_model, write_model
-from .policy import Effective, Resolution, Resolved, pending_rules, resolve, resolve_fact
+from .policy import Effective, Resolution, Resolved, pending_rules, resolve, resolve_fact, rules_digest
 from .validate import Issue, validate_gt
 
 __all__ = [
@@ -16,6 +16,7 @@ __all__ = [
     "read_model",
     "resolve",
     "resolve_fact",
+    "rules_digest",
     "validate_gt",
     "write_model",
 ]
