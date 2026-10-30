@@ -7,11 +7,12 @@ from pathlib import Path
 import pytest
 
 from benchmark.gt import load_gt
-from benchmark.gt.address_split import read_end, split_addresses
+from benchmark.gt.address_split import (ROLE_NAMES, STREET_TYPE_NAMES, STREET_TYPES, canonical_street_type,
+                                        mention_address_roles, read_end, split_addresses)
 from benchmark.gt.validate import validate_gt
 from benchmark.schemas import (EntityKind, GTDocument, GTEntity, GTMention, GTPage, GTWord, PiiType, Role, Segment,
                                WordSource)
-from tests.address_cases import build_gt, expected_outcome, unit_key, units, word_id
+from tests.address_cases import build_gt, build_split_gt, expected_outcome, table, unit_key, units, word_id
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -250,3 +251,98 @@ def test_resplitting_the_synthetic_gt_gives_the_same_mentions(path):
     gt = load_gt(path)
     new, _ = split_addresses(_join_split_addresses(gt))
     assert new.mentions == gt.mentions
+
+
+# -- roles of an address unit's words (address_roles) --------------------------------------------
+
+# Words whose table role the reader may miss: OCR forms of a state or postcode ('N5W', '275O'), which
+# GT words hold only where the page itself prints them, and the town and postcode of an overseas unit
+# (no foreign gazetteer); an overseas unit's country must still read 'country'.
+ROLE_ALLOWED = {"ocr-letter-o-in-postcode/A1": {"suburb", "state", "postcode"},
+                "ocr-state-n5w/A1": {"suburb", "state", "postcode"}}
+OVERSEAS_ALLOWED = {"suburb", "postcode"}
+STRUCTURE_PARTS = {"state", "designator"}
+
+
+def test_address_roles_match_the_case_table():
+    assert set(ROLE_NAMES) == set(table()["roles"])
+    by_case: dict[str, tuple[dict, list[dict]]] = {}
+    for case, unit in units():
+        by_case.setdefault(case["id"], (case, []))[1].append(unit)
+    total, agree, wrong = 0, 0, []
+    for case, case_units in by_case.values():
+        roles = {r.wid: r for rs in mention_address_roles(build_split_gt(case)).values() for r in rs}
+        for unit in case_units:
+            key = unit_key(case, unit)
+            total += 1
+            allowed = ROLE_ALLOWED.get(key, OVERSEAS_ALLOWED if unit.get("overseas") else set())
+            diffs = [(text, role, roles[word_id((li, wi))].role if word_id((li, wi)) in roles else None)
+                     for li, wi, text, role in unit["words"]
+                     if word_id((li, wi)) not in roles or roles[word_id((li, wi))].role != role]
+            agree += not diffs
+            wrong += [f"{key}: {t} {want} -> {got}" for t, want, got in diffs if want not in allowed]
+            for ps in unit.get("partial_structure", []):
+                text = case["lines"][ps["at"][0]]["text"].split()[ps["at"][1]]
+                parts = roles[word_id(ps["at"])].parts
+                keep = "".join(text[a:b] for a, b, r in parts if r in STRUCTURE_PARTS)
+                change = "".join(text[a:b] for a, b, r in parts if r not in STRUCTURE_PARTS)
+                if (keep, change) != (ps["keep"], ps["change"]):
+                    wrong.append(f"{key}: {text} parts {parts}")
+    assert not wrong, f"{agree} of {total} units agree word for word; wrong: {wrong}"
+    assert agree >= total - len(ROLE_ALLOWED), f"{agree} of {total} units agree word for word"
+
+
+@pytest.mark.parametrize("lines, word, role", [
+    ([["12", "Victoria", "Road,", "Rydalmere", "NSW", "2116"]], "Victoria", "street_name"),
+    ([["4", "Rose", "Lane,", "Mount", "Victoria"]], "Victoria", "suburb"),
+    ([["Mount", "Victoria", "2786"]], "Victoria", "suburb"),
+    ([["3", "Queensland", "Avenue,", "Victoria", "Point", "QLD", "4165"]], "Queensland", "street_name"),
+    ([["3", "Queensland", "Avenue,", "Victoria", "Point", "QLD", "4165"]], "Victoria", "suburb"),
+    ([["TWEED", "HEADS", "SOUTH", "NSW", "2486"]], "SOUTH", "suburb"),
+    ([["8", "Station", "Street,", "Box", "Hill", "Vic", "3128"]], "Box", "suburb"),
+    ([["Lot", "3", "Old", "Bells", "Line", "of", "Road,", "Kurrajong", "NSW", "2758"]], "of", "street_name"),
+    ([["Level", "4,", "Australia", "Square,", "264", "George", "Street,", "Sydney", "NSW", "2000"]], "Australia",
+     "building"),
+    ([["Shop", "4", "Westfield", "Plaza,", "Penrith", "NSW", "2750"]], "Plaza,", "building"),
+    ([["12", "Smith", "St,", "Penrith", "New", "South", "Wales", "2750"]], "Wales", "state"),
+    ([["Unit", "2,", "9", "High", "St,", "Brisbane,", "QLD", "4000"]], "St,", "street_type"),
+])
+def test_address_roles_never_take_another_role_for_structure(lines, word, role):
+    new, _ = split_addresses(_doc(lines))
+    roles = {r.wid: r.role for rs in mention_address_roles(new).values() for r in rs}
+    assert {roles[w.id] for w in new.pages[0].words if w.text == word} == {role}
+
+
+@pytest.mark.parametrize("lines, roles", [
+    ([["12", "Queen", "Street,", "Auckland", "1010,", "New", "Zealand."]],
+     ["number", "street_name", "street_type", "suburb", "postcode", "country", "country"]),
+    ([["10", "High", "Street,", "Oxford", "OX1", "4AA,", "United", "Kingdom"]],
+     ["number", "street_name", "street_type", "suburb", "postcode", "postcode", "country", "country"]),
+    ([["Cardiff", "CF10", "1AA,", "Wales"]], ["suburb", "postcode", "postcode", "country"]),
+    ([["GPO", "Box", "9999"], ["IN", "YOUR", "CAPITAL", "CITY"]],
+     ["box_kind", "box_kind", "box_number", *["capital_city_phrase"] * 4]),
+    ([["DX", "1234", "Sydney", "NSW"]], ["dx", "dx_number", "dx_exchange", "dx_exchange"]),
+    ([["123", "George", "Street", "Sydney"]], ["number", "street_name", "street_type", "suburb"]),
+    ([["Locked", "Bag", "7"]], ["box_kind", "box_kind", "box_number"]),
+])
+def test_address_roles_of_an_unsplit_address(lines, roles):
+    assert [r.role for r in mention_address_roles(_doc(lines))["a1"]] == roles
+
+
+def test_sub_word_roles():
+    new, _ = split_addresses(_doc([["12", "Smith", "Street", "Penrith", "NSW2750,"]]))
+    glued = next(r for r in mention_address_roles(new)["a1-loc"] if r.wid == "w4")
+    assert glued.role == "state+postcode" and glued.parts == ((0, 3, "state"), (3, 7, "postcode"))
+    # A sub-word segment: offsets stay in the GT word's text.
+    gt = _doc([["12", "Smith", "Street"], ["Penrith", "(NSW2750)"]], boxes=True, char_span=(4, 1, 8))
+    glued = next(r for r in mention_address_roles(split_addresses(gt)[0])["a1-loc"] if r.wid == "w4")
+    assert glued.parts == ((1, 4, "state"), (4, 8, "postcode"))
+    new, _ = split_addresses(_doc([["B02/53", "Smith", "Street,", "Newtown", "NSW", "2042"]]))
+    hotel = mention_address_roles(new)["a1"][0]
+    assert hotel.role == "unit_number+number" and hotel.parts == ((0, 1, "designator"), (1, 6, "unit_number+number"))
+
+
+def test_canonical_street_types():
+    assert STREET_TYPES <= set(STREET_TYPE_NAMES)
+    assert [canonical_street_type(t) for t in ("St.", "Streets", "Cres,", "Cr", "Smith")] == \
+        ["street", "street", "crescent", "crescent", None]

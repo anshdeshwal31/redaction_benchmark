@@ -59,6 +59,15 @@ BOX_KINDS = [("post", "office", "box"), ("locked", "mail", "bag"), ("private", "
              ("gpo", "box"), ("locked", "bag"), ("private", "bag"), ("reply", "paid"), ("care", "po"), ("rmb",),
              ("rsd",), ("cmb",), ("pmb",), ("ms",), ("rms",), ("cma",), ("cpa",)]
 CORNER_WORDS = {"cnr", "crn", "corner", "&"}
+# Countries that end an overseas address (the owner's ruling of 2026-10-22: the country word stays).
+# Australian states are matched first, so 'New South Wales' never reads as 'Wales'.
+FOREIGN_COUNTRIES = ("new zealand", "united kingdom", "uk", "england", "scotland", "wales", "ireland",
+                     "united states", "usa", "canada", "singapore", "hong kong", "india", "china", "japan",
+                     "philippines", "indonesia", "malaysia", "fiji", "papua new guinea", "south africa")
+_AFTER_POSTCODE_OR_COMMA = {("england",), ("scotland",), ("wales",)}  # only after a postcode or a comma
+CAPITAL_CITY_PHRASE = ("in", "your", "capital", "city")  # Australia Post's form for national agencies
+_UK_OUTWARD = re.compile(r"^[a-z]{1,2}\d[a-z\d]?$")
+_UK_INWARD = re.compile(r"^\d[a-z]{2}$")
 DIRECTIONALS = {"north", "south", "east", "west", "nth", "sth"}
 POSTCODE = re.compile(r"^\d{4}$")
 GLUED = re.compile(r"^(n\.?s\.?w|vic|qld|tas|s\.?a|w\.?a|n\.?t|a\.?c\.?t)\.?(\d{4})$")  # 'NSW2750', 'N.S.W.2750'
@@ -105,6 +114,7 @@ def _name_words(names) -> list[tuple[str, ...]]:
 
 _TYPE_WORD_NAMES = {s: _name_words(ns) for s, ns in TYPE_WORD_LOCALITIES.items()}
 _TYPE_WORD_NAMES_ANY = _name_words(n for ns in TYPE_WORD_LOCALITIES.values() for n in ns)
+_FOREIGN_COUNTRIES = _name_words(FOREIGN_COUNTRIES)
 
 
 @dataclass
@@ -129,6 +139,8 @@ class EndReading:
     state: list[int] = field(default_factory=list)
     state_code: str | None = None  # 'NSW', 'VIC', ...
     glued: int | None = None  # a state and its postcode in one word ('NSW2750')
+    capital_city: list[int] = field(default_factory=list)  # 'IN YOUR CAPITAL CITY' in place of a locality
+    overseas: bool = False  # the address ends in a foreign country
     anchor: int | None = None  # the first word the locality is found from; None when nothing is read
 
 
@@ -184,7 +196,21 @@ def _state_at(norm: list[str], end: int, postcode: str | None) -> tuple[int | No
     return end, code
 
 
-def read_end(texts: list[str]) -> EndReading:
+def _foreign_country_at(texts: list[str], end: int) -> int | None:
+    """Start of a foreign country name from the closed list ending at ``end``."""
+    folded = [_fold(t) for t in texts]
+    for name in _FOREIGN_COUNTRIES:
+        k = end - len(name) + 1
+        if k < 0 or tuple(folded[k:end + 1]) != name:
+            continue
+        if name in _AFTER_POSTCODE_OR_COMMA and not (k > 0 and (_has_digit(texts[k - 1])
+                                                                or texts[k - 1].rstrip().endswith(","))):
+            continue
+        return k
+    return None
+
+
+def read_end(texts: list[str], overseas: bool = False) -> EndReading:
     """Read the country, postcode and state at the end of an address's words.
 
     The state may be written in any form: a code ('NSW', 'Qld', 'N.S.W.'), spelled out ('Victoria',
@@ -193,16 +219,36 @@ def read_end(texts: list[str]) -> EndReading:
     ``anchor`` is the state's first word, else the postcode; for a final 'Mount Victoria' or 'Port
     Victoria' with no postcode it is that 'Victoria', so the locality is still found although no
     state is read.
+
+    With ``overseas`` (the role reader; the splitter leaves these to the GT review) it also reads
+    'IN YOUR CAPITAL CITY' standing in for a locality, and a foreign country from a closed list at
+    the end with the postcode before it, a 4-digit one or a UK one ('OX1 4AA'). No Australian state
+    is read before a foreign country.
     """
     norm = [_norm(t) for t in texts]
     r = EndReading()
     i = len(norm) - 1
+    if overseas and len(texts) >= 4 and tuple(_fold(t) for t in texts[-4:]) == CAPITAL_CITY_PHRASE:
+        r.capital_city = list(range(len(texts) - 4, len(texts)))
+        r.anchor = r.capital_city[0]
+        return r
     while i >= 0 and norm[i] in COUNTRIES and not (norm[i] == "australia" and i > 0
                                                    and norm[i - 1] in ("south", "western")):
         r.country.insert(0, i)
         i -= 1
     if i < 0:
         return r
+    if overseas and not r.country and _state_at(norm, i, None)[0] is None:
+        k = _foreign_country_at(texts, i)
+        if k is not None:
+            r.country, r.overseas = list(range(k, i + 1)), True
+            i = k - 1
+            if i >= 0 and POSTCODE.match(norm[i]):
+                r.postcode = [i]
+            elif i >= 1 and _UK_OUTWARD.match(norm[i - 1]) and _UK_INWARD.match(norm[i]):
+                r.postcode = [i - 1, i]
+            r.anchor = (r.postcode or r.country)[0]
+            return r
     glued = GLUED.match(norm[i])
     if glued:
         r.state, r.postcode, r.glued, r.anchor = [i], [i], i, i
@@ -285,11 +331,13 @@ def _type_word_locality(toks: list[_Tok], anchor: int, state: str | None) -> int
     return None
 
 
-def _boundary(toks: list[_Tok]) -> tuple[int | None, bool, str]:
-    r = read_end([t.text for t in toks])
+def _boundary(toks: list[_Tok], overseas: bool = False) -> tuple[int | None, bool, str]:
+    r = read_end([t.text for t in toks], overseas)
     if r.anchor is None:
         return None, False, "no state or postcode at the end"
     anchor = r.anchor  # first token of state, else the postcode
+    if r.capital_city:
+        return anchor, True, "'IN YOUR CAPITAL CITY' stands for the locality"
     k = _type_word_locality(toks, anchor, r.state_code)
     if k is not None:
         return k, True, "a locality name that holds a street-type word"
@@ -395,3 +443,311 @@ def split_addresses(gt: GTDocument, version: str | None = None) -> tuple[GTDocum
     if version:
         update["gt_version"] = version
     return gt.model_copy(update=update), notes
+
+
+# -- roles of an address unit's words (eval-0.4) --------------------------------------------------
+#
+# One reader for the shared words (E2), the address units' token survival (E3), the fakes' read-back
+# (E6) and the per-mention record of shared words (E7). It reads GT words only, in their place in the
+# unit, never word text on its own and never a tool's output or report. Roles use the case table's
+# vocabulary (docs/address_cases.md).
+
+ROLE_NAMES = ("building", "designator", "unit_number", "level_number", "number", "unit_number+number",
+              "street_name", "street_type", "street_suffix", "corner", "box_kind", "box_number", "box_extra", "via",
+              "dx", "dx_number", "dx_exchange", "suburb", "state", "postcode", "state+postcode", "country",
+              "capital_city_phrase")
+# Street types (AS 4590 and AS/NZS 4819 abbreviations) -> the canonical type.
+STREET_TYPE_NAMES = {
+    "st": "street", "street": "street", "sts": "street", "streets": "street", "rd": "road", "road": "road",
+    "rds": "road", "roads": "road", "ave": "avenue", "av": "avenue", "avenue": "avenue", "aves": "avenue",
+    "avenues": "avenue", "dr": "drive", "drive": "drive", "drives": "drive", "ct": "court", "crt": "court",
+    "court": "court", "pl": "place", "place": "place", "cres": "crescent", "cr": "crescent", "crescent": "crescent",
+    "pde": "parade", "parade": "parade", "parades": "parade", "hwy": "highway", "highway": "highway",
+    "tce": "terrace", "terrace": "terrace", "terraces": "terrace", "bvd": "boulevard", "blvd": "boulevard",
+    "boulevard": "boulevard", "ln": "lane", "lane": "lane", "lanes": "lane", "way": "way", "cl": "close",
+    "close": "close", "cct": "circuit", "circuit": "circuit", "esp": "esplanade", "esplanade": "esplanade",
+    "gr": "grove", "grove": "grove", "sq": "square", "square": "square", "mews": "mews", "row": "row",
+    "walk": "walk", "track": "track", "trk": "track", "loop": "loop", "rise": "rise", "vista": "vista",
+    "view": "view", "gdns": "gardens", "gardens": "gardens", "mall": "mall", "arcade": "arcade",
+}
+STREET_SUFFIXES = DIRECTIONALS | {"n", "s", "e", "w"}
+# Australia Post's unit and floor types (the table's designators) before their number or letter.
+UNIT_DESIGNATORS = {"unit", "u", "apartment", "apt", "flat", "f", "factory", "fy", "house", "hse", "office", "off",
+                    "penthouse", "pths", "room", "rm", "shop", "studio", "stu", "suite", "se", "ste", "townhouse",
+                    "tnhs", "villa", "warehouse", "we", "lot"}
+LEVEL_DESIGNATORS = {"level", "l", "lvl", "floor", "fl"}
+FLOOR_WORDS = {"ground", "mezzanine", "basement", "lg", "ug"}  # floors that need no number
+BUILDING_DESIGNATORS = {"building", "block", "tower", "wing"}  # before a letter or short number only
+# The last word of a building or property name standing in a street line with no house number.
+BUILDING_WORDS = {"station", "homestead", "house", "tower", "towers", "chambers", "plaza", "centre", "center",
+                  "building", "complex"}
+_LEVEL_CODES = {"b", "g", "l", "lg", "ug", "m"}  # a level-type code before a hotel-style unit number
+_ORDINAL = re.compile(r"^\d+(st|nd|rd|th)$")
+_SLASH = re.compile(r"^\d+[A-Za-z]?/\d+[A-Za-z]?$")  # '5/3': unit and house number
+_HOTEL = re.compile(r"^([A-Za-z]{1,2})(\d+[A-Za-z]?/\d+[A-Za-z]?)$")  # 'B02/53'
+_STRIP = ".,;:()"
+_NUMBERS = ("number", "unit_number", "unit_number+number", "level_number", "designator")
+STREET_PART, LOCALITY_PART, WHOLE = "street", "locality", "whole"
+
+
+@dataclass(frozen=True)
+class UnitWord:
+    """One GT word of an address unit, as its mention holds it."""
+
+    wid: str
+    text: str  # a sub-word segment's characters, else the whole word
+    offset: int  # where ``text`` starts in the GT word's text
+    part: str  # STREET_PART, LOCALITY_PART, or WHOLE for an unsplit ADDRESS
+    seg: int  # segment number within the unit
+    line: str | None
+
+
+@dataclass(frozen=True)
+class WordRole:
+    wid: str
+    role: str
+    # Sub-word roles as (start, end, role), offsets in the GT word's text: a glued 'NSW2750' is
+    # state + postcode, a hotel-style 'B02/53' keeps its level code 'B' as a designator.
+    parts: tuple[tuple[int, int, str], ...] = ()
+
+
+def canonical_street_type(text: str) -> str | None:
+    """'St' -> 'street', 'Cres' and 'Cr' -> 'crescent'; None for a word that is not a street type."""
+    return STREET_TYPE_NAMES.get(_fold(text))
+
+
+def address_unit_mentions(gt: GTDocument) -> list[tuple[GTMention | None, GTMention | None]]:
+    """The address units of a GT document as (street line, locality) mentions: a street line (ADDRESS,
+    condition ``address_street_line``) with its ``<id>-loc`` LOCATION/locality of the same entity, a
+    locality-only LOCATION/locality as (None, locality), and an unsplit ADDRESS as (address, None)."""
+    by_id = {m.id: m for m in gt.mentions}
+    partner: dict[str, GTMention] = {}
+    for m in gt.mentions:
+        loc = by_id.get(f"{m.id}-loc")
+        if (m.type is PiiType.ADDRESS and "address_street_line" in m.conditions and loc is not None
+                and loc.type is PiiType.LOCATION and loc.subtype == LOCALITY_SUBTYPE and loc.entity == m.entity):
+            partner[m.id] = loc
+    paired = {loc.id for loc in partner.values()}
+    out: list[tuple[GTMention | None, GTMention | None]] = []
+    for m in gt.mentions:
+        if m.type is PiiType.ADDRESS:
+            out.append((m, partner.get(m.id)))
+        elif m.type is PiiType.LOCATION and m.subtype == LOCALITY_SUBTYPE and m.id not in paired:
+            out.append((None, m))
+    return out
+
+
+def unit_words(gt: GTDocument, street: GTMention | None, locality: GTMention | None) -> list[UnitWord]:
+    """The words of one address unit in reading order: the street line's, then the locality's."""
+    words = gt.word_index()
+    out: list[UnitWord] = []
+    seg_no = 0
+    for part, m in ((STREET_PART if locality is not None else WHOLE, street), (LOCALITY_PART, locality)):
+        if m is None:
+            continue
+        for seg in m.segments:
+            for wid in seg.words:
+                w = words[wid][1]
+                cut = seg.char_start is not None
+                out.append(UnitWord(wid, w.text[seg.char_start:seg.char_end] if cut else w.text,
+                                    seg.char_start if cut else 0, part, seg_no, w.line))
+            seg_no += 1
+    return out
+
+
+def address_roles(words: list[UnitWord]) -> list[WordRole]:
+    """The role of every word of one address unit (``unit_words``), in the case table's vocabulary.
+
+    A split unit's street line and locality are read with the GT's own boundary. An unsplit ADDRESS
+    is cut where the splitter would cut it (foreign countries and 'IN YOUR CAPITAL CITY' included);
+    a DX line, or one with no place found at its end, is all street line.
+    """
+    street = [w for w in words if w.part == STREET_PART]
+    locality = [w for w in words if w.part == LOCALITY_PART]
+    whole = [w for w in words if w.part == WHOLE]
+    alone = False
+    if whole:
+        toks = [_Tok(w.seg, 0, w.wid, w.text, w.line) for w in whole]
+        k = None if _is_dx_line(toks) else _boundary(toks, overseas=True)[0]
+        if k is None:
+            street, alone = whole, True
+        else:
+            street, locality = whole[:k], whole[k:]
+    return _street_roles(street, alone) + _locality_roles(locality)
+
+
+def mention_address_roles(gt: GTDocument) -> dict[str, list[WordRole]]:
+    """Roles of the words of every address mention (street line, locality, unsplit ADDRESS), keyed by
+    mention id; each part is read together with its partner."""
+    out: dict[str, list[WordRole]] = {}
+    for street, locality in address_unit_mentions(gt):
+        roles = address_roles(unit_words(gt, street, locality))
+        for m in (street, locality):
+            if m is not None:
+                mine = {wid for seg in m.segments for wid in seg.words}
+                out[m.id] = [r for r in roles if r.wid in mine]
+    return out
+
+
+def _core_span(w: UnitWord) -> tuple[str, int]:
+    """The word without outer punctuation, and where it starts in the GT word's text."""
+    lead = len(w.text) - len(w.text.lstrip(_STRIP))
+    return w.text.strip(_STRIP), w.offset + lead
+
+
+def _locality_roles(ws: list[UnitWord]) -> list[WordRole]:
+    r = read_end([w.text for w in ws], overseas=True)
+    out = []
+    for k, w in enumerate(ws):
+        if k == r.glued:
+            core, a = _core_span(w)
+            d = next(i for i, ch in enumerate(core) if ch.isdigit())
+            out.append(WordRole(w.wid, "state+postcode", ((a, a + d, "state"), (a + d, a + len(core), "postcode"))))
+            continue
+        role = ("capital_city_phrase" if k in r.capital_city else "country" if k in r.country
+                else "postcode" if k in r.postcode else "state" if k in r.state else "suburb")
+        out.append(WordRole(w.wid, role))
+    return out
+
+
+def _street_roles(ws: list[UnitWord], alone: bool) -> list[WordRole]:
+    """Roles of a street line's words. ``alone``: an unsplit ADDRESS with no place found at its end,
+    where name words after a street type are read as its suburb."""
+    n = len(ws)
+    texts = [w.text for w in ws]
+    fold = [_fold(t) for t in texts]
+    core = [t.strip(_STRIP) for t in texts]
+    comma = [t.rstrip().endswith(",") for t in texts]
+    role: list[str | None] = [None] * n
+    parts: dict[int, tuple[tuple[int, int, str], ...]] = {}
+    toks = [_Tok(w.seg, 0, w.wid, w.text, w.line) for w in ws]
+    if _is_dx_line(toks):
+        return [WordRole(w.wid, r) for w, r in zip(ws, ["dx", "dx_number", *["dx_exchange"] * (n - 2)])]
+
+    # Postal delivery types before their number ('PO Box 123', 'RMB 4600'); Care PO, CMA, CPA and CMB
+    # may stand without one.
+    i = 0
+    while i < n:
+        k = _box_kind_at(toks, i)
+        if k and i + k < n and _has_digit(texts[i + k]):
+            role[i:i + k + 1] = ["box_kind"] * k + ["box_number"]
+            i += k + 1
+            continue
+        if k and fold[i] in ("care", "cma", "cpa", "cmb"):
+            role[i:i + k] = ["box_kind"] * k
+            i += k
+            continue
+        i += 1
+
+    # Designators and the number or letter they take.
+    k = 0
+    while k < n:
+        f = fold[k]
+        nxt = k + 1 if k + 1 < n and role[k + 1] is None else None
+        if role[k] is not None:
+            k += 1
+            continue
+        if _ORDINAL.match(f) and nxt is not None and fold[nxt] in LEVEL_DESIGNATORS:  # '1st Floor'
+            role[k], role[nxt] = "level_number", "designator"
+            k = nxt + 1
+            continue
+        span = [k, k + 1] if f in ("lower", "upper") and nxt is not None and fold[nxt] == "ground" else \
+            [k] if f in FLOOR_WORDS else []
+        if span:  # 'Ground Floor', 'Lower Ground,', 'Mezzanine, 45 ...': no number
+            e = span[-1] + 1
+            if e < n and role[e] is None and fold[e] in ("floor", "fl", "level"):
+                span.append(e)
+            if len(span) > 1 + (f in ("lower", "upper")) or span[0] == 0 or comma[span[-1]]:
+                for x in span:
+                    role[x] = "designator"
+                k = span[-1] + 1
+                continue
+        if nxt is not None and not comma[k]:
+            nt = core[nxt]
+            letter = len(nt) == 1 and nt.isalpha()
+            if f in UNIT_DESIGNATORS | LEVEL_DESIGNATORS and (_has_digit(nt) or (letter and len(f) > 1)):
+                role[k] = "designator"
+                role[nxt] = ("level_number" if f in LEVEL_DESIGNATORS
+                             else "unit_number+number" if _SLASH.match(nt) else "unit_number")
+                k = nxt + 1
+                continue
+            # 'Building C', 'Tower 2'; never after a name word ('Westpoint Tower')
+            after_name = k > 0 and role[k - 1] is None and not comma[k - 1] and not _has_digit(texts[k - 1])
+            if f in BUILDING_DESIGNATORS and not after_name and (letter or (nt.isdigit() and len(nt) <= 3)):
+                role[k], role[nxt] = "designator", "unit_number"
+                k = nxt + 1
+                continue
+        k += 1
+
+    # Numbers: a level-type code before a hotel-style number stays ('B02/53'); a number right before
+    # another is the unit's (form boxes: '5' '12').
+    for k in range(n):
+        if role[k] is not None or not _has_digit(texts[k]):
+            continue
+        hotel = _HOTEL.match(core[k])
+        if hotel and hotel.group(1).casefold() in _LEVEL_CODES:
+            _, a = _core_span(ws[k])
+            c = len(hotel.group(1))
+            role[k] = "unit_number+number"
+            parts[k] = ((a, a + c, "designator"), (a + c, a + len(core[k]), "unit_number+number"))
+        elif _SLASH.match(core[k]):
+            role[k] = "unit_number+number"
+        elif k + 1 < n and role[k + 1] is None and _has_digit(texts[k + 1]):
+            role[k] = "unit_number"
+        else:
+            role[k] = "number"
+
+    # Corner forms: 'Cnr', 'Crn' and '&' anywhere; 'Corner' first after any designator, with its 'of';
+    # 'and' only inside a corner form.
+    corner_form = False
+    for k in range(n):
+        if role[k] is None and (fold[k] in ("cnr", "crn") or core[k] == "&"):
+            role[k], corner_form = "corner", True
+    lead = next((k for k in range(n) if role[k] not in ("designator", "unit_number", "level_number")), None)
+    if lead is not None and role[lead] is None and fold[lead] == "corner":
+        role[lead], corner_form = "corner", True
+        if lead + 1 < n and role[lead + 1] is None and fold[lead + 1] == "of":
+            role[lead + 1] = "corner"
+    if corner_form:
+        for k in range(n):
+            if role[k] is None and fold[k] == "and":
+                role[k] = "corner"
+    for k in range(1, n):  # 'Kilbride Station via Berrima'
+        if role[k] is None and fold[k] == "via" and role[k - 1] is None and not _has_digit(texts[k - 1]):
+            role[k] = "via"
+
+    # Name words, in runs cut by structure words, commas and line or box changes.
+    k = 0
+    house = any(r in ("number", "unit_number+number") for r in role)
+    while k < n:
+        if role[k] is not None:
+            k += 1
+            continue
+        s = k
+        while not comma[k] and k + 1 < n and role[k + 1] is None and (ws[k + 1].seg, ws[k + 1].line) == \
+                (ws[k].seg, ws[k].line):
+            k += 1
+        e = k + 1
+        before, after = (role[s - 1] if s > 0 else None), (role[e] if e < n else None)
+        named = before == "street_name"  # the street's name ends the run before ('12 Smith' / 'Street, ...')
+        t = e - 1
+        if e - s >= (2 if named else 3) and fold[t] in STREET_SUFFIXES and fold[t - 1] in STREET_TYPE_NAMES:
+            t -= 1  # 'Smith Street North'
+        typed = [x for x in range(s + (not named), e) if fold[x] in STREET_TYPE_NAMES]
+        if alone and before in ("street_type", "street_suffix", "suburb"):
+            names = ["suburb"] * (e - s)
+        elif after in _NUMBERS:  # a name before the number or a designator ('Westpoint Tower, 45 ...')
+            names = ["building"] * (e - s)
+        elif (t > s or named) and fold[t] in STREET_TYPE_NAMES:
+            names = ["street_name"] * (t - s) + ["street_type"] + ["street_suffix"] * (e - 1 - t)
+        elif alone and typed:  # '123 George Street Sydney' with no state or postcode: the suburb follows
+            names = ["street_name"] * (typed[-1] - s) + ["street_type"] + ["suburb"] * (e - 1 - typed[-1])
+        elif before in ("box_number", "box_extra"):  # 'PO Box 123 City East'
+            names = ["box_extra"] * (e - s)
+        elif not house and fold[e - 1] in BUILDING_WORDS:  # 'Shop 4 Westfield Plaza', 'Kilbride Station via'
+            names = ["building"] * (e - s)
+        else:
+            names = ["street_name"] * (e - s)
+        role[s:e] = names
+        k = e
+    return [WordRole(w.wid, r, parts.get(k, ())) for k, (w, r) in enumerate(zip(ws, role))]
