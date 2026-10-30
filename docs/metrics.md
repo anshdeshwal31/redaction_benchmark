@@ -155,7 +155,9 @@ and each departure names the runs it applies to.
 **The run's policy.** `run.json` records the policy a run was started with (name, version, SHA-256
 of the file) and whether it reached the tool (`given_to_tool`): it does when the tool's command
 passes `{policy}`, or when an oracle experiment injects mentions, entities or regions built from GT
-under it. `rb score` uses that policy unless `--policy` names another (or the file is gone, then the
+under it. `scoring.json` copies it as `policy_given_to_tool`; for a run recorded before
+`given_to_tool` was kept, or before the run's policy was recorded at all, it is worked out the same
+way from the recorded command and experiment. `rb score` uses that policy unless `--policy` names another (or the file is gone, then the
 client's policy). When the tool was given the policy and the scoring policy differs in name, version
 or file content, `scoring.json` (`policy_warning`), the run report and the board say plainly that
 the tool was given one policy and is scored against another. A tool that never receives the policy

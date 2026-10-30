@@ -439,6 +439,30 @@ def test_whether_the_runs_policy_reaches_the_tool(command, mode, inject_from, gi
     assert policy_given(command, mode, inject_from) is given
 
 
+def test_policy_was_given_reads_the_recorded_command_for_old_runs():
+    # A run recorded before the policy record has no run.policy; its command and experiment are recorded,
+    # so whether a policy reached the tool is worked out from them, as for runs recorded before
+    # given_to_tool was kept.
+    from benchmark.runner.runner import policy_record
+    from benchmark.runner.scoring import policy_was_given
+    from benchmark.schemas import RunManifest
+
+    def old_run(command, mode="e2e", inject_from="gt", policy=None):
+        manifest = CandidateManifest(name="old-tool", version="1", command=command, provides=["output_pdf"])
+        run = RunManifest(run_id="old", created="2026-01-01T00:00:00Z", benchmark={}, dataset={},
+                          candidate={"manifest": manifest.model_dump(mode="json", by_alias=True)},
+                          experiment={"name": "x", "mode": mode, "inject_from": inject_from}, environment={},
+                          policy=policy)
+        return run, CandidateManifest.model_validate(run.candidate["manifest"])
+
+    assert policy_was_given(*old_run("tool {input} --policy {policy}")) is True
+    assert policy_was_given(*old_run("tool {input}")) is False
+    assert policy_was_given(*old_run("tool {input} --inject {inject_dir}", "oracle_mentions", "gt")) is True
+    # A recorded given_to_tool wins over the command.
+    recorded = policy_record(CLIENT_POLICY, given_to_tool=False)
+    assert policy_was_given(*old_run("tool {input} --policy {policy}", policy=recorded)) is False
+
+
 def test_a_run_made_before_the_policy_was_recorded_still_loads_and_scores(env):
     run_and_score(env, "reference", "old")
     path = env / "runs" / "old" / "run.json"

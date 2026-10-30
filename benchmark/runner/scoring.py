@@ -43,10 +43,9 @@ def policy_warning(run_policy: dict | None, scored: dict, reached_tool: bool = T
 
 def policy_was_given(run, manifest: CandidateManifest) -> bool:
     """Whether the run's policy reached the tool, as recorded by the run or, for runs recorded before
-    that was kept, from the recorded command and experiment."""
-    if run.policy is None:
-        return False
-    if run.policy.given_to_tool is not None:
+    that was kept, from the recorded command and experiment. Runs recorded before the policy record
+    are worked out the same way: their command and experiment are recorded."""
+    if run.policy is not None and run.policy.given_to_tool is not None:
         return run.policy.given_to_tool
     return policy_given(manifest.command, run.experiment.mode, run.experiment.inject_from)
 
