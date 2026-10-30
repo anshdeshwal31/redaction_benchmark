@@ -3,7 +3,9 @@
 How the redaction benchmark is put together and how work moves through it. This describes
 the code on branch `feat/benchmark-integration` as of 2026-10-22: commit `a6b0e8b` plus the
 follow-ups of that day (policy 1.1.0 and its departures, the `{policy}`, `{matter}` and
-`{env:NAME}` placeholders, the run's policy record, the ceiling mock).
+`{env:NAME}` placeholders, the run's policy record, the ceiling mock), and the eval-0.4 build of
+2026-10-29 and 2026-10-30 (evaluation version eval-0.4, policy 1.2.0 through 1.1.1, the address role
+reader, the rules digest, the text-level path).
 
 - For why it is designed this way, see [PLAN.md](PLAN.md).
 - For exact metric definitions and thresholds, see [docs/metrics.md](docs/metrics.md).
@@ -48,7 +50,7 @@ These rules hold across the whole codebase:
   not scored. Files a tool did not declare in its manifest are ignored, except `run_info.json`,
   whose release verdict is always graded.
 - **The client's rules are the yardstick.** The default policy is the client's decisions
-  (`au-medicolegal-v1.yaml`, 1.1.1): every required item must be replaced by a realistic fake,
+  (`au-medicolegal-v1.yaml`, 1.2.0): every required item must be replaced by a realistic fake,
   and hiding it without one is its own verdict, `NOT_REPLACED`. Where the policy departs from the
   client's answers on purpose, every report says so.
 - **Confirmed and inferred causes are kept apart.** Every root cause is labelled
@@ -243,7 +245,7 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     s0(["Score a run"]) --> load["Load run, dataset, policy (the run's own<br/>unless another is given; a mismatch is flagged)<br/>find GT by document id and source hash"]
-    load --> has{"output.pdf present,<br/>as the run recorded it?"}
+    load --> has{"primary output present,<br/>as the run recorded it?<br/>(output.pdf, or redacted_text.json)"}
     has -->|"no"| noout["Every MUST mention is NO_OUTPUT<br/>root cause CANDIDATE_ERROR"]
     has -->|"yes"| reps{"several<br/>repeats?"}
     reps -->|"yes"| det["Determinism D0 to D3<br/>flip rate, unstable mentions"]
@@ -259,7 +261,9 @@ flowchart TD
 
 For each document, scoring always evaluates the output. It then computes component metrics
 only for the stages the candidate exposed, and finally attributes a root cause to each
-failure. If there are several repeats, it first compares them for determinism. Mentions
+failure. A text-only tool (`provides: [redacted_text]`) is evaluated on its redacted text instead
+(`benchmark/evaluate/textlevel.py`, below); its detection comes from the spans it changed and its
+pseudonym checks from the text the diff puts at each GT word. If there are several repeats, it first compares them for determinism. Mentions
 whose verdict changes between repeats are tagged `NONDETERMINISTIC`.
 
 Across documents, scoring also grades the tool's own release verdict from `run_info.json`
@@ -311,6 +315,37 @@ flowchart TD
   - A black box over black text leaves no correlation, so the text counts as hidden.
   - A box that is 90% opaque keeps the correlation but loses the contrast. That content is
     **latent**: not visible at a glance, but recoverable by boosting contrast.
+- **Character identity (eval-0.4, `cells.py`).** A word character's band evidence stands only
+  when the character as a whole is still the original glyph: its identity over 16 sub-bands, the
+  best of 18 variants (two offsets, three pixel sets: all, box pixels left out, the output's
+  near-black ink left out, three originals: sharp and blurred twice), reaches its threshold; or it
+  lies in a run of characters whose original ink is still present (an original under a fake drawn
+  over it); or, for MUST and MAY characters, the edge clause (a box shifted half a line) or the run
+  clause holds. MUST and MAY characters also get a second band test with the near-black ink left out
+  (a fake typeset over a translucent veil). The gate runs in every render configuration, in earlier
+  revisions, and on image layers resampled to the render grid (L2). So a correct fake typeset in the
+  original's font, size and place is not a leak, while partial boxes, half-line shifts, veils and
+  overlays still are.
+- **Moved words and displaced originals (eval-0.4, `moved.py`).** A word the in-place test calls
+  damaged or removed is looked for near its place by its own original image (8 line heights along,
+  half a line across, 0.86-1.18x), then re-typeset in the output's embedded fonts and the base-14
+  families (the restyled search). A kept word found is `MOVED`: intact, not collateral. A MUST or MAY
+  word found is a displaced original and counts as visible (L1); the identifying slice of a word with
+  shared characters (an email's local part, an identifier's digits) is looked for on its own.
+- **Text at the displayed place (eval-0.4, `layers.py`).** Kept words are searched in the text
+  layer at their displayed place (a `MOVED` word where it was found), and so is the original of a
+  required word (L2); address words match only as whole tokens.
+- **Shared words (eval-0.4, `gt/shared_roles.py`).** The structure a realistic fake may keep, as
+  the policy's `shared_roles` lists it (policy 1.2.0: address structure words, the state with its
+  postcode prefix as a checked pair, a legal form, an email domain, an identifier's prefix, a phone
+  number's national prefix), is read from GT by position through the address role reader
+  (`address_split.address_roles`) and left out of every residual; it is never the replacement.
+- **Address units (eval-0.4, `addresses.py`).** A street line and its locality are judged together:
+  E1 (replacement per part, from the read-back of the output's text at the unit, or new ink), E3
+  (an identifying word surviving in the text layer of the unit's region), E4 (a short word counts only
+  whole). The measurement OCR may only add review flags. E6 (`metrics/pseudonyms.py`) reads address
+  fakes per unit and checks them by a hashed address identity, within the document and across a
+  matter.
 - **Recoverable from the file (L2).** The evaluator looks for the original content at the GT
   location in four places:
   - text objects, in any render mode, including invisible text;
@@ -327,8 +362,8 @@ flowchart TD
 - **Document-level findings.** The evaluator searches for terms from required mentions in
   metadata, XMP, outlines, annotation contents, form values, attachment names,
   structure-tree alt text and unreferenced streams.
-- **Over-redaction.** Every GT word is also classed as PRESERVED, DAMAGED or REMOVED. This
-  gives two measures:
+- **Over-redaction.** Every GT word is also classed as PRESERVED, DAMAGED, REMOVED or MOVED
+  (intact, away from its place). This gives two measures, which count DAMAGED and REMOVED:
   - collateral damage: ordinary words lost;
   - protected damage: content that must survive, such as clinical terms, medications,
     citations, eponyms, surnames that are also ordinary words, and dates under the current
@@ -336,6 +371,13 @@ flowchart TD
 - **Thresholds.** All thresholds live in one frozen, versioned evaluation configuration. A
   digest of it is stored with every result, so changing any threshold creates a new
   evaluation version.
+- **Text-level path (eval-0.4, `textlevel.py`).** For a tool that emits `redacted_text.json`, GT
+  words are aligned to the tool's original text and the redacted text is diffed against it (difflib
+  for the alignment, Levenshtein opcodes for the diff). Words and mentions get the same statuses,
+  cut-offs and summary keys as for a PDF; a kept character is visible, an identifying token found
+  more often than expected elsewhere is a displaced original, and placeholders are not
+  replacements. `MOVED`, `LEAK_RECOVERABLE` and `LEAK_LATENT` cannot occur, signatures and images are
+  left out, and the evaluation records `evidence` 'text'.
 
 ### Mention verdict
 
@@ -372,8 +414,9 @@ A document is **clean** when all of the following hold:
 - every required mention was evaluated;
 - at most 1% of its ordinary words (two or more letters or digits) are damaged or removed
   (client Q16);
-- at least 95% of its kept words are found in the output's text layer at their place (client
-  Q11): an image-only output fails.
+- at least 95% of its kept words (PRESERVED or MOVED) are found in the output's text layer at
+  their displayed place (client Q11): an image-only output fails. On the text-level path this mark
+  is n/a.
 
 ### Root-cause attribution
 
@@ -459,7 +502,7 @@ flowchart LR
   so this is how they are checked against real layouts, scans and fonts. A check that breaks
   is recorded as an error, named by its exception's class only, and the other checks and
   documents still run.
-- **The policy is the client's.** The default, `au-medicolegal-v1.yaml` (1.1.1), encodes the
+- **The policy is the client's.** The default, `au-medicolegal-v1.yaml` (1.2.0), encodes the
   client's questionnaire answers; only quasi-identifiers the questionnaire did not ask about stay
   MAY, neither rewarding nor penalising a tool. It departs from the answers in two places, each
   recorded under `deviations` and shown in every report and board: the whole address is
@@ -524,7 +567,9 @@ from it.
 | Output rendered at 300 DPI | The default is 200 DPI. The evaluator is valid between 150 and 300 DPI, and `EvalConfig` rejects anything below 150 |
 | Offline submission: teams drop their files into a standard layout | Not built. A directory can be validated against a manifest, but scoring expects a run made by the runner |
 | `oracle_entities` experiment | The experiment spec exists (`experiments/oracle-entities.yaml`) and the board splits resolution from localization with it. Only the mode's input builder is tested (one client-rules test); no test runs the mode or that split |
-| Run record includes the GT and policy versions | The run records its policy (name, version, file hash). GT is found by document id and source hash when scoring; its version and hash are saved in `scoring.json` and the document rows, not in the run |
+| Run record includes the GT and policy versions | The run records its policy (name, version, file hash, rules digest). GT is found by document id and source hash when scoring; its version and hash are saved in `scoring.json` and the document rows, not in the run |
+| Every output is a PDF | A tool may emit redacted text instead (`redacted_text.json`, eval-0.4); it is graded on that text by the text-level path, which cannot see layers, revisions, pixels, signatures or images |
+| Kept words judged where GT puts them | eval-0.4 finds kept words moved along their line or re-typeset (`MOVED`), but not words a longer fake reflows onto the next line: the reading-order search (F2) is planned for eval-0.4.1, and the adapter guide asks tools to keep line breaks |
 | Invariance probes, minimal repro cases and synthetic look-alikes on promotion, threshold-sensitivity analysis, factorial (Shapley-style) attribution, Label Studio converters, reference OCR baseline, GT dispute queue, sealed test split | Not built |
 | Validators run in CI | The repository has no CI configuration. Tests and validators run locally |
 
@@ -711,7 +756,7 @@ erDiagram
 
 ### Relevant tests and coverage gaps
 
-385 tests (they take roughly 15 to 20 minutes on the development laptop). They cover:
+741 tests (they take roughly 30 minutes on the development laptop). They cover:
 
 - **Geometry:** property-based round trips across every pair of frames, all rotations and
   CropBox offsets, checked against renders from both engines.
@@ -746,6 +791,12 @@ erDiagram
   departures, release verdicts, matter consistency, every self-check under the client's policy
   on a fixture, and the ceiling mock clean on all nine encodings with one fake per person across
   a matter (also through the mock adapter, and with any spelling of gender in GT).
+- **eval-0.4 calibration** (marker `calibration`; fictional fixtures in Helvetica): correct fakes
+  typeset in place, re-typeset lines and substitute fonts are safe and their kept words `MOVED`,
+  while partial boxes, boxes shifted half a line, veils, white text, overlays and image-layer and
+  text-layer leaks stay caught; the shared words and their never-list, the state/postcode pair,
+  the address case table (splitter and role reader), address units (E1, E3, E4) and E6; the
+  text-level path on simulated text tools.
 - **Controlled inputs:** twins and ladders keep the GT aligned, and verdicts survive
   degradation.
 - **GT tools:** validators, agreement, drafts, review sheets, and that the exported schemas
@@ -767,9 +818,14 @@ Gaps:
   seed documents, and tool 1 and the client's tool have no manifest yet.
 - **`oracle_entities`** is not tested: no test runs the mode or the board's split of
   resolution from localization; only its input builder is used by one test.
-- **Fakes at the original's size.** Correct fakes written in the original's font, size and
-  place can be judged `PARTIAL` (an open calibration issue, kept visible by an expected-failure
-  test); the ceiling mock avoids it by drawing its fakes smaller.
+- **Fakes at the original's size.** Since eval-0.4, correct fakes written in the original's font,
+  size and place are safe (character identity; `tests/test_calibration.py`,
+  `tests/test_identity_gate.py`), and the ceiling mock draws its fakes at the original size. The
+  calibration is synthetic Helvetica only; what remains is listed under "Known limits of eval-0.4"
+  in docs/metrics.md.
+- **The text-level path** is tested on simulated text tools over one synthetic document
+  (`tests/test_textlevel.py`) and one text-only candidate end to end (`tests/test_runner.py`); no
+  real tool's redacted text has been graded yet.
 - **The CLI layer** is not tested directly; the tests call the functions behind it.
 - **Shareable reports:** the test checks only the file name. It does not check that PII is
   actually masked.
@@ -798,7 +854,7 @@ Gaps:
 - **Small seed set.** There are five documents, one per encoding, so the effects of
   document conditions cannot be separated from the effects of the individual documents.
   Confidence intervals are wide, and the seed documents cannot serve as a blind test set.
-- **Policy departures.** Policy 1.1.1, like 1.1.0, replaces whole addresses: the project owner
+- **Policy departures.** Policy 1.2.0, like 1.1.0 and 1.1.1, replaces whole addresses: the project owner
   decided on 2026-10-22 that tools 1 and 2 replace whole addresses, and the scores hold every tool
   scored under the policy to that rule, which a check of the GT address splits does not end. Only the
   owner can lift it; localities would then become kept items and scores would change. A tool
@@ -823,8 +879,10 @@ Gaps:
 - The candidate manifests in the repo are the mocks, the ceiling mock and tool 2's
   `mlredact-client.yaml`; tool 2 has been run on the synthetic dataset only, and no real tool on
   the seed documents.
-- The default policy is `au-medicolegal-v1.yaml` 1.1.1 with two departures; every mock manifest
-  passes `{policy}`.
+- The default policy is `au-medicolegal-v1.yaml` 1.2.0 with two departures and the shared roles
+  the owner decided on 2026-10-22 and 2026-10-29; every mock manifest passes `{policy}`.
+- The evaluation version is eval-0.4. Its calibration is on fictional synthetic Helvetica fixtures
+  only; the self-check has not been re-run on the seed documents under it.
 - Leak verdicts use no OCR.
 - The GT version and hash are recorded in scoring records; the run's policy, and whether it
   reached the tool, are recorded in the run manifest.

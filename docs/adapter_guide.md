@@ -29,7 +29,8 @@ quotes, so such a value is refused with an error that names it: a shared value (
 own paths hold one is recorded as not run.
 
 Your adapter must write **`output.pdf`** (the redacted document) **every time**, even when your
-tool's own safety check would hold the document back: the benchmark grades every output, bad ones
+tool's own safety check would hold the document back (a tool that redacts text rather than a PDF
+writes `redacted_text.json` instead; see §8): the benchmark grades every output, bad ones
 included, and grades the safety check separately (see `release` below). Everything else is
 optional, but each stage file you leave out is a stage the benchmark cannot grade, so a bottleneck
 there stays invisible. Write only what your tool really produces:
@@ -37,6 +38,7 @@ there stays invisible. Write only what your tool really produces:
 | File | Schema | Stage it lets the benchmark score |
 |---|---|---|
 | `output.pdf` | — | End-to-end safety, over-redaction, integrity (always) |
+| `redacted_text.json` | `schemas/redacted_text.schema.json` | Instead of `output.pdf`, for a tool that emits redacted text: the same verdicts from the text (§8) |
 | `text.json` | `schemas/text.schema.json` | OCR / text extraction quality |
 | `mentions.json` | `schemas/mentions.schema.json` | PII detection: recall, precision, boundaries, types |
 | `entities.json` | `schemas/entities.schema.json` | Entity / alias resolution |
@@ -107,11 +109,30 @@ benchmark checks this across the documents of each matter recorded in the GT (th
 table, `docs/metrics.md`); a document whose dataset matter differs from its GT's, or that has a
 matter on one side only, is listed in the report.
 
-How the fakes are drawn matters too. The evaluator compares the output with the original glyph by
-glyph, and a correct fake written in the original's font, at its size and position, can line up
-with the original's strokes closely enough to be judged `PARTIAL`: an open calibration issue
-(`docs/metrics.md`). The benchmark's own ceiling mock draws its fakes a little smaller than the
-line for this reason.
+How the fakes are drawn (eval-0.4; `docs/metrics.md`):
+
+- A fake may be typeset in the original's font, at its size and place: the evaluator checks that each
+  character is still the original glyph, so a correct fake there is no leak.
+- Lines may be re-typeset around a fake: a kept word found up to 8 line heights along its line, half a
+  line across and at 0.86-1.18 times its size, in the same font or in a substitute that the output
+  embeds or that is a base-14 family (Helvetica, Times, Courier, Helvetica-Bold), is `MOVED`, not
+  damaged. **Do not reflow paragraphs**: keep each line's words on that line. A longer fake that wraps
+  a line's last words onto the next line makes those words collateral until a later evaluation
+  version (eval-0.4.1) finds them.
+- Keep the hidden text layer on the displayed words: a kept word must be found in the text layer at
+  its displayed place (within half the word's length plus a quarter line height along, half a line
+  height across), or the document fails the searchable mark.
+- A fake may keep the structure the policy shares (`shared_roles`; policy 1.2.0): the state, with a
+  suburb and postcode of the same state; the postcode's prefix digit ('4' for QLD, '08' for NT); the
+  street type; box, DX, unit, level and building words; corner words and 'via'; 'Australia' or the
+  foreign country; an organisation's legal form (Pty, Ltd, ...); an email's domain; an identifier's
+  letter prefix ('CLM-'); a phone number's national prefix (a mobile's '04', '+61', '13', '1300',
+  '1800', '(0X)'). Every other letter and digit must change, the postcode's digits after the prefix
+  included, and no fake word or number may repeat an original address word of the document in any role
+  (`docs/address_cases.json` gives each case's fake constraints). Characters kept inside a word count
+  as surviving. The state is excused only with its postcode's prefix digit, checked in the pixels where
+  the state is seen: if you leave the state's original glyphs, leave the prefix digit's original glyph
+  too (write the rest of the postcode after it), or redraw the whole locality.
 
 ## 3. Coordinates
 
@@ -159,9 +180,9 @@ upstream output, without second-guessing them from the page.
 - Ground truth is never placed in your working directory, and you must not try to obtain it.
 - Do not special-case benchmark documents.
 - Never network-send documents unless the project owner has approved it in writing.
-- Exit non-zero on failure; the benchmark records the exit code. Without an `output.pdf` every
-  required mention is `NO_OUTPUT`, unprotected in the strict view; an `output.pdf` you did write is
-  graded whatever the exit code, like every output.
+- Exit non-zero on failure; the benchmark records the exit code. Without an `output.pdf` (or, for a
+  text-only tool, `redacted_text.json`) every required mention is `NO_OUTPUT`, unprotected in the
+  strict view; an output you did write is graded whatever the exit code, like every output.
 - A run longer than `timeout_s` is stopped together with every process it started, and anything
   written after that is not graded.
 
@@ -175,3 +196,43 @@ rb score <run_id> && rb report <run_id>
 
 The synthetic dataset is fictional and safe to share; use it to debug the adapter before
 running on real documents.
+
+## 7. Addresses
+
+The client's policy replaces whole addresses (`docs/metrics.md`, departures), and the benchmark judges
+each address as a unit:
+
+- Report two mentions per address in `mentions.json`: the street line as `ADDRESS` and the suburb,
+  state and postcode as `LOCATION`. A suburb, state and postcode with no street line is an address
+  too, reported as `LOCATION`. A single span over the whole address is accepted as exact for both
+  parts.
+- Draw the fake on the address's own lines, one line for one line, so the read-back at the address
+  finds it there.
+- Give each address one fake across the matter, whoever's address it is: the benchmark compares fakes
+  by the address's identity, not by the person.
+- `docs/address_cases.json` is the policy by example: fictional addresses with their expected parts, the
+  kept or replaced verdict (places named on their own, after a label such as 'Place of birth:', and
+  streets in running text are kept), the shared words and the fake constraints. Copy it into your
+  tool's tests.
+
+## 8. Text-only tools
+
+A tool that redacts text rather than a PDF declares `provides: [redacted_text]` (instead of
+`output_pdf`; a manifest has exactly one of the two) and writes `redacted_text.json` every time:
+
+```json
+{"schema": "rb.redacted_text/0.1",
+ "original_text": "<the text you redacted: as you extracted it from input.pdf, or as injected>",
+ "redacted_text": "<your redacted text>",
+ "page_break": "\f",
+ "mappings": [{"label": "PER", "original": "<original>", "replacement": "<fake>"}]}
+```
+
+Separate pages with `page_break` (a form feed by default) in both texts, and keep your words and
+line breaks: the benchmark aligns the GT words to `original_text` and diffs `redacted_text` against
+it. Measured: every required mention's status, by the same rules and cut-offs as for a PDF (a kept
+character is visible; an original value written elsewhere is a displaced original; a placeholder such
+as `[REDACTED]` is not a replacement), collateral and protected damage, detection from the spans you
+changed, and the pseudonym checks on your fakes. Not measured: anything a PDF would show beyond the
+text (layers, revisions, metadata, pixels), signatures and images, and searchability. A GT word missing
+from your `original_text` makes its mention `NOT_EVALUATED`. `mappings` are reported, never evidence.

@@ -16,9 +16,17 @@ traced to the stage that caused them.
 ## Setup
 
 ```bash
-py -3.11 -m venv .venv
+py -3.11 -m venv .venv                  # Windows
 .venv/Scripts/python -m pip install -e ".[dev]"
-.venv/Scripts/python -m pytest          # 403 tests, about 20 minutes
+.venv/Scripts/python -m pytest          # 741 tests, about 30 minutes
+```
+
+On Linux the interpreter is `.venv-linux/bin/python` (`python3.11 -m venv .venv-linux`, then the same
+`pip install`). Without an editable install, set `PYTHONPATH` to the repository so the mock candidates
+the tests start can import the benchmark:
+
+```bash
+PYTHONPATH="$PWD" .venv-linux/bin/python -m pytest
 ```
 
 Optional: the measurement OCR, used to draft GT words on pages without a text layer. The
@@ -123,14 +131,16 @@ Built: the full evaluation pipeline, validated against fault-injecting mocks on 
 documents in every encoding seen in the seed set.
 
 **Policy.** The default policy is the client's decisions, `policies/au-medicolegal-v1.yaml`
-(version 1.1.1, the rules of 1.1.0 reworded): every person, organisation, contact detail, identifier, signature and image of a
+(version 1.2.0: the rules of 1.1.0 and 1.1.1, plus the structure a realistic fake may keep, decided
+by the project owner on 2026-10-22 and 2026-10-29, and places named after a label of their kind and
+streets in running text kept): every person, organisation, contact detail, identifier, signature and image of a
 person is replaced with a fake; dates, ages, occupation, clinical or legal content, and suburbs
 and towns mentioned on their own are kept. Hiding a required item without replacing it is its own
 verdict (`NOT_REPLACED`); a document also has to stay searchable and keep 99% of its ordinary
 words. The draft (`au-medicolegal-v0.yaml`) stays for re-scoring old runs. Definitions:
 [docs/metrics.md](docs/metrics.md).
 
-**Policy 1.1.1, like 1.1.0, departs from the client's answers in two places, on purpose.** Both are recorded
+**Policy 1.2.0, like 1.1.0 and 1.1.1, departs from the client's answers in two places, on purpose.** Both are recorded
 under `deviations` in the policy file, and every run report and comparison board shows them in a
 marked section, "Departures from the client's answers", above the scorecard:
 
@@ -165,10 +175,32 @@ under the default policy; that has not been done yet. A check that breaks is rep
 (by its exception's class only, never its message) and the remaining checks and documents still
 run.
 
+**Evaluation version eval-0.4** (2026-10-30; [docs/metrics.md](docs/metrics.md)): character identity,
+text at its displayed place, moved words and displaced originals, the restyled search, shared words,
+address units, and a text-level path for tools that emit redacted text. A correct fake typeset in
+the original's font, size and place is no longer a leak, and kept words a tool re-typesets are
+`MOVED`, not damaged. Its calibration is synthetic Helvetica only, at 150-300 DPI; real scans, other
+fonts and real tool behaviour are untested, so re-run the self-check on the seed documents under
+eval-0.4 and policy 1.2.0 (`rb selfcheck --dataset seed@0.1.0`) before any real scoring. Paragraph
+reflow is its one documented limit (owner, 2026-10-29): the reading-order search for words a longer
+fake wraps onto the next line (F2) follows in eval-0.4.1, and until then tools are asked to keep line
+breaks.
+
+Results labelled eval-0.3, eval-0.3.1 or eval-0.4-dev must be rescored; no new run is needed, except
+for the ceiling mock, whose default changed (fakes at the original size, in the same state where the
+policy shares it). For the fictional synthetic runs, rescore into another results folder so the
+eval-0.3.1 results stay for comparison, and run the ceiling again:
+
+```bash
+RB_RESULTS_DIR=<new results folder> rb score t2-e2e-synth-lx       # tool 2, under its run's policy file (now 1.2.0)
+RB_RESULTS_DIR=<new results folder> rb score ceil-synth-lx2        # the old ceiling run, as a control
+rb run --candidate candidates/mock-reference-replace.yaml --dataset synthetic@0.1.0 --run-id ceil-synth-lx3
+RB_RESULTS_DIR=<new results folder> rb score ceil-synth-lx3
+```
+
 **Not yet done**: human review and double annotation of the seed GT, including a check of the
-address splits; the self-check of the seed documents under the client's policy; the calibration
-fixes (they change the evaluator, so they need a new evaluation version, eval-0.4, and a rescore);
-a decision on the quasi-identifiers the questionnaire did not ask about (religion, education,
+address splits; the self-check of the seed documents under eval-0.4 and the client's policy 1.2.0;
+the reading-order search for reflowed paragraphs (F2, eval-0.4.1); a decision on the quasi-identifiers the questionnaire did not ask about (religion, education,
 qualifications, marital, benefit or employment status, accreditation, courses), which stay MAY;
 and runs of the real tools on the seed documents (tool 2 has run end to end on the synthetic
 dataset; tool 1's and the client's tool's manifests do not exist yet). The client's filled-in
