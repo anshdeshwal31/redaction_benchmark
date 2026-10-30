@@ -118,7 +118,9 @@ def self_check_verdict(released: bool, clean: bool) -> str:
 
 def matter_consistency(reps: dict[tuple[str, str, str], dict[str, set[str]]], ident: dict) -> list[dict]:
     """Client Q8: a person keeps one fake across all documents of a matter. One row per
-    (matter, entity, name component) replaced in at least two documents."""
+    (matter, entity, name component) replaced in at least two documents, and (eval-0.4) one per address
+    replaced in at least two documents, with component 'address' and the address's hashed identity in place
+    of an entity: one address keeps one fake, whoever's it is (an entity may have several addresses)."""
     rows = []
     for (matter, entity, component), by_doc in sorted(reps.items()):
         if len(by_doc) < 2:
@@ -233,6 +235,9 @@ def score_run(run_id: str, policy_path: str | Path, config: EvalConfig | None = 
                     if r.entity and r.replacement and r.component != "title":
                         matter_reps[(gt.matter, r.entity, r.component)][doc_id].add(
                             r.replacement.strip(".,;:()").casefold())
+                for a in score.pseudonyms.addresses:  # hashed identity -> hashed canonical fake
+                    if a["fake"]:
+                        matter_reps[(gt.matter, a["identity"], "address")][doc_id].add(a["fake"])
             d = score.to_dict()
             d["invalid_artifacts"] = errors
             (out_root / "scores" / f"{doc_id}-r{item.repeat}.json").write_text(

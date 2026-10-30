@@ -90,7 +90,7 @@ def score_document(
              and res.mentions[m.id].requirement is Requirement.MUST}
     if artifacts.get("pseudonyms") is not None or any(
             m.status is MentionStatus.SAFE_REPLACED for m in ev.mentions if m.mention_id in names):
-        score.pseudonyms = evaluate_pseudonyms(gt, res, output)
+        score.pseudonyms = evaluate_pseudonyms(gt, res, output, ev, config)
     if artifacts.get("entities") is not None and best_pred:
         clusters = {mid: c.id for c in artifacts["entities"].clusters for mid in c.mentions}
         score.resolution = evaluate_resolution(

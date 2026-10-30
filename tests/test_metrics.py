@@ -394,9 +394,11 @@ def test_a_replaced_locality_is_checked_for_a_postcode_of_its_state():
 
 
 @pytest.mark.parametrize("kind, subtype, new, problem", [
-    ("LOCATION", "locality", "Oakvale NSW 2150", None),
+    ("LOCATION", "locality", "Oakvale NSW 2153", None),
     ("LOCATION", "locality", "Oakvale NSW 4150", "postcode does not belong to the state"),
-    ("ADDRESS", "residential", "27 Banksia Road, Oakvale VIC 3150", None),  # an unsplit address: as before
+    ("ADDRESS", "residential", "27 Banksia Road, Oakvale VIC 3153", None),  # an unsplit address: as before
+    # eval-0.4: the fake postcode keeps the original's last digit ('4000' -> '2150')
+    ("LOCATION", "locality", "Oakvale NSW 2150", "postcode keeps original digits"),
     ("ADDRESS", "residential", "27 Banksia Road, Oakvale VIC 2150", "postcode does not belong to the state"),
     ("ADDRESS", "residential", "27 Banksia Road", None),  # a street line has no postcode: not checked
 ])
@@ -405,7 +407,8 @@ def test_postcode_check_on_localities_and_addresses(kind, subtype, new, problem)
 
     checks, invalid = _validity([OtherReplacement("x", "E1", kind, subtype, "Faketown QLD 4000", new)], [])
     assert invalid.get("x") == problem
-    assert checks["postcode_state_valid_rate"] == (None if new == "27 Banksia Road" else float(problem is None))
+    assert checks["postcode_state_valid_rate"] == (None if new == "27 Banksia Road" else
+                                                   float(problem != "postcode does not belong to the state"))
 
 
 @pytest.mark.parametrize("text,ok", [("0400 123 456", True), ("(07) 5575 2444", True), ("+61 2 5550 1234", True),
@@ -498,3 +501,151 @@ def test_moved_words_are_not_collateral():
     d = _summarise([], damaged, [], [], Integrity(True, True, [], []), [], word_text=text, searchable={},
                    cfg=EvalConfig())
     assert d["collateral_words"] == 2 and d["protected_damaged"] == ["p1"]
+
+
+# -- E6: address fakes read per unit, by address identity (eval-0.4) --------------------------------------
+
+
+def _address_case(case_id="t-e6", line="Address: 12 Smith Street, Parramatta NSW 2150"):
+    from tests import address_fixtures as af
+
+    n = len(line.split())
+    return af.render(af.one_case(case_id, [("Report prepared for the claimant.", 0), (line, 2),
+                                           ("The claimant attended on time.", 5)],
+                                 [("A1", [[1, k] for k in range(1, n - 3)], [[1, k] for k in range(n - 3, n)])]))
+
+
+def _pseud(fx, out, evaluated=False):
+    from tests import calib
+
+    res = resolve(fx.gt, calib.V1_SHARED)
+    if not evaluated:
+        return evaluate_pseudonyms(fx.gt, res, out)
+    cfg = EvalConfig(dpi=200, renderers=("mupdf",))
+    return evaluate_pseudonyms(fx.gt, res, out, evaluate_output(fx.pdf, out, fx.gt, calib.V1_SHARED, cfg), cfg)
+
+
+@pytest.mark.parametrize("evaluated", [False, True])
+def test_an_address_fake_is_read_per_unit(evaluated):
+    # One flowing fake over the whole address: read as the unit's read-back, then split into its street line
+    # and locality by the GT end reader (the 1 pt zone of each GT word would cut it at the original's words).
+    from tests import address_fixtures as af
+
+    fx = _address_case()
+    out = af.draw(fx, af.flowing(fx, "A1", ["98 Coolabah Esplanade, Ryde NSW 2243"]))
+    r = _pseud(fx, out, evaluated)
+    got = {o.mention_id: (o.replacement, o.unit, o.part) for o in r.other}
+    assert got == {"A1": ("98 Coolabah Esplanade,", "A1", "street"), "A1-loc": ("Ryde NSW 2243", "A1", "locality")}
+    c = r.checks
+    assert c["postcode_state_valid_rate"] == 1.0 and c["postcode_shared_digits"] == 0
+    assert c["fake_reuses_original"] == 0 and c["invalid_replacements"] == 0
+    assert len(r.addresses) == 1 and len(r.addresses[0]["identity"]) == 12 and r.addresses[0]["fake"]
+
+
+@pytest.mark.parametrize("text, ok", [("Ryde NSW 2243", True), ("Ryde N.S.W. 2112", True),
+                                      ("Ryde New South Wales 2112", True), ("Penrith NSW2750", True),
+                                      ("Marsden Queensland 4132", True), ("Marsden QLD4132", True),
+                                      ("Box Hill Vic 3128", True), ("Ryde VIC 2112", False),
+                                      ("Marsden qld 2132", False), ("Ryde", None)])
+def test_postcode_state_validity_reads_every_written_state(text, ok):
+    from benchmark.metrics.pseudonyms import postcode_state_valid
+
+    assert postcode_state_valid(text) is ok
+
+
+def test_a_fake_postcode_keeping_original_digits_after_the_prefix_is_reported():
+    from benchmark.metrics.pseudonyms import postcode_keeps_digits
+    from tests import address_fixtures as af
+
+    assert postcode_keeps_digits("Parramatta NSW 2150", "Ryde NSW 2157") is True  # keeps '15' after the '2'
+    assert postcode_keeps_digits("Parramatta NSW 2150", "Ryde NSW 2843") is False
+    assert postcode_keeps_digits("Darwin NT 0812", "Palmerston NT 0830") is False  # '08' is NT's prefix
+    assert postcode_keeps_digits("Darlinghurst NSW 1300", "Ryde NSW 1450") is True  # no prefix: '1' is kept
+    fx = _address_case()
+    r = _pseud(fx, af.draw(fx, af.flowing(fx, "A1", ["98 Coolabah Esplanade, Ryde NSW 2157"])))
+    assert r.issues["invalid"] == {"A1-loc": "postcode keeps original digits"}
+    assert r.checks["postcode_shared_digits"] == 1
+
+
+def test_a_fake_repeating_an_original_address_word_is_reported():
+    # Reuse across roles: 'Wattle Grove' as the fake suburb of '42 Wattle Grove Road'. A role-by-role check
+    # passes it; it is its own reason.
+    from tests import address_fixtures as af
+
+    fx = _address_case("t-reuse", "Address: 42 Wattle Grove Road, Penrith NSW 2750")
+    r = _pseud(fx, af.draw(fx, af.flowing(fx, "A1", ["87 Banksia Road, Wattle Grove NSW 2173"])))
+    assert r.issues["invalid"] == {"A1-loc": "fake repeats an original address word"}
+    assert r.checks["fake_reuses_original"] == 1
+    ok = _pseud(fx, af.draw(fx, af.flowing(fx, "A1", ["87 Banksia Road, Lalor Park NSW 2147"])))
+    assert ok.issues["invalid"] == {} and ok.checks["fake_reuses_original"] == 0
+
+
+def test_address_consistency_is_by_address_identity_not_entity():
+    from benchmark.runner.scoring import matter_consistency
+    from tests import address_fixtures as af
+
+    def fixture(lines, entity):
+        units = [(f"A{k + 1}", [[k, j] for j in range(len(t.split()) - 3)],
+                  [[k, j] for j in range(len(t.split()) - 3, len(t.split()))]) for k, (t, _) in enumerate(lines)]
+        fx = af.render(af.one_case("t-two", lines, units))
+        for m in fx.gt.mentions:
+            m.entity = entity(m.id)
+        return fx
+
+    # One person with two addresses and two fakes: two addresses, nothing inconsistent.
+    two = fixture([("12 Smith Street, Parramatta NSW 2150", 1), ("4 Rose Lane, Penrith NSW 2750", 4)], lambda _: "E1")
+    r = _pseud(two, af.draw(two, af.flowing(two, "A1", ["98 Coolabah Esplanade, Ryde NSW 2243"])
+                         + af.flowing(two, "A2", ["31 Banksia Road, Kellyville NSW 2155"])))
+    assert r.checks["address_value_consistency_rate"] is None and r.issues["address_inconsistent"] == []
+    assert len({a["identity"] for a in r.addresses}) == 2
+    # The same address twice in a document (a letterhead and a footer): one fake is consistent, two are not.
+    same = fixture([("12 Smith Street, Parramatta NSW 2150", 1), ("12 Smith St, PARRAMATTA N.S.W. 2150", 4)],
+                   lambda mid: "E9" if mid.startswith("A1") else "E8")
+    one = _pseud(same, af.draw(same, af.flowing(same, "A1", ["98 Coolabah Esplanade, Ryde NSW 2243"])
+                               + af.flowing(same, "A2", ["98 Coolabah Esp, RYDE NSW 2243"])))
+    assert one.checks["address_value_consistency_rate"] == 1.0
+    assert len({a["identity"] for a in one.addresses}) == 1
+    split = _pseud(same, af.draw(same, af.flowing(same, "A1", ["98 Coolabah Esplanade, Ryde NSW 2243"])
+                                 + af.flowing(same, "A2", ["31 Banksia Road, Kellyville NSW 2155"])))
+    assert split.checks["address_value_consistency_rate"] == 0.0 and len(split.issues["address_inconsistent"]) == 1
+    # Across the documents of a matter: the same address with one fake is consistent, with two it is not. Rows
+    # carry the hashed identity, never the address.
+    for docs, consistent in (((one, one), True), ((one, split), False)):
+        reps = {}
+        for doc_id, res in zip(("d1", "d2"), docs):
+            for a in res.addresses:
+                if a["fake"] and a["unit"] == "A1":
+                    reps.setdefault(("MX", a["identity"], "address"), {}).setdefault(doc_id, set()).add(a["fake"])
+        if not consistent:  # the second document's A1 got the other fake
+            reps[next(iter(reps))]["d2"] = {next(a["fake"] for a in split.addresses if a["unit"] == "A2")}
+        rows = matter_consistency(reps, {"run_id": "r"})
+        assert [(row["component"], row["consistent"]) for row in rows] == [("address", consistent)]
+        assert len(rows[0]["entity"]) == 12 and "Smith" not in str(rows[0])
+
+
+def test_a_drifted_text_layer_is_read_whole():
+    # Like tool 2's raster outputs: the fake drawn as pixels and its text layer drifted 4 pt along the line. The
+    # 1 pt zone of each GT word cuts the drifted tokens; the unit's read-back keeps them whole.
+    import pymupdf
+
+    from benchmark.evaluate.layers import page_chars, text_in_words
+    from benchmark.geometry import geometry_from_pikepdf_page
+    from tests import address_fixtures as af
+
+    fx = _address_case()
+    p, x, y = fx.origin["w1_1"]
+    ops = af.flowing(fx, "A1", ["66 Fairview Walk, Marsden QLD 4132"], as_image=True)
+    ops.append(("hidden", p, x + 4.0, y, "66 Fairview Walk, Marsden QLD 4132"))
+    out = af.draw(fx, ops)
+    r = _pseud(fx, out)
+    assert {o.mention_id: o.replacement for o in r.other} == {"A1": "66 Fairview Walk,", "A1-loc": "Marsden QLD 4132"}
+    assert r.checks["postcode_state_valid_rate"] == 1.0
+    import io
+
+    import pikepdf
+
+    with pikepdf.open(io.BytesIO(out)) as pdf:
+        geom = geometry_from_pikepdf_page(pdf.pages[0])
+    centres, chars = page_chars(pymupdf.open("pdf", out)[0], geom)
+    zone = text_in_words(fx.gt.page(0), centres, chars, set(af.mention_words(fx, "A1-loc")))
+    assert " ".join(zone.values()) != "Marsden QLD 4132"  # the 1 pt reader cuts the drifted locality

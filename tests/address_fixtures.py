@@ -14,6 +14,7 @@ original size (:func:`draw`):
   ("erase", word id)                  the word removed, nothing drawn
   ("text", page, x, baseline, text)   new text drawn (a text layer and pixels)
   ("image", page, x, baseline, text)  the same drawn as a picture: pixels with no text layer
+  ("hidden", page, x, baseline, text) invisible text: a text layer with no pixels
 
 :func:`correct` replaces every identifying word of every unit (the words outside the shared structure the
 policy enables) with a fake that follows the table's fake constraints: digits mapped one by one with every
@@ -145,8 +146,9 @@ def draw(fx: Fixture, ops: list[tuple]) -> bytes:
         if op[0] == "replace" and op[2]:
             p, x, y = fx.origin[op[1]]
             doc[p].insert_text((x, y), op[2], fontname=FONT, fontsize=SIZE)
-        elif op[0] == "text":
-            doc[op[1]].insert_text((op[2], op[3]), op[4], fontname=FONT, fontsize=SIZE)
+        elif op[0] in ("text", "hidden"):
+            doc[op[1]].insert_text((op[2], op[3]), op[4], fontname=FONT, fontsize=SIZE,
+                                   render_mode=3 if op[0] == "hidden" else 0)
         elif op[0] == "image":
             png, w, h = _picture(op[4])
             doc[op[1]].insert_image(pymupdf.Rect(op[2] - 1, op[3] - SIZE * 1.075, op[2] - 1 + w, op[3] - SIZE * 1.075 + h),
