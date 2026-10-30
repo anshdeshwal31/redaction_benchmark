@@ -23,9 +23,12 @@ class EvalConfig(BaseModel):
     # same path; form rules and the glyphs of kept words drawn as outlines whose whole box lies inside
     # the word are not counted (a typed "____" line in the text layer has no such glyphs). Results
     # labelled eval-0.3 either ignored drawn strokes (scored before the check was added, early on
-    # 2026-10-22) or matched them by bounding box alone; rescore them. eval-0.4 stays reserved for the
-    # calibration fixes listed in docs/metrics.md.
-    version: str = "eval-0.3.1"
+    # 2026-10-22) or matched them by bounding box alone; rescore them.
+    # eval-0.4-dev: development label of the eval-0.4 build (the calibration fixes listed in
+    # docs/metrics.md: character identity, MOVED words and displaced originals, text at the displayed
+    # place, shared roles, address units). Results scored under it are never reported; eval-0.4
+    # replaces it once every part has landed.
+    version: str = "eval-0.4-dev"
     dpi: float = Field(200, ge=150, le=600, description="Rendering resolution for pixel evidence. Calibrated "
                                                           "for 150-300 DPI; below ~120 DPI the character bands of "
                                                           "8 pt text are too coarse and produce false leaks")

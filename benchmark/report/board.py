@@ -25,13 +25,13 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
-import pyarrow.parquet as pq
 
 from ..dataset import load_manifest
-from ..evaluate import HIDDEN_VALUES, SAFE_VALUES
+from ..evaluate import HIDDEN_VALUES, PRESENT_VALUES, SAFE_VALUES
 from ..runner.runner import load_run
 from ..runner.scoring import results_root
 from . import deviations
+from .store import read_rows
 
 # Leak = original content still there; failure = leak or hidden without the required replacement.
 HIDDEN = HIDDEN_VALUES
@@ -49,8 +49,7 @@ RAMP = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7", "#3987
 
 
 def _rows(run_id: str, name: str) -> list[dict]:
-    p = results_root() / run_id / "tables" / f"{name}.parquet"
-    return pq.read_table(p).to_pylist() if p.exists() else []
+    return read_rows(results_root() / run_id, name)
 
 
 class RunData:
@@ -145,8 +144,8 @@ def scorecard(runs: list[RunData]) -> list[dict]:
         protected = [w for w in r.words if w["requirement"] == "MUST_NOT"]
         must_w = [w for w in r.words if w["requirement"] == "MUST"]
 
-        def red(w):
-            return w["visible_fraction"] is not None and w["visible_fraction"] < 0.5
+        def red(w):  # a MOVED word is present, wherever it was drawn
+            return w["status"] != "MOVED" and w["visible_fraction"] is not None and w["visible_fraction"] < 0.5
 
         tp, fp = sum(map(red, must_w)), sum(map(red, ordinary + protected))
         flips = [d["flip_rate"] for d in r.determinism if d.get("flip_rate") is not None]
@@ -162,8 +161,10 @@ def scorecard(runs: list[RunData]) -> list[dict]:
             "searchable": float(np.mean(searchable)) if searchable else None, "self_check": dict(verdicts),
             "matter": (sum(1 for m in r.matters if m.get("consistent")), len(r.matters)),
             "clean": f"{sum(1 for d in r.documents if d.get('clean_document'))}/{len(r.documents)}",
-            "collateral": (sum(w["status"] != "PRESERVED" for w in ordinary) / len(ordinary)) if ordinary else None,
-            "protected": sum(w["status"] != "PRESERVED" for w in protected),
+            # MOVED words (displaced or re-typeset, content intact) are neither collateral nor damage.
+            "collateral": (sum(w["status"] not in PRESENT_VALUES for w in ordinary) / len(ordinary)) if ordinary
+            else None,
+            "protected": sum(w["status"] not in PRESENT_VALUES for w in protected),
             "precision": tp / (tp + fp) if tp + fp else None, "recall": tp / len(must_w) if must_w else None,
             "flip": float(np.mean(flips)) if flips else None,
         })

@@ -251,8 +251,8 @@ def attribute(
                 if pts:
                     replaced_boxes.append((seg.page, bbox(as_poly(pts))))
     for w in ev.words:
-        if w.status is WordStatus.PRESERVED or w.status is WordStatus.NOT_EVALUATED:
-            continue
+        if w.status in (WordStatus.PRESERVED, WordStatus.MOVED, WordStatus.NOT_EVALUATED):
+            continue  # content intact (a MOVED word is displaced or re-typeset, not damaged) or not judged
         if w.requirement not in (Effective.ORDINARY.value, Effective.MUST_NOT.value):
             continue
         wb = bbox(as_poly(words[w.word_id][1].poly))

@@ -34,6 +34,7 @@ from .layers import layer_survival, page_chars, page_layers, text_in_words, text
 from .outcomes import (
     HIDDEN,
     L1_L2_LEAKS,
+    PRESENT,
     SAFE,
     DocumentEvaluation,
     Integrity,
@@ -525,20 +526,21 @@ def _summarise(mentions, words, findings, surfaces, integrity, pages, word_text:
     done = [w for w in words if w.status is not WordStatus.NOT_EVALUATED]
     ordinary = [w for w in done if w.requirement == Effective.ORDINARY.value]
     protected = [w for w in done if w.requirement == Effective.MUST_NOT.value]
-    collateral = [w for w in ordinary if w.status is not WordStatus.PRESERVED]
-    protected_damage = [w for w in protected if w.status is not WordStatus.PRESERVED]
+    # A MOVED word's content is intact (displaced or re-typeset): neither collateral nor damage.
+    collateral = [w for w in ordinary if w.status not in PRESENT]
+    protected_damage = [w for w in protected if w.status not in PRESENT]
     # Only real words count towards the collateral pass mark; stray punctuation is reported.
     real = [w for w in ordinary if _has_alnum(word_text.get(w.word_id, "x" * cfg.collateral_min_chars),
                                               cfg.collateral_min_chars)]
-    real_collateral = [w for w in real if w.status is not WordStatus.PRESERVED]
+    real_collateral = [w for w in real if w.status not in PRESENT]
     collateral_ok = not real or len(real_collateral) / len(real) <= cfg.collateral_fail_rate
     found = sum(searchable.values())
     searchable_rate = found / len(searchable) if searchable else None
     searchable_ok = searchable_rate is None or searchable_rate >= cfg.searchable_min_rate
     must_words = [w for w in done if w.requirement == Effective.MUST.value]
 
-    def redacted(w):
-        return w.visible_fraction is not None and w.visible_fraction < 0.5
+    def redacted(w):  # a MOVED word is present, wherever it was drawn
+        return w.status is not WordStatus.MOVED and w.visible_fraction is not None and w.visible_fraction < 0.5
 
     tp = sum(1 for w in must_words if redacted(w))
     fn = len(must_words) - tp

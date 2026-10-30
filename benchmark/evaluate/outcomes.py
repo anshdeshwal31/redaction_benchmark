@@ -34,7 +34,15 @@ class WordStatus(str, Enum):
     PRESERVED = "PRESERVED"
     DAMAGED = "DAMAGED"
     REMOVED = "REMOVED"
+    # Content intact but displaced or re-typeset (eval-0.4): not damage. For a MUST word, a
+    # displaced original, which counts as visible for its mention.
+    MOVED = "MOVED"
     NOT_EVALUATED = "NOT_EVALUATED"
+
+
+# Word statuses whose content is present in the output (not collateral, not protected damage).
+PRESENT = frozenset({WordStatus.PRESERVED, WordStatus.MOVED})
+PRESENT_VALUES = frozenset(s.value for s in PRESENT)
 
 
 @dataclass
@@ -60,6 +68,15 @@ class MentionOutcome:
     replaced: bool
     l2_sources: list[str]
     status: MentionStatus
+    # eval-0.4 (defaults keep older constructors and stored tables readable):
+    displaced_residual: float = 0.0  # share of the units seen only as a displaced original
+    shared_words: list[str] = field(default_factory=list)  # word ids whose whole word holds a shared role
+    shared_chars: list[list] = field(default_factory=list)  # [word id, character index] of shared characters
+    shared_visible: float = 0.0  # share of the shared units still visible (reported, never a leak)
+    shared_pairs: list[list] = field(default_factory=list)  # [state word id, excused] of each state/postcode pair
+    address_unit: str | None = None  # the address unit (street line and locality) the mention belongs to
+    locality_shape: str | None = None  # what the read-back of a replaced locality looks like
+    review_flags: list[str] = field(default_factory=list)  # review aids (OCR), never a status change
 
 
 @dataclass
@@ -67,8 +84,16 @@ class WordOutcome:
     word_id: str
     page: int
     requirement: str
-    visible_fraction: float | None
+    visible_fraction: float | None  # for a MOVED word: at its displayed place
     status: WordStatus
+    # eval-0.4, all optional:
+    in_place_fraction: float | None = None  # visible fraction at the GT place (MOVED words)
+    dx_pt: float | None = None  # displacement of a MOVED word (display pt)
+    dy_pt: float | None = None
+    scale: float | None = None  # size of a MOVED word relative to the original
+    match_score: float | None = None  # template score of the MOVED match
+    text_offset_pt: float | None = None  # distance of its text-layer occurrence from its displayed place
+    restyled: bool | None = None  # found re-typeset in a substitute font
 
 
 @dataclass

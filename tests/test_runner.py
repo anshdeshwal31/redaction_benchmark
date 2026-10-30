@@ -532,6 +532,52 @@ def test_a_run_made_before_the_policy_was_recorded_still_loads_and_scores(env):
     assert scoring["run_policy"] is None and scoring["policy_warning"] is None
 
 
+def _evaluation_with_eval04_fields():
+    from benchmark.evaluate import DocumentEvaluation, Integrity, MentionOutcome, MentionStatus, WordOutcome, WordStatus
+
+    mention = MentionOutcome(
+        "addr1-loc", "LOCATION", "locality", "E1", "claimant", "MUST", None, [0], [], 9, 0.0, None, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, True, [], MentionStatus.SAFE_REPLACED, displaced_residual=0.25, shared_words=["w7"],
+        shared_chars=[["w8", 0]], shared_visible=1.0, shared_pairs=[["w7", True]], address_unit="addr1",
+        locality_shape="suburb state postcode", review_flags=["LEAK_SUSPECTED"])
+    words = [WordOutcome("w1", 0, "ORDINARY", 0.95, WordStatus.MOVED, in_place_fraction=0.1, dx_pt=12.5, dy_pt=0.3,
+                         scale=1.04, match_score=0.91, text_offset_pt=1.5, restyled=False),
+             WordOutcome("w2", 0, "ORDINARY", 1.0, WordStatus.PRESERVED)]
+    return DocumentEvaluation("syn-digital", "eval-0.4-dev", "0" * 16, "p@1", "", "", [], Integrity(True, True, [], []),
+                              [mention], words, [], [], [], 0, {"clean_document": True})
+
+
+def test_the_results_store_keeps_the_eval04_fields_and_reads_older_tables(tmp_path):
+    from benchmark.report.store import EVAL04_COLUMNS, read_rows, rows_for_score, write_tables
+    from benchmark.score import DocumentScore
+
+    run = {"run_id": "r", "candidate": "c", "candidate_version": "1", "experiment": "e2e", "mode": "e2e",
+           "dataset": "synthetic@0.0.1"}
+    tables = rows_for_score(run, {"doc_id": "syn-digital", "repeat": 0},
+                            DocumentScore("syn-digital", _evaluation_with_eval04_fields()))
+    write_tables(tmp_path / "new" / "tables", tables)
+    m = read_rows(tmp_path / "new", "mentions")[0]
+    assert (m["displaced_residual"], m["shared_words"], m["shared_visible"], m["address_unit"]) == (
+        0.25, "w7", 1.0, "addr1")
+    assert json.loads(m["shared_chars"]) == [["w8", 0]] and json.loads(m["shared_pairs"]) == [["w7", True]]
+    assert (m["locality_shape"], m["review_flags"]) == ("suburb state postcode", "LEAK_SUSPECTED")
+    w1, w2 = read_rows(tmp_path / "new", "words")
+    assert w1["status"] == "MOVED" and (w1["in_place_fraction"], w1["dx_pt"], w1["dy_pt"], w1["scale"]) == (
+        0.1, 12.5, 0.3, 1.04)
+    assert (w1["match_score"], w1["text_offset_pt"], w1["restyled"]) == (0.91, 1.5, False)
+    assert w2["dx_pt"] is None and w2["restyled"] is None
+    rows, _ = query(tmp_path / "new", "SELECT word_id FROM words WHERE status = 'MOVED'")
+    assert rows == [("w1",)]
+    # A table written before eval-0.4 has none of these columns: they read as None.
+    old = {name: [{k: v for k, v in r.items() if k not in EVAL04_COLUMNS.get(name, ())} for r in rows_]
+           for name, rows_ in tables.items()}
+    write_tables(tmp_path / "old" / "tables", old)
+    m_old, w_old = read_rows(tmp_path / "old", "mentions")[0], read_rows(tmp_path / "old", "words")[0]
+    assert all(m_old[k] is None for k in EVAL04_COLUMNS["mentions"]) and m_old["status"] == "SAFE_REPLACED"
+    assert all(w_old[k] is None for k in EVAL04_COLUMNS["words"]) and w_old["status"] == "MOVED"
+    assert read_rows(tmp_path / "old", "matters") == []
+
+
 # -- the matter the tool is given ---------------------------------------------------------------------
 
 

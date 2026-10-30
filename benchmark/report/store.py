@@ -7,12 +7,19 @@ directory is sensitive by default (git-ignored).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 TABLES = ("documents", "mentions", "words", "components", "determinism", "findings", "matters")
+# Columns added in eval-0.4. Tables written before it lack them; read_rows gives them as None.
+EVAL04_COLUMNS = {
+    "mentions": ("displaced_residual", "shared_words", "shared_chars", "shared_visible", "shared_pairs",
+                 "address_unit", "locality_shape", "review_flags"),
+    "words": ("in_place_fraction", "dx_pt", "dy_pt", "scale", "match_score", "text_offset_pt", "restyled"),
+}
 
 
 def _flat(prefix: str, d: dict | None, out: dict) -> None:
@@ -53,10 +60,17 @@ def rows_for_score(run: dict, item: dict, score, doc_entry=None) -> dict[str, li
                                               "pending", "cells", "visible_residual", "worst_config",
                                               "latent_residual", "text_residual", "image_residual",
                                               "image_latent_residual", "vector_residual", "revision_residual",
-                                              "replaced")})
+                                              "replaced", "displaced_residual", "shared_visible", "address_unit",
+                                              "locality_shape")})
         r["status"] = m.status.value
         r["conditions"] = ",".join(m.conditions)
         r["l2_sources"] = ",".join(m.l2_sources)
+        # Shared structure (eval-0.4): word ids comma-joined; [word id, index] and [state word id, excused]
+        # pairs as JSON text.
+        r["shared_words"] = ",".join(m.shared_words)
+        r["shared_chars"] = json.dumps(m.shared_chars)
+        r["shared_pairs"] = json.dumps(m.shared_pairs)
+        r["review_flags"] = ",".join(m.review_flags)
         r["pages"] = ",".join(map(str, m.pages))
         r["encodings"] = ",".join(sorted({page_enc.get(p, "?") for p in m.pages}))
         x = det.get(m.mention_id)
@@ -72,7 +86,8 @@ def rows_for_score(run: dict, item: dict, score, doc_entry=None) -> dict[str, li
         r["attr_tags"] = ",".join(a.tags) if a else None
         mentions.append(r)
     words = [dict(base, word_id=w.word_id, page=w.page, requirement=w.requirement, status=w.status.value,
-                  visible_fraction=w.visible_fraction) for w in ev.words]
+                  visible_fraction=w.visible_fraction,
+                  **{k: getattr(w, k) for k in EVAL04_COLUMNS["words"]}) for w in ev.words]
     comp = dict(base)
     if score.text:
         _flat("text.general.", score.text.general, comp)
@@ -129,6 +144,19 @@ def write_tables(out_dir: Path, tables: dict[str, list[dict]]) -> dict[str, Path
         pq.write_table(table, path)
         paths[name] = path
     return paths
+
+
+def read_rows(results_dir: Path, name: str) -> list[dict]:
+    """Rows of one table of a scored run ([] when the table was not written). Columns added in
+    eval-0.4 read as None in tables written before it."""
+    p = results_dir / "tables" / f"{name}.parquet"
+    if not p.exists():
+        return []
+    rows = pq.read_table(p).to_pylist()
+    for k in EVAL04_COLUMNS.get(name, ()):
+        for r in rows:
+            r.setdefault(k, None)
+    return rows
 
 
 def query(results_dir: Path, sql: str):

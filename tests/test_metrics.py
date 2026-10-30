@@ -443,3 +443,32 @@ def test_pseudonyms_of_an_image_only_output_are_read_with_the_ocr(monkeypatch):
     direct = evaluate_pseudonyms(fx.gt, res, text_pdf)
     assert via_ocr.evaluable and via_ocr.checks == direct.checks
     assert [x.replacement for x in via_ocr.replacements] == [x.replacement for x in direct.replacements]
+
+
+# -- over-redaction counts of the document summary (eval-0.4) --------------------------------
+
+
+def test_moved_words_are_not_collateral():
+    from benchmark.evaluate import Integrity, WordOutcome, WordStatus
+    from benchmark.evaluate.evaluator import _summarise
+
+    words = [WordOutcome("k1", 0, "ORDINARY", 1.0, WordStatus.PRESERVED),
+             WordOutcome("k2", 0, "ORDINARY", 0.9, WordStatus.MOVED, in_place_fraction=0.0, dx_pt=12.5, dy_pt=0.0,
+                         scale=1.04, match_score=0.91),
+             WordOutcome("k3", 0, "ORDINARY", 1.0, WordStatus.MOVED, restyled=True),
+             WordOutcome("p1", 0, "MUST_NOT", 0.85, WordStatus.MOVED, in_place_fraction=0.1),
+             WordOutcome("m1", 0, "MUST", 0.0, WordStatus.REMOVED),
+             WordOutcome("m2", 0, "MUST", 1.0, WordStatus.MOVED)]  # a displaced original: present
+    text = {"k1": "Medical", "k2": "report", "k3": "dated", "p1": "12/03/1970", "m1": "Smith", "m2": "Jones"}
+    s = _summarise([], words, [], [], Integrity(True, True, [], []), [], word_text=text, searchable={},
+                   cfg=EvalConfig())
+    assert s["collateral_words"] == 0 and s["collateral_real_words"] == 0 and s["collateral_ok"]
+    assert s["protected_damaged"] == [] and s["protected_words"] == 1
+    # MOVED words are present: never a redacted token, so m2 is a miss and no kept word a false positive.
+    assert s["effective_token_precision"] == 1.0 and s["effective_token_recall"] == 0.5
+    # The same words DAMAGED would be collateral and protected damage.
+    damaged = [WordOutcome(w.word_id, 0, w.requirement, 0.3, WordStatus.DAMAGED) if w.status is WordStatus.MOVED
+               else w for w in words]
+    d = _summarise([], damaged, [], [], Integrity(True, True, [], []), [], word_text=text, searchable={},
+                   cfg=EvalConfig())
+    assert d["collateral_words"] == 2 and d["protected_damaged"] == ["p1"]

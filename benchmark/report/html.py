@@ -14,24 +14,23 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import pyarrow.parquet as pq
 import pymupdf
 from jinja2 import Template
 
 from ..dataset import document_pdf, load_manifest
-from ..evaluate import HIDDEN_VALUES
+from ..evaluate import HIDDEN_VALUES, PRESENT_VALUES
 from ..geometry import as_poly, bbox
 from ..gt.io import find_gt
 from ..runner.runner import load_run, runs_root
 from . import deviations
+from .store import read_rows
 
 # Leak = original content still recoverable; NOT_REPLACED is hidden, so it is not a leak.
 HIDDEN = HIDDEN_VALUES
 
 
 def _rows(results: Path, name: str) -> list[dict]:
-    p = results / "tables" / f"{name}.parquet"
-    return pq.read_table(p).to_pylist() if p.exists() else []
+    return read_rows(results, name)
 
 
 def _bootstrap(per_doc: list[tuple[int, int]], n: int = 2000, seed: int = 0) -> tuple[float, float] | None:
@@ -161,7 +160,8 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
     ordinary = [w for w in w0 if w["requirement"] == "ORDINARY"]
     protected = [w for w in w0 if w["requirement"] == "MUST_NOT"]
     must_w = [w for w in w0 if w["requirement"] == "MUST"]
-    red = lambda w: w["visible_fraction"] is not None and w["visible_fraction"] < 0.5  # noqa: E731
+    # A MOVED word is present, wherever it was drawn.
+    red = lambda w: w["status"] != "MOVED" and w["visible_fraction"] is not None and w["visible_fraction"] < 0.5  # noqa: E731
     tp = sum(1 for w in must_w if red(w))
     fp = sum(1 for w in ordinary + protected if red(w))
     no_output = [m for m in must if m["status"] == "NO_OUTPUT"]
@@ -182,8 +182,8 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
         {"label": "searchable kept words", "value": _fmt(searchable_mean, True), "cls": "" if searchable_mean is None else ("ok" if searchable_ok else "bad"), "note": "mean per document; pass mark per document"},
         {"label": "entities with any leak", "value": _fmt(_rate(ent_leaked, ent_total), True), "cls": "bad" if ent_leaked else "ok", "note": f"{ent_leaked}/{ent_total}"},
         {"label": "clean documents", "value": f"{clean}/{len(doc0)}", "cls": "ok" if clean == len(doc0) else "bad", "note": "no L1/L2 leak, all replaced, no protected damage, collateral and searchable pass marks met"},
-        {"label": "collateral ordinary words", "value": _fmt(_rate(sum(1 for w in ordinary if w['status'] != 'PRESERVED'), len(ordinary)), True), "cls": "", "note": f"of {len(ordinary)}"},
-        {"label": "protected words damaged", "value": str(sum(1 for w in protected if w['status'] != 'PRESERVED')), "cls": "", "note": f"of {len(protected)}"},
+        {"label": "collateral ordinary words", "value": _fmt(_rate(sum(1 for w in ordinary if w['status'] not in PRESENT_VALUES), len(ordinary)), True), "cls": "", "note": f"of {len(ordinary)}"},
+        {"label": "protected words damaged", "value": str(sum(1 for w in protected if w['status'] not in PRESENT_VALUES)), "cls": "", "note": f"of {len(protected)}"},
         {"label": "effective token precision / recall", "value": f"{_fmt(_rate(tp, tp + fp))} / {_fmt(_rate(tp, len(must_w)))}", "cls": "", "note": "from the output pixels"},
     ]
     comp_rows = []
