@@ -671,3 +671,93 @@ def find_restyled(gt: GTDocument, requirement: Mapping[str, str], pairs: Mapping
                              round(c["score"], 4), round(float(c["v"]), 4), requirement.get(wid, "ORDINARY"),
                              restyled=True, font=c["font"])
     return out
+
+
+# -- shared structure: identifying slices and the state/postcode pair -----------------------------------------
+
+
+def find_slices(gt: GTDocument, needle_cut: Mapping[str, tuple[int, int]], pcs: Mapping[int, PageCells],
+                pairs: Mapping[int, tuple[np.ndarray, np.ndarray]], found: Mapping[str, Found],
+                visible: Mapping[int, Mapping], informative: Mapping[int, set], unreliable: set[int],
+                cfg: EvalConfig) -> list[tuple[int, tuple[str, int]]]:
+    """Identifying slices of MUST words with shared characters (an email's local part, an identifier's
+    or a phone number's other digits; word id -> [a, b)) found away from their place, as (page, unit)
+    of their characters: a changed domain or prefix must not hide a kept local part or kept digits it
+    pushed along. A slice is looked for when fewer than word_preserved_fraction of its characters are
+    visible in place and its whole word was not found: its own original image, the moved search's
+    window and scales, moved_match, and the band test at the transform finding at least
+    word_preserved_fraction of its characters; matches at scale 1 within moved_zero_px of the GT place
+    are left to the in-place test."""
+    scale = cfg.dpi / 72.0
+    words = gt.word_index()
+    out: list[tuple[int, tuple[str, int]]] = []
+    for wid, (a, b) in needle_cut.items():
+        pg, w = words[wid]
+        if pg in unreliable or pg not in pairs or wid in found or b - a < 2:
+            continue
+        us = [(wid, k) for k in range(a, b) if (wid, k) in informative.get(pg, set())]
+        if not us or sum(bool(visible[pg].get(u, False)) for u in us) / len(us) >= cfg.word_preserved_fraction:
+            continue
+        pc = pcs[pg]
+        o, x = pairs[pg]
+        idxs = [i for i in pc.word_cells.get(wid, []) if a <= pc.cells[i].index < b]
+        if not idxs:
+            continue
+        rr = np.concatenate([pc.rows[i] for i in idxs])
+        cc = np.concatenate([pc.cols[i] for i in idxs])
+        if rr.size == 0:
+            continue
+        hpt, _, ang = word_frame(w)
+        vertical = _vertical(ang)
+        x0, y0, x1, y1 = float(cc.min()), float(rr.min()), float(cc.max() + 1), float(rr.max() + 1)
+        mh, mv = cfg.moved_margin_along * hpt * scale, cfg.moved_margin_across * hpt * scale
+        if vertical:
+            mh, mv = mv, mh
+        c0, r0 = max(int(math.floor(x0 - mh)), 0), max(int(math.floor(y0 - mv)), 0)
+        c1, r1 = min(int(math.ceil(x1 + mh)), o.shape[1]), min(int(math.ceil(y1 + mv)), o.shape[0])
+        t = o[r0:r1, c0:c1]
+        if t.size == 0 or t.std() < 1.0:
+            continue
+        tpl = dict(t=t, c0=c0, r0=r0, c1=c1, r1=r1, box=(x0, y0, x1, y1), hpt=hpt, ang=ang, vertical=vertical)
+        best = None
+        for c in candidates(o, x, w, cfg, None, None, [], tpl=tpl):
+            if c["score"] < cfg.moved_match:
+                continue
+            if abs(c["s"] - 1.0) < 1e-6 and math.hypot(c["dx_pt"], c["dy_pt"]) * scale <= cfg.moved_zero_px:
+                continue
+            v = pc.word_fraction_at(wid, o, x, c["s"], c["tx"], c["ty"], cfg, chars=(a, b))
+            if v is not None and v >= cfg.word_preserved_fraction and (best is None or c["score"] > best["score"]):
+                best = c
+        if best is not None:
+            out.extend((pg, u) for u in us)
+    return out
+
+
+def refine_chars(pc: PageCells, wid: str, ks, o: np.ndarray, x: np.ndarray, s: float, tx: float, ty: float
+                 ) -> tuple[float, float, float]:
+    """The best whole-pixel offset (dx, dy, score) of the original glyphs of characters ``ks`` of a word,
+    expected at output_px = s * original_px + (tx, ty), within half a character along the line and a
+    quarter of their height across (TM_CCOEFF_NORMED); score -1 when it cannot be taken."""
+    idxs = [i for i in pc.word_cells.get(wid, []) if pc.cells[i].index in ks]
+    if not idxs:
+        return 0.0, 0.0, -1.0
+    rr = np.concatenate([pc.rows[i] for i in idxs])
+    cc = np.concatenate([pc.cols[i] for i in idxs])
+    if rr.size == 0:
+        return 0.0, 0.0, -1.0
+    r0, r1, c0, c1 = int(rr.min()) - 1, int(rr.max()) + 2, int(cc.min()) - 1, int(cc.max()) + 2
+    t = o[max(r0, 0):r1, max(c0, 0):c1].astype(np.float32)
+    if t.std() < 1.0:
+        return 0.0, 0.0, -1.0
+    th, tw = max(3, int(round(t.shape[0] * s))), max(3, int(round(t.shape[1] * s)))
+    t = cv2.resize(t, (tw, th), interpolation=cv2.INTER_LINEAR if s >= 1 else cv2.INTER_AREA)
+    ea, ec = max(2, int(round(0.5 * (c1 - c0) / max(len(ks), 1)))), max(2, int(round(0.25 * (r1 - r0))))
+    pr0, pc0 = s * max(r0, 0) + ty, s * max(c0, 0) + tx
+    top, left = int(math.floor(pr0)) - ec, int(math.floor(pc0)) - ea
+    hh, ww = x.shape
+    if top < 0 or left < 0 or top + th + 2 * ec + 1 > hh or left + tw + 2 * ea + 1 > ww:
+        return 0.0, 0.0, -1.0
+    win = x[top:top + th + 2 * ec + 1, left:left + tw + 2 * ea + 1].astype(np.float32)
+    res = np.nan_to_num(cv2.matchTemplate(win, t, cv2.TM_CCOEFF_NORMED), nan=-1.0)
+    k = np.unravel_index(int(np.argmax(res)), res.shape)
+    return float(left + k[1] - pc0), float(top + k[0] - pr0), float(res.max())

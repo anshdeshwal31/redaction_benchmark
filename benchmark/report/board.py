@@ -168,6 +168,11 @@ def scorecard(runs: list[RunData]) -> list[dict]:
             # eval-0.4: kept words found away from their place, and MUST words found so (displaced originals)
             "moved": sum(w["status"] == "MOVED" for w in ordinary + protected),
             "displaced": sum(w["status"] == "MOVED" for w in must_w),
+            # eval-0.4: required mentions with shared structure (policy shared roles), and state/postcode
+            # pairs that failed their check (the kept state counted)
+            "shared": (sum(1 for m in r.mentions if m.get("shared_words") or m.get("shared_chars") not in (None, "", "[]")),
+                       sum(sum(1 for _, ok in json.loads(m["shared_pairs"]) if not ok) for m in r.mentions
+                           if m.get("shared_pairs"))),
             "precision": tp / (tp + fp) if tp + fp else None, "recall": tp / len(must_w) if must_w else None,
             "flip": float(np.mean(flips)) if flips else None,
         })
@@ -399,7 +404,8 @@ def build_board(run_ids: list[str], out: Path, title: str = "Candidate compariso
                  "<th>policy</th><th>docs</th><th>required</th><th>leak (strict)</th><th>95% CI</th>"
                  "<th>leak (completed)</th>"
                  "<th>visible/recoverable</th><th>not replaced</th><th>failure</th><th>clean docs</th>"
-                 "<th>collateral</th><th>protected dmg</th><th>moved kept / displaced required</th><th>searchable</th>"
+                 "<th>collateral</th><th>protected dmg</th><th>moved kept / displaced required</th>"
+                 "<th>shared structure / pairs failed</th><th>searchable</th>"
                  "<th>token P / R</th><th>flip rate</th><th>same fake across matter</th>"
                  "<th>tool's own safety check</th></tr>" + "".join(
                      f"<tr><td>{_esc(x['candidate'])} <span class=mut>{_esc(x['version'])}</span></td>"
@@ -410,7 +416,8 @@ def build_board(run_ids: list[str], out: Path, title: str = "Candidate compariso
                      f"<td>{_pct(x['leak_completed'])}</td><td>{_pct(x['l12'])}</td>"
                      f"<td>{_pct(x['not_replaced'])}</td><td>{_pct(x['fail'])}</td><td>{x['clean']}</td>"
                      f"<td>{_pct(x['collateral'])}</td><td>{x['protected']}</td>"
-                     f"<td>{x['moved']} / {x['displaced']}</td><td>{_pct(x['searchable'])}</td>"
+                     f"<td>{x['moved']} / {x['displaced']}</td><td>{x['shared'][0]} / {x['shared'][1]}</td>"
+                     f"<td>{_pct(x['searchable'])}</td>"
                      f"<td>{_pct(x['precision'])} / {_pct(x['recall'])}</td><td>{_pct(x['flip'])}</td>"
                      f"<td>{x['matter'][0]}/{x['matter'][1] if x['matter'][1] else 'N/A'}</td>"
                      f"<td>{_esc(_verdicts(x['self_check']))}</td></tr>"

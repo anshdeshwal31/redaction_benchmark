@@ -174,6 +174,32 @@ def test_a_whole_address_span_is_exact_for_both_parts():
     assert d.mention_scores["exact_boundary"]["precision"] == 0.0
 
 
+def test_a_prediction_leaving_out_a_shared_state_is_exact():
+    # A fake may keep the state (eval-0.4 shared roles): when the evaluation excused 'QLD', a prediction
+    # that leaves it out is still exact for addr1-loc and the token counts have no miss for it; one that
+    # takes it is exact too. Without shared words the same prediction is 'under' and misses a token.
+    from benchmark.metrics.detection import ProjectedMention
+
+    fx = ALL_VARIANTS["digital"]()
+    res = resolve(fx.gt, load_policy(Path(__file__).resolve().parents[1] / "policies" / "au-medicolegal-v1.yaml"))
+    m = next(x for x in fx.gt.mentions if x.id == "addr1-loc")
+    loc = {(s.page, w) for s in m.segments for w in s.words}
+    words = fx.gt.word_index()
+    qld = next(w for _, w in loc if words[w][1].text == "QLD")
+
+    def scored(ws, shared):
+        d = evaluate_detection(fx.gt, res, [ProjectedMention("p0", "LOCATION", "LOCATION", ws)], shared=shared)
+        return next(x for x in d.matches if x.mention_id == "addr1-loc"), d
+
+    without = {(p, w) for p, w in loc if w != qld}
+    x, d = scored(without, {qld})
+    x0, d0 = scored(without, None)
+    assert x.boundary == "exact" and x0.boundary == "under"
+    assert d.token["fn"] == d0.token["fn"] - 1
+    assert scored(loc, {qld})[0].boundary == "exact"
+    assert d.mention_scores["exact_boundary"]["precision"] == 1.0
+
+
 # -- text acquisition ---------------------------------------------------------------------------
 
 

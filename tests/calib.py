@@ -678,3 +678,71 @@ def damage_case(name: str) -> bytes:
         "E6": lambda: {"p0w35": ("erase",), "p0w33": ("erase",), "p0w34": ("erase",)},
     }[name]()
     return build(word_ops=ops)
+
+
+# -- shared structure (eval-0.4 S14) ---------------------------------------------------------------------
+
+V0 = load_policy(ROOT / "policies" / "au-medicolegal-v0.yaml")
+# The shared roles policy 1.2.0 enables (owner decisions of 2026-10-22 and 2026-10-29). Until the
+# policy file carries them (release 1.2.0), the tests use a copy of the client's policy with them.
+SHARED_ROLES_1_2_0 = [
+    dict(types=["ADDRESS"], roles=["box_kind", "designator", "street_type", "corner", "via", "dx", "country",
+                                   "capital_city_phrase"]),
+    dict(types=["LOCATION"], subtypes=["locality"], roles=["state", "pc_prefix", "country"]),
+    dict(types=["ORGANISATION"], roles=["legal_form"]),
+    dict(types=["EMAIL"], roles=["email_domain"]),
+    dict(types=["ID_CLAIM", "ID_PROVIDER", "ID_LEGAL_REF", "ID_GOVERNMENT", "ID_BUSINESS", "ID_FINANCIAL",
+                "ID_OTHER"], roles=["id_prefix"]),
+    dict(types=["PHONE"], roles=["phone_prefix"]),
+]
+
+
+def _with_shared_roles():
+    from benchmark.schemas import PolicyProfile
+
+    data = V1.model_dump(mode="json", by_alias=True)
+    data.update(version=data["version"] + "+shared-roles", shared_roles=SHARED_ROLES_1_2_0)
+    return PolicyProfile.model_validate(data)
+
+
+V1_SHARED = _with_shared_roles()
+
+
+def shared_in_place(fk: dict[str, str] | None = None, raster_dpi=None) -> bytes:
+    """S1 (and the Q3 cases): every MUST word replaced in place by K1's fakes, which keep the shared words
+    (an empty fake erases its word)."""
+    return build(word_ops=in_place(fk or shared_fakes()), raster_dpi=raster_dpi)
+
+
+def q3_fakes() -> dict[str, str]:
+    """K1's fakes with an email and claim numbers that keep the domain and the 'CLM-' prefix (owner Q3)."""
+    fk = shared_fakes()
+    fk.update({mention_words("em1")[0]: "liam.hughes@example.com", mention_words("clm0")[0]: "CLM-93571",
+               mention_words("clm1")[0]: "CLM-93571"})
+    return fk
+
+
+def shared_case(name: str, raster_dpi=None) -> bytes:
+    """The merge study's shared-word cases under K1's fakes: S2 the state kept and the rest of the address
+    boxed, S3 the postcode kept, S4 only the shared words left (the rest erased), K3 the street name kept,
+    K4 the company name kept, S5 another state's fake beside the kept state."""
+    ws = words()
+    addr, loc, org = mention_words("addr1"), mention_words("addr1-loc"), mention_words("org1")
+    if name == "S2":
+        return build(word_ops={w: ("box",) for w in addr + loc if ws[w].text != "QLD"}, raster_dpi=raster_dpi)
+    if name == "S3":
+        return build(word_ops={**in_place(shared_fakes()), loc[2]: ("text", ws[loc[2]].text)}, raster_dpi=raster_dpi)
+    if name == "S4":
+        return build(word_ops={w: ("erase",) for w in addr + loc + org
+                               if ws[w].text.strip(".,") not in ("Street", "QLD", "Pty", "Ltd")}, raster_dpi=raster_dpi)
+    if name == "K3":
+        return build(line_ops=redraw(keep(shared_fakes(), [addr[1]])), raster_dpi=raster_dpi)
+    if name == "K4":
+        return build(line_ops=redraw(keep(shared_fakes(), org[:2])), raster_dpi=raster_dpi)
+    if name == "S5":
+        fk = realistic_fakes()
+        fk.update(zip(loc, ["Parramatta", "QLD", "2150"]))
+        return build(word_ops=in_place(fk), raster_dpi=raster_dpi)
+    if name == "W0":
+        return build(word_ops=in_place(realistic_fakes()), raster_dpi=raster_dpi)
+    raise ValueError(name)

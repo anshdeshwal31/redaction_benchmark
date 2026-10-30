@@ -116,6 +116,8 @@ code{font-size:12px}.wrap{overflow-x:auto}
 <h2>Documents</h2><div class="wrap"><table><tr><th>doc</th><th>rep</th><th>required</th><th>safe</th><th>not replaced</th><th>partial</th><th>visible</th><th>recoverable</th><th>latent</th><th>collateral</th><th>protected dmg</th><th>moved</th><th>displaced</th><th>searchable</th><th>findings</th><th>clean</th><th>integrity</th></tr>
 {% for d in docs %}<tr><td>{{ d.doc_id }}</td><td>{{ d.repeat }}</td><td>{{ d.must }}</td><td>{{ d.safe }}</td><td>{{ d.not_replaced }}</td><td>{{ d.partial }}</td><td>{{ d.visible }}</td><td>{{ d.recoverable }}</td><td>{{ d.latent }}</td><td>{{ d.collateral }}</td><td>{{ d.protected }}</td><td>{{ d.moved }}</td><td>{{ d.displaced }}</td><td>{{ d.searchable }}</td><td>{{ d.findings }}</td><td class="{{ 'ok' if d.clean else 'bad' }}">{{ d.clean }}</td><td>{{ d.integrity }}</td></tr>{% endfor %}</table></div>
 
+{% if shared_rows %}<h2>Shared structure</h2><p class="mut">Words and characters of required mentions a realistic fake may keep (policy shared roles), left out of every residual. A state is excused only with its postcode prefix (the pair).</p><div class="wrap"><table><tr><th>doc</th><th>mention</th><th>type</th><th>status</th><th>shared words</th><th>shared characters</th><th>state/postcode pairs</th><th>shared still visible</th></tr>
+{% for r in shared_rows %}<tr><td>{{ r.doc_id }}</td><td>{{ r.mention_id }}</td><td>{{ r.type }}</td><td>{{ r.status }}</td><td>{{ r.words }}</td><td>{{ r.chars }}</td><td>{{ r.pairs }}</td><td>{{ r.visible }}</td></tr>{% endfor %}</table></div>{% endif %}
 {% for title, rows in breakdowns %}<h2>{{ title }}</h2><table><tr><th>slice</th><th>required mentions</th><th>leaking</th><th>leak rate</th></tr>
 {% for r in rows %}<tr><td>{{ r[0] }}</td><td>{{ r[1] }}</td><td>{{ r[2] }}</td><td>{{ r[3] }}</td></tr>{% endfor %}</table>{% endfor %}
 
@@ -256,6 +258,17 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
                      "findings": d.get("document_findings"), "clean": bool(d.get("clean_document")),
                      "integrity": "ok" if d.get("integrity_ok") else "FAILED"})
 
+    # eval-0.4: shared structure per required mention (word ids and counts only), with the pair verdicts
+    shared_rows = []
+    for m in must:
+        sw = [x for x in str(m.get("shared_words") or "").split(",") if x]
+        sc = json.loads(m["shared_chars"]) if m.get("shared_chars") else []
+        sp = json.loads(m["shared_pairs"]) if m.get("shared_pairs") else []
+        if sw or sc or sp:
+            shared_rows.append({"doc_id": m["doc_id"], "mention_id": m["mention_id"], "type": m["type"],
+                                "status": m["status"], "words": ", ".join(sw) or "-", "chars": len(sc),
+                                "pairs": ", ".join(f"{w} {'held' if ok else 'failed'}" for w, ok in sp) or "-",
+                                "visible": _fmt(m.get("shared_visible"), True)})
     gallery = []
     ds = load_manifest(run.dataset["name"], run.dataset["version"])
     gts = {}
@@ -286,7 +299,7 @@ def build_report(run_id: str, results_dir: Path, shareable: bool = False, galler
     page = TEMPLATE.render(run=run.model_dump(mode="json"), scoring=scoring, shareable=shareable, cards=cards,
                            components=comp_rows, docs=docs, breakdowns=breakdowns, funnel=funnel,
                            attribution=[(*k, v) for k, v in attribution.most_common()],
-                           over=sorted(over.items()), determinism=determinism, gallery=gallery,
+                           over=sorted(over.items()), determinism=determinism, gallery=gallery, shared_rows=shared_rows,
                            pending=sorted(pending.items()), skipped=scoring.get("skipped", []),
                            matter_mismatch=scoring.get("matter_mismatch", []),
                            mismatch=deviations.mismatch_section([scoring]),

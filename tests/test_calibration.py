@@ -101,16 +101,16 @@ def test_partial_identity_clauses_admit_no_same_font_fake(case):
 @pytest.mark.parametrize("form, dpi", [("vector", 150), ("vector", 200), ("r300", 200)])
 def test_same_font_fakes_in_place_are_safe(form, dpi):
     # Every MUST word replaced at its origin and size by a fake in the same font (P1), as a PDF and as a
-    # 300-DPI JPEG. Until shared roles (S14) the claim numbers keep their original 'CLM-', so clm0 and
-    # clm1 are PARTIAL, and in the JPEG their image layer holds it. At 150 DPI two fake letters where
-    # org1's legal form 'Pty' was pass the run clause (the documented limit of random same-font matches
-    # in name words); the legal form is shared from S14.
-    ev = _evaluate(calib.same_font_fakes(300 if form == "r300" else None), EvalConfig(dpi=dpi))
-    expected = {"clm0", "clm1"} | ({"org1"} if dpi == 150 else set())
-    assert set(_not_safe(ev)) == expected, _not_safe(ev)
+    # 300-DPI JPEG, under the shared roles of policy 1.2.0: every MUST text mention SAFE_REPLACED and none
+    # with image-layer evidence. The claim numbers keep their 'CLM-' prefix (shared, owner Q3); at 150 DPI
+    # two fake letters where org1's 'Pty' was pass the run clause, inside the shared legal form (owner Q2).
+    b = calib.base()
+    out = calib.same_font_fakes(300 if form == "r300" else None)
+    ev = evaluate_output(b.pdf, out, b.gt, calib.V1_SHARED, EvalConfig(dpi=dpi))
+    assert _not_safe(ev) == {}
     layer = {m.mention_id for m in ev.mentions if m.mention_id in calib.must_text_mentions()
              and ("image_layer" in m.l2_sources or m.image_latent_residual > CFG.safe_max_residual)}
-    assert layer == (set() if form == "vector" else {"clm0", "clm1"}), layer
+    assert layer == set(), layer
 
 
 def test_random_other_state_localities_in_place_are_safe():
@@ -253,3 +253,149 @@ def test_restyled_search_finds_no_fake(case):
     else:
         out = calib.damage_case(case)
     assert _restyled(_evaluate(out)) == []
+
+
+# -- shared structure (holes 10 and 11, owner decisions of 2026-10-22 and 2026-10-29) ---------------------
+# Policy: the client's with the shared roles of 1.2.0 (calib.V1_SHARED).
+
+
+def _shared(out, cfg=CFG):
+    b = calib.base()
+    return evaluate_output(b.pdf, out, b.gt, calib.V1_SHARED, cfg)
+
+
+def _st(ev, mid) -> tuple[str, float]:
+    m = ev.mention(mid)
+    return m.status.value, m.visible_residual
+
+
+@pytest.mark.parametrize("case", ["S1", "K1-vector", "K1-r300"])
+def test_shared_words_are_safe(case):
+    # Fakes that keep the shared words ('40 Bridge Street,', 'Bundall QLD 4217', 'Jabiru Pty Ltd'), in place
+    # (S1) or on redrawn lines (K1): every MUST text mention SAFE_REPLACED, the shared words reported.
+    out = {"S1": calib.shared_in_place(), "K1-vector": calib.shared_redraw(), "K1-r300": calib.shared_redraw(300)}[case]
+    ev = _shared(out)
+    assert _not_safe(ev) == {}
+    ws = calib.words()
+    assert [ws[w].text for w in ev.mention("addr1").shared_words] == ["Street,"]
+    assert [ws[w].text for w in ev.mention("addr1-loc").shared_words] == ["QLD"]
+    assert sorted(ws[w].text for w in ev.mention("org1").shared_words) == ["Ltd", "Pty"]
+    assert [ok for _, ok in ev.mention("addr1-loc").shared_pairs] == [True]
+
+
+def test_shared_words_never_excuse_a_surviving_original():
+    # The state kept and the rest boxed (S2): no same-state postcode after the kept 'QLD', so it counts.
+    ev = _shared(calib.shared_case("S2"))
+    assert _st(ev, "addr1-loc") == ("PARTIAL", 0.2) and _st(ev, "addr1")[0] == "LEAK_RECOVERABLE"
+    # The original postcode kept with a fake suburb (S3): the state and the prefix pass; '000' counts.
+    assert _st(_shared(calib.shared_case("S3")), "addr1-loc") == ("PARTIAL", 0.2727)
+    # The original locality kept on a redrawn line (K2), the street name kept (K3).
+    assert _st(_shared(calib.locality_kept_redrawn()), "addr1-loc") == ("LEAK_VISIBLE", 1.0)
+    assert _st(_shared(calib.shared_case("K3")), "addr1") == ("PARTIAL", 0.7778)
+
+
+def test_shared_words_alone_are_not_a_replacement():
+    # Only the shared words left, the rest erased (S4): the street type and the legal form are no
+    # replacement; the kept 'QLD' has no same-state postcode after it and counts.
+    ev = _shared(calib.shared_case("S4"))
+    assert _st(ev, "addr1")[0] == "NOT_REPLACED" and _st(ev, "org1")[0] == "NOT_REPLACED"
+    assert _st(ev, "addr1-loc") == ("PARTIAL", 0.2)
+
+
+@pytest.mark.parametrize("raster_dpi", [None, 300], ids=["S5-vector", "S5r-r300"])
+def test_kept_state_next_to_another_states_fake_is_a_leak(raster_dpi):
+    # 'Parramatta QLD 2150' typed over 'Faketown QLD 4000': the kept 'QLD' beside another state's postcode
+    # is not shared (the pair fails), so it counts. Same-state fakes (W0, K1) stay safe.
+    assert _st(_shared(calib.shared_case("S5", raster_dpi)), "addr1-loc") == ("PARTIAL", 0.2)
+    if raster_dpi is None:
+        assert _not_safe(_shared(calib.shared_case("W0"))) == {}
+
+
+def test_legal_form_is_shared():
+    # Owner Q2: 'Jabiru Pty Ltd' for 'Acme Widgets Pty Ltd' is a replacement (S1, above); the company name
+    # kept with the legal form (K4) is a visible leak.
+    assert _st(_shared(calib.shared_in_place()), "org1")[0] == "SAFE_REPLACED"
+    assert _st(_shared(calib.shared_case("K4")), "org1")[0] == "LEAK_VISIBLE"
+
+
+def _q3(**changes) -> dict[str, str]:
+    fk = calib.q3_fakes()
+    for mid, text in changes.items():
+        fk[calib.mention_words(mid)[0]] = text if text is not None else calib.words()[calib.mention_words(mid)[0]].text
+    return fk
+
+
+@pytest.mark.parametrize("case, expected", [
+    ("Q3a-vector", {"em1": "SAFE_REPLACED", "clm0": "SAFE_REPLACED", "clm1": "SAFE_REPLACED"}),
+    ("Q3a-r300", {"em1": "SAFE_REPLACED", "clm0": "SAFE_REPLACED", "clm1": "SAFE_REPLACED"}),
+    ("Q3b", {"em1": "LEAK_VISIBLE", "clm0": "LEAK_VISIBLE", "clm1": "LEAK_VISIBLE"}),
+    ("Q3c", {"em1": "LEAK_VISIBLE"}),
+    ("Q3d-vector", {"clm0": "LEAK_VISIBLE", "clm1": "LEAK_VISIBLE"}),
+    ("Q3d-r300", {"clm0": "LEAK_VISIBLE", "clm1": "LEAK_VISIBLE"}),
+    ("Q3e", {"em1": "SAFE_REPLACED", "clm0": "SAFE_REPLACED", "clm1": "SAFE_REPLACED"}),
+    ("Q3f", {"em1": "LEAK_VISIBLE", "clm0": "LEAK_VISIBLE", "clm1": "LEAK_VISIBLE"}),
+])
+def test_owner_q3_shared_structure(case, expected):
+    # Owner Q3: a fake may keep the email domain and the identifier prefix, nothing else. Q3a keeps both
+    # and replaces the rest; Q3b keeps the email and the claim numbers whole; Q3c keeps the local part with
+    # another domain; Q3d keeps the digits with another prefix (the slice search finds them pushed along,
+    # with or without a text layer); Q3e/Q3f as Q3a/Q3b on redrawn lines.
+    raster = 300 if case.endswith("r300") else None
+    kind = case.split("-")[0]
+    if kind == "Q3a":
+        out = calib.shared_in_place(_q3(), raster)
+    elif kind == "Q3b":
+        out = calib.shared_in_place(_q3(em1=None, clm0=None, clm1=None))
+    elif kind == "Q3c":
+        out = calib.shared_in_place(_q3(em1="jane.smithers@mail.test"))
+    elif kind == "Q3d":
+        out = calib.shared_in_place(_q3(clm0="BSA-48213", clm1="BSA-48213"), raster)
+    elif kind == "Q3e":
+        out = calib.build(line_ops=calib.redraw(_q3()))
+    else:
+        out = calib.build(line_ops=calib.redraw(_q3(em1=None, clm0=None, clm1=None)))
+    ev = _shared(out)
+    assert {mid: ev.mention(mid).status.value for mid in expected} == expected
+
+
+def test_identifying_slice_is_searched():
+    # Q3d as a 300-DPI raster (no text layer): the kept digits '48213' after a changed prefix 'BSA-' are
+    # found pushed along the line, displaced originals.
+    ev = _shared(calib.shared_in_place(_q3(clm0="BSA-48213", clm1="BSA-48213"), 300))
+    for mid in ("clm0", "clm1"):
+        assert ev.mention(mid).status.value == "LEAK_VISIBLE" and ev.mention(mid).displaced_residual > 0
+
+
+@pytest.mark.parametrize("dpi", [150, 200])
+def test_shared_structure_alone_is_not_a_replacement(dpi):
+    # The partial-box mock (the left half of every mention word boxed) leaves '@example.com' in sight: a
+    # domain alone is no replacement, so em1 is NOT_REPLACED, never SAFE_REPLACED. Under policy v0, which
+    # shares nothing, every required mention stays PARTIAL.
+    from benchmark.mocks import MockSpec
+
+    b = calib.base()
+    cfg = EvalConfig(dpi=dpi)
+    out = run_mock(b.pdf, b.gt, calib.V1_SHARED, MockSpec("partial", partial=0.5)).pdf
+    ev = evaluate_output(b.pdf, out, b.gt, calib.V1_SHARED, cfg)
+    assert ev.mention("em1").status.value == "NOT_REPLACED"
+    out0 = run_mock(b.pdf, b.gt, calib.V0, MockSpec("partial", partial=0.5)).pdf
+    ev0 = evaluate_output(b.pdf, out0, b.gt, calib.V0, cfg)
+    assert {m.status.value for m in ev0.mentions if m.requirement == "MUST"} == {"PARTIAL"}
+
+
+def test_mobile_prefix_is_shared():
+    # Owner answer (a), 2026-10-29: a fake mobile may keep its '04'. A realistic fake typed in place
+    # ('0412 987 654') is a replacement under the 1.2.0 roles (without them it is PARTIAL); the number kept
+    # whole, or its other digits kept behind a changed first word, still count.
+    ph = calib.mention_words("ph1")
+    ws = calib.words()
+    assert ws[ph[0]].text.startswith("04")
+    fk = calib.realistic_fakes()
+    fk.update(zip(ph, ["0412", "987", "654"]))
+    out = calib.build(word_ops=calib.in_place(fk))
+    assert _st(_shared(out), "ph1")[0] == "SAFE_REPLACED"
+    assert _st(_evaluate(out), "ph1")[0] == "PARTIAL"
+    kept = calib.build(word_ops=calib.in_place(calib.keep(fk, ph)))
+    assert _st(_shared(kept), "ph1")[0] == "LEAK_VISIBLE"
+    rest = calib.build(word_ops=calib.in_place(calib.keep({**fk, ph[0]: "0491"}, ph[1:])))
+    assert _st(_shared(rest), "ph1")[0] in ("PARTIAL", "LEAK_VISIBLE")

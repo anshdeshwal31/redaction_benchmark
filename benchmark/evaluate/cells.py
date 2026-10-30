@@ -314,17 +314,60 @@ class PageCells:
     # -- a word at another place (eval-0.4: moved words) --------------------------------------
 
     def word_fraction_at(self, word_id: str, original: np.ndarray, output: np.ndarray, s: float, tx: float,
-                         ty: float, cfg: EvalConfig, gated: bool = False, strict_words=None) -> float | None:
-        """Share of the word's characters the band test finds when the output is read at
-        output_px = s * original_px + (tx, ty), sampled bilinearly (None: no informative character).
+                         ty: float, cfg: EvalConfig, gated: bool = False, strict_words=None,
+                         chars: tuple[int, int] | None = None) -> float | None:
+        """Share of the word's characters (those in [a, b) with ``chars``) the band test finds when the
+        output is read at output_px = s * original_px + (tx, ty), sampled bilinearly (None: no
+        informative character).
 
         With ``gated`` the character identity gate of :meth:`stats` judges the flagged characters too
         (``strict_words`` as there), on the output resampled to the original's grid around the word.
         At the identity transform the band-only share equals the in-place test's."""
         idxs = self.word_cells.get(word_id, [])
+        if chars is not None:
+            idxs = [i for i in idxs if chars[0] <= self.cells[i].index < chars[1]]
         if not idxs:
             return None
-        vals = [bilinear(output, s * self.cols[i] + tx, s * self.rows[i] + ty) for i in idxs]
+        inf, vis = self._band_test_at(idxs, original, output, s, tx, ty, cfg)
+        if gated and vis.any():
+            ci = self._identity_at(word_id, idxs, original, output, s, tx, ty, inf, cfg)
+            flagged: dict[Unit, set[int]] = {}
+            for j, i in enumerate(idxs):
+                if vis[j]:
+                    flagged.setdefault((word_id, self.cells[i].index), set()).add(self.cells[i].band)
+            gate = self.gate(ci, flagged, strict_words, cfg)
+            vis = vis & ~np.array([gate.get((word_id, self.cells[i].index), "x") == "" for i in idxs], bool)
+        sub = SimpleNamespace(cells=[self.cells[i] for i in idxs])
+        flags = unit_flags(sub, inf, vis)
+        units = [u for u in flags if u[0] == word_id]
+        return sum(flags[u] for u in units) / len(units) if units else None
+
+    def char_flags_at(self, word_id: str, ks, original: np.ndarray, output: np.ndarray, s: float, tx: float,
+                      ty: float, cfg: EvalConfig) -> dict[int, bool]:
+        """For single known characters (a postcode's prefix digits): is each character ``k`` of ``ks``
+        the original glyph at the transform? At least two of its informative bands visible (all when it
+        has fewer) and identity at the MUST threshold (identity_min, plus identity_digit_extra for a
+        digit); no run rule and no clause."""
+        idxs = [i for i in self.word_cells.get(word_id, []) if self.cells[i].index in ks]
+        if not idxs:
+            return {}
+        inf, vis = self._band_test_at(idxs, original, output, s, tx, ty, cfg)
+        if not inf.any():
+            return {}
+        ci = self._identity_at(word_id, idxs, original, output, s, tx, ty, inf, cfg)
+        text = self._word_texts().get(word_id, "")
+        out: dict[int, bool] = {}
+        for k in ks:
+            cl = [j for j, i in enumerate(idxs) if self.cells[i].index == k and inf[j]]
+            if not cl:
+                continue
+            need = cfg.identity_min + (cfg.identity_digit_extra if k < len(text) and text[k].isdigit() else 0.0)
+            out[k] = int(vis[cl].sum()) >= min(2, len(cl)) and abs(ci.of((word_id, k))) >= need
+        return out
+
+    def _band_test_at(self, idxs: list[int], original: np.ndarray, output: np.ndarray, s: float, tx: float,
+                      ty: float, cfg: EvalConfig) -> tuple[np.ndarray, np.ndarray]:
+        """(informative, visible) of the cells ``idxs`` with the output read at the transform."""
         inf = np.zeros(len(idxs), bool)
         vis = np.zeros(len(idxs), bool)
         for j, i in enumerate(idxs):
@@ -332,24 +375,20 @@ class PageCells:
             if rr.size < 4:
                 continue
             o = original[rr, cc].astype(np.float64)
-            x = vals[j]
+            x = bilinear(output, s * cc + tx, s * rr + ty)
             so, sx = o.std(), x.std()
             if so < cfg.cell_min_orig_std:
                 continue
             inf[j] = True
             ncc = 0.0 if sx < 1e-6 else float(np.mean((o - o.mean()) * (x - x.mean())) / (so * sx))
             vis[j] = abs(ncc) >= cfg.cell_ncc and sx / so >= cfg.cell_amp_visible and sx >= cfg.cell_min_visible_std
-        if gated and vis.any():
-            vis = vis & ~self._gate_at(word_id, idxs, original, output, s, tx, ty, inf, vis, cfg, strict_words)
-        sub = SimpleNamespace(cells=[self.cells[i] for i in idxs])
-        flags = unit_flags(sub, inf, vis)
-        units = [u for u in flags if u[0] == word_id]
-        return sum(flags[u] for u in units) / len(units) if units else None
+        return inf, vis
 
-    def _gate_at(self, word_id: str, idxs: list[int], original: np.ndarray, output: np.ndarray, s: float,
-                 tx: float, ty: float, inf: np.ndarray, vis: np.ndarray, cfg: EvalConfig, strict_words
-                 ) -> np.ndarray:
-        """Cells (of ``idxs``) of the characters the identity gate drops at the transform."""
+    def _identity_at(self, word_id: str, idxs: list[int], original: np.ndarray, output: np.ndarray, s: float,
+                     tx: float, ty: float, inf: np.ndarray, cfg: EvalConfig) -> CharacterIdentity:
+        """Character identity of the cells ``idxs`` of a word with the output read at the transform: the
+        output resampled to the original's grid around them (paper elsewhere), then
+        :meth:`character_identity` with its masks taken on that crop."""
         paper = self._cache.get(("paper", id(output)))
         if paper is None:
             paper = _paper(output)
@@ -372,14 +411,8 @@ class PageCells:
         ink[r0:r1, c0:c1] = local.ink
         informative = np.zeros(len(self.cells), bool)
         informative[idxs] = inf
-        flagged: dict[Unit, set[int]] = {}
-        for j, i in enumerate(idxs):
-            if vis[j]:
-                flagged.setdefault((word_id, self.cells[i].index), set()).add(self.cells[i].band)
-        ci = self.character_identity(original, virtual, informative, cfg, words={word_id},
-                                     masks=_OutputMasks(paper, box, ink))
-        gate = self.gate(ci, flagged, strict_words, cfg)
-        return np.array([gate.get((word_id, self.cells[i].index), "x") == "" for i in idxs], bool)
+        return self.character_identity(original, virtual, informative, cfg, words={word_id},
+                                       masks=_OutputMasks(paper, box, ink))
 
     # -- character identity -------------------------------------------------------------------
 

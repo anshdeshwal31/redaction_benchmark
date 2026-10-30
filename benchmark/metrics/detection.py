@@ -125,8 +125,12 @@ def address_units(gt: GTDocument) -> dict[str, str]:
     return partner
 
 
-def evaluate_detection(gt: GTDocument, res: Resolution, preds: list[ProjectedMention]) -> DetectionResult:
+def evaluate_detection(gt: GTDocument, res: Resolution, preds: list[ProjectedMention],
+                       shared: set[str] | None = None) -> DetectionResult:
+    """``shared``: word ids excused as shared structure (eval-0.4, the evaluation's shared words): neutral,
+    neither required nor an extra for a mention's boundary, and left out of the token counts."""
     words = gt.word_index()
+    neutral = {(words[w][0], w) for w in (shared or ()) if w in words}
     classified_cls = {wid: c.cls.value for c in gt.classified for seg in c.segments for wid in seg.words}
     req_sets: dict[str, set] = {}
     for m in gt.mentions:
@@ -145,7 +149,7 @@ def evaluate_detection(gt: GTDocument, res: Resolution, preds: list[ProjectedMen
     # locality, a span over the whole address does take words that should stay).
     partner = {k: v for k, v in address_units(gt).items() if k in scored_ids and v in scored_ids}
     for m in evaluated:
-        R = req_sets[m.id]
+        R = (req_sets[m.id] - neutral) or req_sets[m.id]
         O = {(words[w][0], w) for w in m.optional_words}
         mate = partner.get(m.id)
         if mate:  # the unit's optional words: the split keeps the address's on its street line
@@ -169,7 +173,7 @@ def evaluate_detection(gt: GTDocument, res: Resolution, preds: list[ProjectedMen
             else:
                 best = min(single, key=lambda p: len(p.words))
                 # A whole-address span: the other part's words are no extra for either part.
-                extra = best.words - R - (req_sets[mate] if mate else set())
+                extra = best.words - R - (req_sets[mate] if mate else set()) - neutral
                 if not extra:
                     boundary = "exact"
                 elif extra <= O:
@@ -191,7 +195,7 @@ def evaluate_detection(gt: GTDocument, res: Resolution, preds: list[ProjectedMen
 
     # -- token level (MAY words are neither rewarded nor penalised) ------------------
     predicted = set().union(*(p.words for p in preds)) if preds else set()
-    must_words = {(words[w][0], w) for w, eff in res.words.items() if eff is Effective.MUST}
+    must_words = {(words[w][0], w) for w, eff in res.words.items() if eff is Effective.MUST} - neutral
     negative = {(words[w][0], w) for w, eff in res.words.items() if eff in (Effective.ORDINARY, Effective.MUST_NOT)}
     tp, fn, fp = must_words & predicted, must_words - predicted, negative & predicted
     precision = len(tp) / (len(tp) + len(fp)) if tp or fp else None
@@ -204,6 +208,7 @@ def evaluate_detection(gt: GTDocument, res: Resolution, preds: list[ProjectedMen
     pii_words = set().union(*req_sets.values()) if req_sets else set()
     exact_sets = {frozenset(req_sets[x.mention_id]) for x in matches}
     exact_sets |= {frozenset(req_sets[a] | req_sets[b]) for a, b in partner.items()}  # whole-address spans
+    exact_sets |= {frozenset(s - neutral) for s in exact_sets if s & neutral}  # shared structure left out
 
     def prec(ok):
         return round(sum(1 for p in preds if ok(p)) / len(preds), 4) if preds else None

@@ -469,6 +469,13 @@ def test_rules_digest_ignores_wording():
     assert rules_digest(edited(lambda d: d.update(default_mention="MUST"))) != digest
     assert rules_digest(edited(lambda d: d["deviations"][0].update(rules=[]))) != digest
     assert rules_digest(DRAFT) != digest
+    # Shared roles (eval-0.4) are rules; their notes are wording. No shared roles hash as before them.
+    roles = [{"types": ["EMAIL"], "roles": ["email_domain"], "note": "Owner Q3."}]
+    shared = rules_digest(edited(lambda d: d.update(shared_roles=roles)))
+    assert shared != digest and rules_digest(edited(lambda d: d.update(shared_roles=[]))) == digest
+    assert rules_digest(edited(lambda d: d.update(shared_roles=[dict(roles[0], note="Another.")]))) == shared
+    other = [{"types": ["ORGANISATION"], "roles": ["legal_form"], "note": "Owner Q3."}]
+    assert rules_digest(edited(lambda d: d.update(shared_roles=other))) != shared
 
 
 def _with_deviations(*devs) -> dict:

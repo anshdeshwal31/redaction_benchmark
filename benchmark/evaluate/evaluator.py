@@ -26,11 +26,13 @@ import pymupdf
 from ..forensics.inspect import revision_prefixes
 from ..geometry import as_poly, dilate, geometry_from_pikepdf_page, rasterize
 from ..gt.policy import Effective, resolve
+from ..gt.shared_roles import STRIP as SHARED_STRIP
+from ..gt.shared_roles import SharedUnits, document_shared_units
 from ..schemas import Action, GTDocument, PiiType, PolicyProfile, Requirement
 from .cells import PageCells, Unit, unit_flags
 from .config import EvalConfig
 from .document import document_findings
-from .moved import Found, find_moved, find_restyled
+from .moved import Found, find_moved, find_restyled, find_slices, refine_chars
 from .layers import (
     PageText,
     find_at_place,
@@ -573,6 +575,52 @@ def evaluate_output(
             x0, y0, x1, y1 = (int(round(v * scale)) for v in f.box)
             primary_out[f.page][max(y0 - 1, 0):max(y1 + 2, 0), max(x0 - 1, 0):max(x1 + 2, 0)] = 255
 
+    # -- shared structure (eval-0.4): what a realistic fake may keep, for the roles the policy enables ---
+    shared: dict[str, SharedUnits] = document_shared_units(gt, policy)
+    # The identifying slice of a MUST word with shared characters (an email's local part, an identifier's
+    # digits) is looked for on its own: a changed domain or prefix cannot hide a kept slice it pushed along.
+    must_cut = {wid: cut for mid, su in shared.items() if res.mentions[mid].requirement is Requirement.MUST
+                for wid, cut in su.needle_cut.items()}
+    for pg, u in find_slices(gt, must_cut, pcs, prim_pairs, found, vis, informative, unreliable, cfg):
+        if not vis[pg].get(u, False):
+            displaced.add((pg, u))
+        vis[pg][u] = True
+        vis_by_cfg[pg][labels[0]][u] = True
+
+    def text_pair(pg: int, s_wid: str, p_wid: str, ks) -> bool:
+        """The pair read from the text layer, for a state not seen in pixels: the state's text at its
+        displayed place followed by a 4-digit token starting with the original's prefix digits. No state
+        text there: nothing is kept, the pair stands."""
+        pt = page_texts.get(pg, PageText())
+        state = words[s_wid][1].text.strip(SHARED_STRIP)
+        run = find_at_place(words[s_wid][1].poly, state, pt, shift_pt.get(pg, (0.0, 0.0)), line_h.get(s_wid),
+                            cfg.searchable_band, cfg.searchable_margin, cfg.text_ratio, whole_token=True)
+        if run is None:
+            return True
+        after = "".join(c.c for c in pt if c.seq > run.last).lstrip()[:4]
+        prefix = "".join(words[p_wid][1].text[k] for k in ks)
+        return len(after) == 4 and after.isdigit() and after.startswith(prefix)
+
+    def pair_ok(pg: int, s_wid: str, state_units: list[Unit], p_wid: str, ks) -> bool:
+        """Are the postcode's prefix digits the original glyphs where the state word is seen (in place, or
+        at its found transform, refined within half a character)? A same-state fake has the state's digit
+        there; another state's fake does not."""
+        if not ks or pg in unreliable or pg not in prim_pairs:
+            return False
+        f = found.get(s_wid)
+        if f is not None:
+            t = (f.s, f.tx, f.ty)
+        elif any(vis[pg].get(u, False) for u in state_units):
+            t = (1.0, 0.0, 0.0)
+        else:
+            return text_pair(pg, s_wid, p_wid, ks)
+        o, x = prim_pairs[pg]
+        dx, dy, score = refine_chars(pcs[pg], p_wid, ks, o, x, *t)
+        if score >= cfg.moved_match:
+            t = (t[0], t[1] + dx, t[2] + dy)
+        flags = pcs[pg].char_flags_at(p_wid, ks, o, x, *t, cfg)
+        return all(flags.get(k, False) for k in ks)
+
     def text_leaked(pg: int, wid: str, needle: str) -> bool:
         """The original token in the output's text: in the 1 pt zone of its word or, with text_place_leak,
         at its displayed place (the GT polygon plus the page's registration shift, the searchable
@@ -599,6 +647,7 @@ def evaluate_output(
 
     # -- mentions ----------------------------------------------------------------------------
     outcomes: list[MentionOutcome] = []
+    excused_words: set[str] = set()  # whole words excused as shared structure (pairs that held)
     for m in gt.mentions:
         r = res.mentions[m.id]
         ent = entities.get(m.entity) if m.entity else None
@@ -610,13 +659,39 @@ def evaluate_output(
                 units.append((pg, u))
         units = [(pg, u) for pg, u in units if u in informative.get(pg, set())]
         pages = sorted({seg.page for seg in m.segments})
+        # Shared structure leaves every residual; the state and its postcode prefix only together, when the
+        # prefix reads as the original glyph where the state is seen.
+        su = shared.get(m.id, SharedUnits())
+        page_of = {wid: seg.page for seg in m.segments for wid in seg.words}
+        pair_log: list[list] = []
+        for s_wid, p_wid, ks in list(su.pairs):
+            state_units = [(s_wid, k) for k in range(len(words[s_wid][1].text))
+                           if (s_wid in su.full or (s_wid, k) in su.chars) and k not in ks]
+            ok = pair_ok(page_of[s_wid], s_wid, state_units, p_wid, ks)
+            pair_log.append([s_wid, ok])
+            if not ok:
+                su.without_pair(s_wid, p_wid, ks)
+        shared_units = [(pg, u) for pg, u in units if su.shared(u)]
+        units = [(pg, u) for pg, u in units if not su.shared(u)]
+        excused_words.update(su.full)
         f_vis = _fraction([vis[pg].get(u, False) for pg, u in units])
         f_disp = _fraction([(pg, u) in displaced for pg, u in units])
         f_lat = _fraction([lat[pg].get(u, False) for pg, u in units])
         f_img = _fraction([img.get(pg, {}).get(u, False) for pg, u in units])
         f_img_lat = _fraction([img_lat.get(pg, {}).get(u, False) for pg, u in units])
         f_rev_px = _fraction([rev.get(pg, {}).get(u, False) for pg, u in units])
-        req_text = _required_text(m, words)
+        req_all = _required_text(m, words)
+        # In the text layer a shared word is left out and a word with shared characters is looked for by
+        # its identifying slice (an email's local part, an identifier's digits).
+        req_text = {}
+        for (pg, wid), t in req_all.items():
+            if wid in su.full:
+                continue
+            if wid in su.needle_cut:
+                a, b = su.needle_cut[wid]
+                t = words[wid][1].text[a:b].strip(SHARED_STRIP)
+            if t:
+                req_text[(pg, wid)] = t
         total_chars = sum(len(t) for t in req_text.values())
         hit = sum(len(t) for (pg, wid), t in req_text.items() if text_leaked(pg, wid, t))
         rev_hit = sum(len(t) for (pg, wid), t in req_text.items() if rev_text_leaked(pg, wid, t))
@@ -634,8 +709,24 @@ def evaluate_output(
         polys_by_page: dict[int, list[np.ndarray]] = defaultdict(list)
         for seg in m.segments:
             polys_by_page[seg.page].extend(as_poly(words[wid][1].poly) for wid in seg.words)
-        new_text = any(_is_new_text(words[wid][1].text, t, texts.get(pg, {}).get(wid), cfg)
-                       for (pg, wid), t in req_text.items())
+        def got_new(pg: int, wid: str, t: str) -> bool:
+            # A word's shared characters (an email's domain, an identifier's prefix), and any fragment of
+            # the original left beside them, are never the replacement.
+            got = texts.get(pg, {}).get(wid)
+            if got and wid in su.needle_cut:
+                a, b = su.needle_cut[wid]
+                wt = words[wid][1].text
+                for part in (wt[:a], wt[b:]):
+                    part = part.strip(SHARED_STRIP)
+                    i_ = got.casefold().find(part.casefold()) if part else -1
+                    if i_ >= 0:
+                        got = got[:i_] + got[i_ + len(part):]
+                left = _alnum(got)
+                if left and left in _alnum(wt):
+                    return False
+            return _is_new_text(words[wid][1].text, t, got, cfg)
+
+        new_text = any(got_new(pg, wid, t) for (pg, wid), t in req_all.items())
         replaced = new_text or any(_text_like_ink(primary_out[pg], polys, scale)
                                    for pg, polys in polys_by_page.items() if pg in primary_out)
         region_polys: dict[int, list[np.ndarray]] = defaultdict(list)
@@ -676,7 +767,10 @@ def evaluate_output(
             worst_config=worst_cfg, latent_residual=round(f_lat, 4), text_residual=round(f_text, 4),
             image_residual=round(f_img, 4), image_latent_residual=round(f_img_lat, 4),
             vector_residual=round(f_vec, 4), revision_residual=round(f_rev, 4), replaced=replaced,
-            l2_sources=l2, status=status, displaced_residual=round(f_disp, 4)))
+            l2_sources=l2, status=status, displaced_residual=round(f_disp, 4), shared_words=sorted(su.full),
+            shared_chars=sorted([w, k] for w, k in su.chars),
+            shared_visible=round(_fraction([vis[pg].get(u, False) for pg, u in shared_units]), 4),
+            shared_pairs=pair_log))
 
     # -- words: the in-place test, or MOVED where the word was found away from its place ------------
     word_outcomes: list[WordOutcome] = []
@@ -699,7 +793,7 @@ def evaluate_output(
     searchable, text_info = _searchable(gt, word_outcomes, page_texts, shift_pt, line_h, cfg, found)
 
     summary = _summarise(outcomes, word_outcomes, findings, surfaces, integrity, page_outcomes,
-                         word_text=word_text, searchable=searchable, cfg=cfg)
+                         word_text=word_text, searchable=searchable, cfg=cfg, excused=excused_words)
     summary.update(text_info)
     return DocumentEvaluation(
         doc_id=gt.doc_id, eval_version=cfg.version, eval_digest=cfg.digest(), policy=res.policy,
@@ -709,7 +803,8 @@ def evaluate_output(
 
 
 def _summarise(mentions, words, findings, surfaces, integrity, pages, word_text: dict[str, str] | None = None,
-               searchable: dict[str, bool] | None = None, cfg: EvalConfig | None = None) -> dict:
+               searchable: dict[str, bool] | None = None, cfg: EvalConfig | None = None,
+               excused: set[str] | None = None) -> dict:
     cfg = cfg or EvalConfig()
     word_text = word_text or {}
     searchable = searchable or {}
@@ -734,7 +829,8 @@ def _summarise(mentions, words, findings, surfaces, integrity, pages, word_text:
     found = sum(searchable.values())
     searchable_rate = found / len(searchable) if searchable else None
     searchable_ok = searchable_rate is None or searchable_rate >= cfg.searchable_min_rate
-    must_words = [w for w in done if w.requirement == Effective.MUST.value]
+    # Shared structure excused in its mention is neutral: neither a redacted token nor a missed one.
+    must_words = [w for w in done if w.requirement == Effective.MUST.value and w.word_id not in (excused or ())]
 
     def redacted(w):  # a MOVED word is present, wherever it was drawn
         return w.status is not WordStatus.MOVED and w.visible_fraction is not None and w.visible_fraction < 0.5

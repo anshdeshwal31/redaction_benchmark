@@ -78,7 +78,8 @@ def score_document(
     best_pred: dict[str, str | None] = {}
     if artifacts.get("mentions") is not None:
         preds = project_mentions(artifacts["mentions"], index, label_map, text=text)
-        score.detection = evaluate_detection(gt, res, preds)
+        # Shared structure the evaluation excused is neutral for detection too (eval-0.4).
+        score.detection = evaluate_detection(gt, res, preds, shared={w for m in ev.mentions for w in m.shared_words})
         best_pred = {x.mention_id: x.best_pred for x in score.detection.matches}
     plan = artifacts.get("plan")
     if plan is not None:

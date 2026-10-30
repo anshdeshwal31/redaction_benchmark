@@ -162,9 +162,10 @@ def test_identity_thresholds_for_mention_and_kept_characters():
 def test_image_layer_gate_drops_same_font_fakes(raster_dpi):
     # Every MUST word replaced in place by a same-font fake, the page rasterised (image only). The layer
     # holds the fakes, not the originals, so no fake character keeps layer evidence that counts; the kept
-    # 'CLM-' of the claim numbers is original and keeps it (shared from S14). In the 150-DPI layer two
-    # fake letters where org1's legal form 'Pty' was pass the run clause (the documented limit of random
-    # same-font matches); the legal form is shared from S14.
+    # 'CLM-' of the claim numbers is original and keeps it. In the 150-DPI layer two fake letters where
+    # org1's legal form 'Pty' was pass the run clause (the documented limit of random same-font matches).
+    # Under the shared roles of policy 1.2.0 (the identifier prefix and the legal form shared) no MUST
+    # mention has image-layer evidence.
     b = calib.base()
     out = calib.same_font_fakes(raster_dpi)
     cfg = EvalConfig(dpi=200)
@@ -191,12 +192,12 @@ def test_image_layer_gate_drops_same_font_fakes(raster_dpi):
     assert kept & fake == expected, sorted((u, ws[u[0]].text[u[1]]) for u in (kept & fake) ^ expected)
     assert claims <= kept  # the original 'CLM-' keeps its layer evidence
     t0 = time.time()
-    ev = evaluate_output(b.pdf, out, b.gt, calib.V1, cfg)
+    ev = evaluate_output(b.pdf, out, b.gt, calib.V1_SHARED, cfg)
     print(f"P1 {raster_dpi}-DPI raster evaluated at 200 DPI with the layer gate in {time.time() - t0:.1f} s")
     text = set(calib.must_text_mentions())
     with_layer = {m.mention_id for m in ev.mentions if m.mention_id in text
                   and ("image_layer" in m.l2_sources or m.image_latent_residual > cfg.safe_max_residual)}
-    assert with_layer == {"clm0", "clm1"} | ({"org1"} if raster_dpi == 150 else set()), with_layer
+    assert with_layer == set(), with_layer
     assert all(m.status in SAFE for m in ev.mentions if m.mention_id in text - with_layer)
 
 

@@ -157,14 +157,22 @@ def pending_rules(policy: PolicyProfile) -> list[PolicyRule]:
 PROSE_FIELDS = ("version", "description")
 RULE_PROSE_FIELDS = ("note",)
 DEVIATION_PROSE_FIELDS = ("client_answer", "applied", "reason", "effect")
+SHARED_ROLE_PROSE_FIELDS = ("note",)
 
 
 def rules_digest(policy: PolicyProfile) -> str:
-    """SHA-256 (hex) of the policy without its prose: the version, the description, every rule's note
-    and every deviation's client answer, applied text, reason and effect. Its name, rules, defaults,
-    consistency scope, deviation ids and the rules each deviation names stay in, so two files with the
-    same digest judge every output by the same rules. (YAML comments are never part of the policy.)"""
+    """SHA-256 (hex) of the policy without its prose: the version, the description, every rule's note,
+    every deviation's client answer, applied text, reason and effect, and every shared-roles entry's note.
+    Its name, rules, defaults, consistency scope, deviation ids, the rules each deviation names and the
+    shared roles stay in, so two files with the same digest judge every output by the same rules. A
+    policy with no shared roles is hashed without the field, as before shared roles existed. (YAML
+    comments are never part of the policy.)"""
     data = policy.model_dump(mode="json", by_alias=True)
+    if not data.get("shared_roles"):
+        data.pop("shared_roles", None)
+    for entry in data.get("shared_roles", []):
+        for key in SHARED_ROLE_PROSE_FIELDS:
+            entry.pop(key, None)
     for key in PROSE_FIELDS:
         data.pop(key, None)
     for rule in data["rules"]:

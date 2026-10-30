@@ -291,6 +291,56 @@
    ],
    "title": "Role",
    "type": "string"
+  },
+  "SharedRoles": {
+   "additionalProperties": false,
+   "description": "Structure a realistic fake may keep (eval-0.4): in mentions of these types (and subtypes), the\nwords and characters holding these roles are left out of every residual and never count as the\nreplacement. Roles are read from GT by position (benchmark.gt.shared_roles).",
+   "properties": {
+    "types": {
+     "items": {
+      "$ref": "#/$defs/PiiType"
+     },
+     "minItems": 1,
+     "title": "Types",
+     "type": "array"
+    },
+    "subtypes": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "None: every subtype",
+     "title": "Subtypes"
+    },
+    "roles": {
+     "description": "Role names of SHARED_ROLE_NAMES for every listed type",
+     "items": {
+      "type": "string"
+     },
+     "minItems": 1,
+     "title": "Roles",
+     "type": "array"
+    },
+    "note": {
+     "default": "",
+     "title": "Note",
+     "type": "string"
+    }
+   },
+   "required": [
+    "types",
+    "roles"
+   ],
+   "title": "SharedRoles",
+   "type": "object"
   }
  },
  "additionalProperties": false,
@@ -351,6 +401,15 @@
     "$ref": "#/$defs/PolicyDeviation"
    },
    "title": "Deviations",
+   "type": "array"
+  },
+  "shared_roles": {
+   "default": [],
+   "description": "Structure a realistic fake may keep, per mention type (eval-0.4); none by default",
+   "items": {
+    "$ref": "#/$defs/SharedRoles"
+   },
+   "title": "Shared Roles",
    "type": "array"
   }
  },
