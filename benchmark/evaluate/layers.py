@@ -8,6 +8,7 @@ MRC stack), and glyph paths that survive under a covering shape.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -202,6 +203,28 @@ def _same_path(a: dict, b: dict, tol: float = 0.1) -> bool:
     return pa.shape == pb.shape and bool(np.all(np.abs(pa - pb) <= tol))
 
 
+def _kept_glyph_paths(src: list[dict], src_geom: PageGeometry, page_gt: GTPage, word_ids: set[str]) -> set[int]:
+    """Indices of the source paths that are glyphs of kept words drawn as outlines: a path's whole
+    bounding box (display pt) lies inside the 1 pt dilated box of a kept word that the page draws as
+    outlines, that is a word with at least max(1, ceil(half its letters and digits)) paths wholly
+    inside that box. A word only in the text layer, such as a typed "______" signature line, has no
+    such paths, so nothing drawn across it is taken for its glyphs."""
+    kept = [w for w in page_gt.words if w.id not in word_ids]
+    if not kept or not src:
+        return set()
+    corners = np.array([[(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)]
+                        for r in (d["rect"] for d in src)], float).reshape(-1, 2)
+    shown = src_geom.transform(corners, Frame.UNROTATED_PT, Frame.DISPLAY_PT).reshape(-1, 4, 2)
+    boxes = shapely.box(shown[:, :, 0].min(axis=1), shown[:, :, 1].min(axis=1),
+                        shown[:, :, 0].max(axis=1), shown[:, :, 1].max(axis=1))
+    words = [to_shapely(dilate(as_poly(w.poly), 1.0)) for w in kept]
+    word_of, path_of = shapely.STRtree(boxes).query(words, predicate="covers")
+    inside = np.bincount(word_of, minlength=len(kept))
+    outlined = np.array([inside[k] >= max(1, math.ceil(0.5 * sum(c.isalnum() for c in w.text)))
+                         for k, w in enumerate(kept)], bool)
+    return {int(p) for k, p in zip(word_of, path_of) if outlined[k]}
+
+
 def vector_survival(
     src_page: pymupdf.Page,
     out_page: pymupdf.Page,
@@ -216,10 +239,13 @@ def vector_survival(
     same bounding box and fill. A region (signature, mark) counts the pen strokes drawn in it; one
     survives only when the output still has that very path (the same items through the same points),
     so a new stand-in drawn to the original's size is not taken for it. Left out of a region: straight
-    rules and boxes (the line a signature sits on belongs to the form) and glyphs of kept words
-    (outlined text, such as a "Signed:" label the signature crosses). Not covered: a mark drawn only
-    with axis-aligned lines or rectangles, which counts as form, and other kept curved art inside a
-    region's box, which counts as its strokes."""
+    rules and boxes (the line a signature sits on belongs to the form) and glyphs of kept words drawn
+    as outlines whose whole box lies inside the word (outlined text, such as a "Signed:" label the
+    signature crosses). A kept word is drawn as outlines when the source page has at least half as
+    many paths wholly inside its box (1 pt around) as it has letters and digits, and at least one; a
+    typed "______" line in the text layer has none, so pen strokes across it count. Not covered: a
+    mark drawn only with axis-aligned lines or rectangles, which counts as form, and other kept
+    curved art inside a region's box, which counts as its strokes."""
     zones = {w.id: to_shapely(dilate(as_poly(w.poly), 1.0)) for w in page_gt.words if w.id in word_ids}
     zones.update({r.id: to_shapely(dilate(as_poly(r.poly), 1.0)) for r in page_gt.regions if r.id in region_ids})
     if not zones:
@@ -230,22 +256,16 @@ def vector_survival(
     out = out_page.get_drawings()
     out_keys = {_path_key(d) for d in out}
     out_rects = np.array([[d["rect"].x0, d["rect"].y0, d["rect"].x1, d["rect"].y1] for d in out], float).reshape(-1, 4)
-    kept = ([to_shapely(dilate(as_poly(w.poly), 1.0)) for w in page_gt.words if w.id not in word_ids]
-            if any(k in region_ids for k in zones) else [])
-    kept_tree = shapely.STRtree(kept) if kept else None
+    glyphs = _kept_glyph_paths(src, src_geom, page_gt, word_ids) if any(k in region_ids for k in zones) else set()
 
     def still_there(d: dict) -> bool:
         r = d["rect"]
         near = np.flatnonzero(np.all(np.abs(out_rects - [r.x0, r.y0, r.x1, r.y1]) <= 0.1, axis=1))
         return any(_same_path(d, out[k]) for k in near)
 
-    def kept_glyph(centre: shapely.Point, area: float) -> bool:
-        """A glyph of a kept word: centred on the word and no larger than it."""
-        return kept_tree is not None and any(area <= kept[k].area for k in kept_tree.query(centre, predicate="within"))
-
     areas = {k: z.area for k, z in zones.items()}
     result: dict[str, list[int]] = {k: [0, 0] for k in zones}
-    for d in src:
+    for j, d in enumerate(src):
         r = d["rect"]
         area = r.width * r.height
         centre = shapely.Point(src_geom.transform([[(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2]], Frame.UNROTATED_PT,
@@ -256,7 +276,7 @@ def vector_survival(
                 continue
             if key in region_ids:
                 if stroke is None:
-                    stroke = not _straight(d) and not kept_glyph(centre, area)
+                    stroke = not _straight(d) and j not in glyphs
                 if not stroke:
                     continue
                 survived = still_there(d)

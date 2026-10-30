@@ -20,7 +20,8 @@ class EvalConfig(BaseModel):
     # collateral pass marks, page size changes no longer an integrity problem.
     # eval-0.3.1 (2026-10-22): the pen strokes of a drawn signature or mark that are still in the file,
     # under a box or a stand-in, are recoverable like glyph paths. A stroke survives only as the very
-    # same path; form rules and the glyphs of kept words inside its region are not counted. Results
+    # same path; form rules and the glyphs of kept words drawn as outlines whose whole box lies inside
+    # the word are not counted (a typed "____" line in the text layer has no such glyphs). Results
     # labelled eval-0.3 either ignored drawn strokes (scored before the check was added, early on
     # 2026-10-22) or matched them by bounding box alone; rescore them. eval-0.4 stays reserved for the
     # calibration fixes listed in docs/metrics.md.

@@ -303,6 +303,65 @@ def test_a_signature_across_its_outlined_label_is_judged_by_its_own_stroke(strok
         assert sig.status is MentionStatus.SAFE_REPLACED and sig.vector_residual == 0.0
 
 
+@lru_cache(maxsize=None)
+def _signature_on_a_typed_line():
+    """The digital fixture signed across a typed "______________" line (a kept word in the text layer,
+    not drawn as outlines): three short curved pen strokes in one signature region, each centred on the
+    line and smaller than its box, and each reaching above and below it."""
+    import hashlib
+
+    from benchmark.geometry import rect_poly
+    from benchmark.synth.fixtures import digital
+    from benchmark.synth.spec import L, Squiggle, T, medico_legal_spec
+
+    spec = medico_legal_spec()
+    spec.pages[0].append(L(80, 330, 11, T("______________")))
+    first = ((88, 340), (94, 314), (100, 338), (106, 316), (112, 336))
+    fx = digital(dataclasses.replace(spec, squiggles={0: [Squiggle("sig1", first, mention="sig1")]}))
+    doc = pymupdf.open("pdf", fx.pdf)
+    for curve in (((120, 338), (126, 308), (134, 344), (142, 316)), ((150, 316), (156, 346), (164, 306), (170, 336))):
+        doc[0].draw_bezier(*curve, color=(0, 0, 0), width=1.6)
+    pdf = doc.tobytes()
+    strokes = [d["rect"] for d in doc[0].get_drawings()]
+    assert len(strokes) == 3
+    box = (min(r.x0 for r in strokes) - 2, min(r.y0 for r in strokes) - 2,
+           max(r.x1 for r in strokes) + 2, max(r.y1 for r in strokes) + 2)
+    page = fx.gt.pages[0]
+    region = page.regions[0].model_copy(update={"poly": rect_poly(*box).tolist()})
+    gt = fx.gt.model_copy(update={"source_sha256": hashlib.sha256(pdf).hexdigest(),
+                                  "pages": [page.model_copy(update={"regions": [region]}), *fx.gt.pages[1:]]})
+    line = next(w for w in page.words if w.text == "______________")
+    xs, ys = [q[0] for q in line.poly], [q[1] for q in line.poly]
+    for r in strokes:  # what hid them before eval-0.4: centred on the kept word and no larger than it
+        assert min(xs) < (r.x0 + r.x1) / 2 < max(xs) and min(ys) < (r.y0 + r.y1) / 2 < max(ys)
+        assert r.width * r.height < (max(xs) - min(xs)) * (max(ys) - min(ys))
+        assert r.y0 < min(ys) and r.y1 > max(ys)
+    return dataclasses.replace(fx, pdf=pdf, gt=gt), pymupdf.Rect(*box)
+
+
+@pytest.mark.parametrize("output", ["stand-in over the strokes", "box only", "strokes removed, stand-in"])
+def test_a_signature_on_a_typed_signature_line_is_judged_by_its_strokes(output):
+    # The typed line is a kept word, but only in the text layer: nothing drawn across it is its glyphs.
+    fx, rect = _signature_on_a_typed_line()
+
+    def stand_in(page):
+        page.draw_rect(rect, color=None, fill=(1, 1, 1))
+        page.draw_polyline([(rect.x0 + 4 + k * (rect.width - 8) / 24, rect.y0 + rect.height * (0.3 if k % 2 else 0.7))
+                            for k in range(25)], color=(0, 0, 0), width=1.2)
+
+    if output == "stand-in over the strokes":
+        out = _draw(fx.pdf, stand_in)
+    elif output == "box only":
+        out = _draw(fx.pdf, lambda page: page.draw_rect(rect, color=None, fill=(0, 0, 0)))
+    else:
+        out = _draw(run_mock(fx.pdf, fx.gt, V1, MockSpec("ref-true", method="true")).pdf, stand_in)
+    sig = _signature(evaluate_output(fx.pdf, out, fx.gt, V1, CFG))
+    if output == "strokes removed, stand-in":
+        assert sig.status is MentionStatus.SAFE_REPLACED and sig.vector_residual == 0.0
+    else:  # the strokes are still in the file
+        assert sig.status is MentionStatus.LEAK_RECOVERABLE and "vector_paths" in sig.l2_sources
+
+
 # -- Q11: searchable text and page size -------------------------------------------------------------
 
 

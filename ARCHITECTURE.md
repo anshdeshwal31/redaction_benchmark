@@ -317,8 +317,10 @@ flowchart TD
   - glyph paths, and the pen strokes of a drawn signature or mark, that survive under a
     covering shape. A pen stroke survives only as the very same path, so a new stand-in drawn
     to the original's size is not taken for it; straight rules and boxes inside a signature
-    region belong to the form, and the glyphs of kept words drawn there (a "Signed:" label) are
-    kept text, so neither is counted (eval-0.3.1);
+    region belong to the form, and the glyphs of kept words drawn as outlines whose whole box
+    lies inside the word (a "Signed:" label) are kept text, so neither is counted (eval-0.3.1). A
+    typed "____" signature line in the text layer has no outline glyphs, so pen strokes across
+    it count;
   - earlier revisions saved incrementally in the file.
 - **Document-level findings.** The evaluator searches for terms from required mentions in
   metadata, XMP, outlines, annotation contents, form values, attachment names,
