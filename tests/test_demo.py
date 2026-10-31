@@ -134,6 +134,9 @@ def test_both_columns_fill_from_the_adapter_contract(make_app, pdf, tmp_path):
     assert "This tool outputs text, not a PDF." in html and "http-equiv=\"refresh\"" not in html
     assert html.count("What was replaced") == 2
     assert f"/jobs/{job.id}/tool/0/1.png" in html and f"/jobs/{job.id}/original/1.png" in html
+    # The original is one column wide: it shares the tool columns' grid, with an empty cell per other tool.
+    original = html[html.index('<div class="grid original">'):html.index("<section")]
+    assert "original/1.png" in original and original.count('class="spacer"') == len(job.runs) - 1
     got = client.get(f"/jobs/{job.id}/tool/0/output.pdf")
     assert got.status_code == 200 and got.data[:5] == b"%PDF-" and got.headers["Cache-Control"] == "no-store"
     assert client.get(f"/jobs/{job.id}/tool/0/1.png").data[:4] == b"\x89PNG"

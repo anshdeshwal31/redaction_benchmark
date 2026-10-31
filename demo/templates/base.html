@@ -34,6 +34,8 @@ a { color: var(--accent); }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin: 12px 0; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 16px; align-items: start; }
 .grid > .card { margin: 0; min-width: 0; }
+.grid.original { margin-bottom: 16px; }
+.grid.original > .spacer { min-height: 0; }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 13px; font-weight: 600; background: var(--code); }
 .badge.ok { background: var(--ok-bg); color: var(--ok); }
 .badge.bad { background: var(--bad-bg); color: var(--bad); }
