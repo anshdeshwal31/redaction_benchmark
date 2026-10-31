@@ -407,6 +407,7 @@ def test_scored_runs_and_boards_show_the_benchmarks_own_numbers(make_app, tmp_pa
     assert page.count("1 of 6 never reached its text") == 2 and page.count("20.0% on the 5 items it handled") == 2
     assert "<th>Required items leaked</th>" in page and "never in the text the tool's own reader" in page
     assert "Check Now" in page and "plumbing check: not the tool as built" not in page
+    assert str(tmp_path) not in page  # no results-folder path on the page the client sees
     # Only the runs named for the demo are listed (a folder may also hold plumbing checks); boards stay whole.
     app2, *_ = make_app([], runs=["another-run"])
     page = app2.test_client().get("/benchmark").get_data(as_text=True)

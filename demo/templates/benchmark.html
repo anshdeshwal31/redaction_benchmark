@@ -38,7 +38,6 @@ only when their dataset and policy match.</p>
 <div class="card">
   <b>{{ b.title }}</b>
   {% if b.html %}<a href="{{ url_for('board', folder=b.folder, name=b.html) }}" target="_blank" rel="noopener">open the full board</a>{% endif %}
-  <span class="small mut">· {{ dirs[b.folder] }}</span>
   {% if b.error %}<p class="mut small">{{ b.error }}</p>{% else %}{{ table(b.rows) }}{% endif %}
 </div>
 {% else %}
