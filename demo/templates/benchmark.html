@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Benchmark results · Redaction demo{% endblock %}
+{% macro table(rows) %}
+<div class="wrap"><table>
+  <tr><th>Tool</th><th>Run</th><th>Graded on</th><th>Documents</th><th>Required items leaked</th><th>Not replaced</th>
+      <th>Over-redaction</th><th>Clean documents</th><th>Searchable</th><th>Tool's own release check</th></tr>
+  {% for row in rows %}{% set x = summary(row) %}
+  <tr {% if x.headline %}class="headline"{% endif %}>
+    <td>{{ x.candidate }}<br><span class="mut small">{{ x.version }}</span>
+      {% if x.plumbing %}<br><span class="badge bad">plumbing check: not the tool as built</span>{% endif %}</td>
+    <td>{{ x.mode }}<br><span class="mut small">{{ x.run }} · {{ x.dataset }} · {{ x.policy }} · {{ x.eval or 'eval ?' }}</span>
+      {% if x.warn %}<br><span class="badge warn">tool given another policy</span>{% endif %}</td>
+    <td>{{ x.graded_on }}</td>
+    <td>{{ x.docs }} <span class="mut small">({{ x.required }} required items)</span></td>
+    <td>{{ x.leak }}{% if x.leak_ci %}<br><span class="mut small">95% range {{ x.leak_ci }}</span>{% endif %}
+      {% if x.leak_strict %}<br><span class="small">on the items it handled; {{ x.not_seen }} of {{ x.required }} never reached
+      its output (headers and footers its reader dropped); strict rate counting them as leaked: {{ x.leak_strict }}</span>
+      {% elif x.not_seen %}<br><span class="small">{{ x.not_seen }} of {{ x.required }} never reached its text (counted as leaked here)</span>{% endif %}
+      {% if x.leak_completed %}<br><span class="small">{{ x.leak_completed }} on the {% if x.handled is not none %}{{ x.handled }} {% endif %}items it handled</span>{% endif %}</td>
+    <td>{{ x.not_replaced }}</td>
+    <td>{{ x.over }}</td>
+    <td>{{ x.clean }}</td>
+    <td>{{ x.searchable }}</td>
+    <td class="small">{{ x.self_check }}</td>
+  </tr>
+  {% endfor %}
+</table></div>
+{% endmacro %}
+{% block body %}
+<h1>Benchmark results</h1>
+<p class="mut">These numbers come from the benchmark, which grades each tool on its output only, against hand-checked
+answers for every document, under the same policy. Rows in bold are end-to-end runs (the tool on its own, as a user
+would run it); the other rows give the tool perfect input for one stage, to show where its errors start. Compare rows
+only when their dataset and policy match.</p>
+
+<h2>Comparison boards</h2>
+{% for b in boards %}
+<div class="card">
+  <b>{{ b.title }}</b>
+  {% if b.html %}<a href="{{ url_for('board', folder=b.folder, name=b.html) }}" target="_blank" rel="noopener">open the full board</a>{% endif %}
+  <span class="small mut">· {{ dirs[b.folder] }}</span>
+  {% if b.error %}<p class="mut small">{{ b.error }}</p>{% else %}{{ table(b.rows) }}{% endif %}
+</div>
+{% else %}
+<div class="card mut">No boards found in {{ dirs|join(', ') }}. Build one with <code>rb board &lt;run ids&gt; --name demo</code>
+(demo/README.md).</div>
+{% endfor %}
+
+<h2>Scored runs</h2>
+{% if only_runs %}<p class="small mut">Only the runs chosen for this demo: {{ only_runs|join(', ') }}.</p>{% endif %}
+{% set ok = scored|selectattr('row')|map(attribute='row')|list %}
+{% if ok %}<div class="card">{{ table(ok) }}</div>{% endif %}
+{% for s in scored if s.error %}<p class="mut small">{{ s.run_id }}: {{ s.error }}</p>{% endfor %}
+{% if not scored %}<div class="card mut">No scored runs found in {{ dirs|join(', ') }}.</div>{% endif %}
+
+<h2>What the numbers mean</h2>
+<div class="card">
+<dl>
+  <dt>Required items leaked</dt>
+  <dd>Of all the items the policy says must not survive (names, addresses, dates of birth, phone numbers, ID numbers,
+  signatures…), the share the tool did not remove or replace: visible on the page, partly visible, faintly visible under
+  a see-through box, still in the file's hidden text or earlier versions; or not handled at all, because the tool
+  produced no output or, for a tool graded on its text, because the item was never in the text the tool's own reader
+  took from the PDF (running headers and footers, for example). Items of that last kind are not in the tool's output,
+  so nothing there can be read from it, but nothing shows the tool would have removed them either. For a tool graded on
+  its text, the headline is the leak rate on the items it did handle; the row also says how many items never reached
+  its output and gives the strict rate, which counts them against the tool. For a tool graded on its PDF, the headline
+  is the strict rate, and a second number under it, when shown, leaves out the items it never handled. A tool
+  graded on its PDF is graded on those same headers and footers in the PDF, so read both numbers before comparing.
+  Lower is better; 0% means nothing required got through. The 95% range shows how much the number could move with
+  other documents of the same kind.</dd>
+  <dt>Not replaced</dt>
+  <dd>Required items that were hidden but not swapped for a realistic fake, which the client's rules ask for. Not a leak,
+  but not a pass either.</dd>
+  <dt>Over-redaction</dt>
+  <dd>The share of ordinary words, which should have stayed, that the tool removed or damaged. Lower is better. A word
+  that was only moved along its line, intact, does not count.</dd>
+  <dt>Clean documents</dt>
+  <dd>Documents with nothing wrong: no required item visible, partly visible or recoverable, every required item
+  checked and replaced as required, nothing found in the metadata, no protected word damaged, at most 1% of ordinary
+  words damaged and, for a PDF, at least 95% of the kept words still searchable. These could be released as they are.</dd>
+  <dt>Graded on: PDF or text only</dt>
+  <dd>A PDF is checked as a reader would get it: every page image, the hidden text layer, metadata and earlier versions.
+  A tool that outputs only text is graded on its text instead: its redacted text is compared with the text it started
+  from. That cannot check signatures, images, handwriting, hidden layers or searchability, so a text-graded tool is
+  judged on less than a PDF-graded one, and its numbers are not a like-for-like comparison on those points.</dd>
+  <dt>Searchable</dt>
+  <dd>For a PDF, the share of kept words that can still be found by search or copied at their place on the page (the
+  client asked for searchable output). Not checked for text-only output.</dd>
+  <dt>Plumbing check</dt>
+  <dd>A run made to test the connection to a tool, not the tool itself (a fake model in place of the real one, or a
+  setting changed to run on a laptop). Its numbers are not the tool's scores.</dd>
+  <dt>What each tool is graded on</dt>
+  <dd>The output the tool produces on its own for an upload. For the PrivateGPT tool that is its redacted text right after
+  the upload. Its optional second pass is not run, here or in the benchmark: in its workspace, "Check Now" (which also
+  runs when a project is opened) suggests fixes for items it may have missed, and "Fix All" applies them on a click.</dd>
+  <dt>Tool's own release check</dt>
+  <dd>Some tools decide themselves whether a document is safe to release. The benchmark compares that decision with its
+  own verdict: released and clean, held back and not clean (both right), held back although clean (a false alarm), or
+  released although not clean (an unsafe release).</dd>
+</dl>
+<p class="small mut">Full definitions: <code>docs/metrics.md</code> in the benchmark.</p>
+</div>
+{% endblock %}

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{% block head %}{% endblock %}
+<title>{% block title %}Redaction demo{% endblock %}</title>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1d1b; --muted: #66665f; --line: #deded8;
+  --accent: #2a78d6; --ok: #1b7f4c; --ok-bg: #e3f4ea; --bad: #b42318; --bad-bg: #fde8e6;
+  --warn: #8a5a00; --warn-bg: #fdf1d6; --code: #f0f0ec;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --panel: #1f1f1d; --ink: #ececea; --muted: #a3a39c; --line: #3a3a36;
+    --accent: #5d9de8; --ok: #5cc98f; --ok-bg: #173325; --bad: #f08a80; --bad-bg: #3d1d1a;
+    --warn: #e7b85a; --warn-bg: #3a2e14; --code: #2a2a27;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 16px; display: flex; gap: 20px; align-items: baseline; flex-wrap: wrap; }
+header b { font-size: 16px; }
+header a { color: var(--accent); text-decoration: none; }
+header a.on { color: var(--ink); font-weight: 600; }
+main { max-width: 1400px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 22px; margin: 8px 0 12px; }
+h2 { font-size: 18px; margin: 24px 0 8px; }
+h3 { font-size: 15px; margin: 16px 0 6px; }
+a { color: var(--accent); }
+.mut { color: var(--muted); }
+.small { font-size: 13px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin: 12px 0; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 16px; align-items: start; }
+.grid > .card { margin: 0; min-width: 0; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 13px; font-weight: 600; background: var(--code); }
+.badge.ok { background: var(--ok-bg); color: var(--ok); }
+.badge.bad { background: var(--bad-bg); color: var(--bad); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+.box { border-radius: 6px; padding: 8px 12px; margin: 10px 0; }
+.box.ok { background: var(--ok-bg); color: var(--ok); }
+.box.bad { background: var(--bad-bg); color: var(--bad); }
+.box.warn { background: var(--warn-bg); color: var(--warn); }
+.box.plain { background: var(--code); }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { border-bottom: 1px solid var(--line); padding: 5px 8px; text-align: left; vertical-align: top; }
+th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.wrap { overflow-x: auto; }
+.scroll { max-height: 70vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
+.pages img { display: block; width: 100%; height: auto; border-bottom: 1px solid var(--line); background: #fff; }
+pre.text { white-space: pre-wrap; word-break: break-word; margin: 0; padding: 10px 12px; font: 13px/1.45 ui-monospace, Menlo, Consolas, monospace; }
+.pagehead { position: sticky; top: 0; background: var(--code); color: var(--muted); font-size: 12px; padding: 2px 12px; }
+.headline td { font-weight: 600; }
+button, input[type=file] { font: inherit; }
+button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 7px 16px; cursor: pointer; }
+button.quiet { background: transparent; color: var(--bad); border: 1px solid var(--bad); padding: 4px 12px; }
+details > summary { cursor: pointer; color: var(--muted); }
+code { background: var(--code); padding: 0 4px; border-radius: 4px; font-size: 13px; }
+dl dt { font-weight: 600; margin-top: 10px; }
+dl dd { margin: 2px 0 0 0; }
+</style>
+</head>
+<body>
+<header>
+  <b>Redaction demo</b>
+  <a href="{{ url_for('index') }}" {% if request.endpoint in ('index', 'upload', 'job_page') %}class="on"{% endif %}>Try a document</a>
+  <a href="{{ url_for('benchmark') }}" {% if request.endpoint == 'benchmark' %}class="on"{% endif %}>Benchmark results</a>
+</header>
+<main>
+{% block body %}{% endblock %}
+</main>
+</body>
+</html>

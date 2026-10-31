@@ -1,0 +1,42 @@
+# Demo settings (demo/README.md). Relative paths are taken from the benchmark repository root.
+# Environment variables override these (demo/config.py lists them).
+
+# The tools run on every upload, one after another, in this order. Each is a candidate manifest
+# (docs/adapter_guide.md); the demo knows a tool only through its manifest and its output files.
+candidates:
+  - manifest: candidates/mlredact-client.yaml
+    label: Tool 2 (mlredact)
+  - manifest: candidates/privategpt-text.yaml
+    label: PrivateGPT (Joel's tool)
+    note: >-
+      The automatic output of an upload, as his upload returns it. His optional second pass
+      ("Check Now", then "Fix All" on a click) is not run, here or in the benchmark.
+
+# Folders holding scored runs (rb score) and comparison boards (rb board) for the Benchmark page.
+# Empty: $RB_RESULTS_DIR, or results/.
+results_dirs: []
+
+# The scored runs the Benchmark page lists, by run id (boards are always listed whole). Empty: every scored run in
+# the folders. Name the runs here when a folder also holds plumbing checks (a fake model), which must not be shown
+# as a tool's scores.
+runs: []
+
+# Uploads and tool outputs. Every job folder is deleted keep_minutes after its tools finish, on the
+# Delete button, and when the app starts again.
+work_dir: runs/demo
+keep_minutes: 120
+
+# The redaction policy passed to tools whose command takes {policy}.
+policy: policies/au-medicolegal-v1.yaml
+
+# A tool still running after this many seconds is stopped (or sooner, if its manifest's timeout_s is lower).
+job_timeout_s: 1800
+max_upload_mb: 50
+
+# Page images of the output PDFs.
+preview_dpi: 80
+max_preview_pages: 30
+
+# Loopback only: reach the app through an SSH tunnel (demo/README.md).
+host: 127.0.0.1
+port: 8765

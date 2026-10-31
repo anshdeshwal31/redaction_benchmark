@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Run the redaction tools on a document</h1>
+<p class="mut">Upload a PDF: every tool below redacts it, one after the other, and the results are shown side by side.
+Each tool gets the same file under a neutral name (<code>input.pdf</code>) and is called through its benchmark adapter,
+exactly as the benchmark calls it. The file's own name is not kept.</p>
+
+<div class="card">
+  <form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
+    <input type="hidden" name="token" value="{{ form_token }}">
+    <input type="file" name="pdf" accept="application/pdf,.pdf" required>
+    <button type="submit">Upload and run</button>
+  </form>
+  {% if error %}<div class="box bad">{{ error }}</div>{% endif %}
+  <p class="mut small">Up to {{ cfg.max_upload_mb|round|int }} MB. Jobs run one at a time; a tool still running after
+  {{ duration(cfg.job_timeout_s) }} is stopped. The upload and every output are deleted {{ cfg.keep_minutes|round|int }} minutes
+  after the job finishes, when you press Delete, or when the app stops (a running tool is stopped first) or restarts.</p>
+</div>
+
+<h2>Tools</h2>
+<div class="card wrap">
+<table>
+  <tr><th>Column</th><th>Candidate</th><th>Output</th><th>Ready</th></tr>
+  {% for s in specs %}
+  <tr>
+    <td>{{ s.label }}{% if s.slot.note %}<br><span class="small mut">{{ s.slot.note }}</span>{% endif %}</td>
+    <td><code>{{ s.name }}</code></td>
+    <td>{% if s.kind == 'text' %}redacted text (not a PDF){% else %}redacted PDF{% endif %}</td>
+    <td>{% if s.problems %}<span class="badge bad">not ready</span> <span class="small">{{ s.problems|join('; ') }}</span>
+        {% else %}<span class="badge ok">ready</span>{% endif %}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4">No tools configured (demo.yaml, <code>candidates</code>).</td></tr>
+  {% endfor %}
+</table>
+</div>
+
+{% if jobs %}
+<h2>Jobs</h2>
+<div class="card wrap">
+<table>
+  <tr><th>Job</th><th>Uploaded</th><th>Pages</th><th>Status</th><th></th></tr>
+  {% for j in jobs %}
+  <tr>
+    <td><a href="{{ url_for('job_page', job_id=j.id) }}"><code>{{ j.id[:8] }}</code></a></td>
+    <td>{{ ago(j.created) }}</td>
+    <td>{{ j.page_count }}</td>
+    <td>{{ j.state }}</td>
+    <td><form method="post" action="{{ url_for('job_delete', job_id=j.id) }}">
+      <input type="hidden" name="token" value="{{ form_token }}"><button class="quiet" type="submit">Delete</button></form></td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% endif %}
+{% endblock %}

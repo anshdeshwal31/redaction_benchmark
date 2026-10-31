@@ -1,0 +1,8 @@
+# Demo stand-in for a text-only tool (demo/standin_text.py): NOT the client's tool. It fills the demo's
+# text column in tests and smoke runs without a language model; see docs/adapter_guide.md, section 8.
+schema: rb.candidate/0.1
+name: standin-text
+version: "0.1.0"
+command: '{python} {repo}/demo/standin_text.py --input {input} --workdir {workdir}'
+provides: [redacted_text, run_info]
+timeout_s: 300

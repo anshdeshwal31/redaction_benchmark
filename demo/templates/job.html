@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block head %}{% if job.state != S.FINISHED %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
+{% block title %}Job {{ job.id[:8] }} · Redaction demo{% endblock %}
+{% block body %}
+<h1>Job <code>{{ job.id[:8] }}</code></h1>
+<p class="mut">{{ job.page_count }} page{{ '' if job.page_count == 1 else 's' }} · {{ (job.size / 1024)|round|int }} KB · uploaded {{ ago(job.created) }} ·
+{% if job.state == S.QUEUED %}waiting: {{ ahead }} job{{ '' if ahead == 1 else 's' }} ahead
+{% elif job.state == S.RUNNING %}running (this page refreshes itself)
+{% else %}finished; deleted automatically {{ cfg.keep_minutes|round|int }} minutes after it finished{% endif %}</p>
+
+<div class="card">
+  <b>Progress</b>
+  <table>
+    {% for r in job.runs %}
+    <tr>
+      <td>{{ r.spec.label }}</td>
+      <td>{% if r.state == S.DONE %}<span class="badge ok">done</span>
+          {% elif r.state == S.RUNNING %}<span class="badge warn">running</span>
+          {% elif r.state == S.WAITING %}<span class="badge">waiting</span>
+          {% else %}<span class="badge bad">{{ r.state }}</span>{% endif %}</td>
+      <td class="small mut">{% if r.state == S.RUNNING %}{{ duration(r.elapsed) }} so far (stopped after {{ duration(r.timeout_s) }})
+          {% elif r.elapsed is not none %}took {{ duration(r.elapsed) }}{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <form method="post" action="{{ url_for('job_delete', job_id=job.id) }}" style="margin-top:10px">
+    <input type="hidden" name="token" value="{{ form_token }}">
+    <button class="quiet" type="submit">Delete this job now</button>
+    <span class="small mut">stops a running tool and deletes the upload and every output</span>
+  </form>
+</div>
+
+{% if job.original_pages %}
+<details class="card">
+  <summary>The uploaded document ({{ job.original_pages }} of {{ job.page_count }} page{{ '' if job.page_count == 1 else 's' }} shown)</summary>
+  <div class="scroll pages" style="margin-top:10px">
+    {% for p in range(1, job.original_pages + 1) %}<img src="{{ url_for('original_page', job_id=job.id, page=p) }}" alt="Original page {{ p }}" loading="lazy">{% endfor %}
+  </div>
+</details>
+{% endif %}
+
+<div class="grid">
+{% for v in views %}{% set r = v.run %}
+<section class="card">
+  <h2 style="margin-top:0">{{ r.spec.label }}</h2>
+  <p class="small mut"><code>{{ r.spec.name }}</code>{% if r.version %} · version {{ r.version }}{% endif %}
+    {% if r.elapsed is not none and r.state != S.RUNNING %} · {{ duration(r.elapsed) }}{% endif %}</p>
+  {% if r.plumbing %}<div class="box bad"><b>Not the tool as built.</b> This run is a plumbing check ({{ r.plumbing }}):
+  its output shows that the connection works, not what the tool does. Do not compare it with the other tools.</div>{% endif %}
+  {% if r.spec.slot.note %}<p class="small mut">{{ r.spec.slot.note }}</p>{% endif %}
+
+  {% if r.spec.kind == 'text' %}
+  <div class="box warn"><b>This tool outputs text, not a PDF.</b> It returns the document's text with the personal
+  data replaced; the layout, images, signatures and handwriting of the original are not reproduced. The benchmark grades it on
+  that text (see Benchmark results).</div>
+  {% endif %}
+
+  {% if r.state == S.WAITING %}<p class="mut">Waiting for its turn.</p>
+  {% elif r.state == S.RUNNING %}<p class="mut">Running for {{ duration(r.elapsed) }}…</p>
+  {% elif r.state != S.DONE %}
+    <div class="box bad">{{ r.message }}</div>
+    {% if v.output %}<details><summary>The tool's last output</summary><pre class="text">{{ v.output }}</pre></details>{% endif %}
+  {% else %}
+    {% if r.note %}<div class="box warn">{{ r.note }}</div>{% endif %}
+
+    {% if r.release is not none %}
+      {% if r.release.released %}<div class="box ok"><b>Released.</b> The tool's own safety check passed this document.</div>
+      {% else %}<div class="box bad"><b>Held back.</b> The tool's own safety check would not release this document:
+        {{ r.release.checks_failed|join(', ') if r.release.checks_failed else 'no reason given' }}.</div>{% endif %}
+    {% elif r.spec.kind == 'pdf' %}
+      <div class="box plain">The tool reported no release verdict.</div>
+    {% endif %}
+
+    {% if r.spec.kind == 'pdf' and r.release is not none and not r.release.released %}
+      <div class="box warn"><b>This output was not released.</b> The tool built it but would not release it, so it may
+      still hold personal data or be damaged. It is shown for review only: do not share it as a redacted document.
+      {% if r.tool_note %}<br><span class="small">The tool's note: {{ r.tool_note }}</span>{% endif %}</div>
+      <p><a href="{{ url_for('tool_pdf', job_id=job.id, index=r.index) }}">Download the held-back output (not safe to share)</a>
+      <span class="small mut">· {{ r.preview_pages }} of {{ r.page_count }} page{{ '' if r.page_count == 1 else 's' }} of it shown below</span></p>
+      <div class="scroll pages">
+        {% for p in range(1, r.preview_pages + 1) %}<img src="{{ url_for('tool_page', job_id=job.id, index=r.index, page=p) }}" alt="{{ r.spec.label }} held-back page {{ p }}" loading="lazy">{% endfor %}
+      </div>
+    {% elif r.spec.kind == 'pdf' %}
+      <p><a href="{{ url_for('tool_pdf', job_id=job.id, index=r.index) }}">Download the redacted PDF</a>
+      <span class="small mut">· {{ r.preview_pages }} of {{ r.page_count }} page{{ '' if r.page_count == 1 else 's' }} shown below</span></p>
+      <div class="scroll pages">
+        {% for p in range(1, r.preview_pages + 1) %}<img src="{{ url_for('tool_page', job_id=job.id, index=r.index, page=p) }}" alt="{{ r.spec.label }} page {{ p }}" loading="lazy">{% endfor %}
+      </div>
+    {% else %}
+      <p>Download the redacted text: <a href="{{ url_for('tool_text', job_id=job.id, index=r.index, ext='txt') }}">.txt</a>
+      · <a href="{{ url_for('tool_text', job_id=job.id, index=r.index, ext='json') }}">.json</a>
+      <span class="small mut">(the redacted text only; the replacement list below holds the originals)</span>
+      {% if v.pages|length > 1 %}<span class="small mut">· {{ v.pages|length }} pages</span>{% endif %}</p>
+      <div class="scroll">
+        {% for page in v.pages %}{% if v.pages|length > 1 %}<div class="pagehead">page {{ loop.index }}</div>{% endif %}<pre class="text">{{ page }}</pre>{% endfor %}
+      </div>
+    {% endif %}
+
+    <h3>What was replaced ({{ v.replacements|length }})</h3>
+    {% if v.replacements %}
+    <div class="scroll" style="max-height:40vh"><table>
+      <tr>{% if r.spec.kind == 'text' %}<th>Kind</th>{% endif %}<th>Original</th><th></th><th>Replacement</th></tr>
+      {% for kind, original, replacement in v.replacements %}
+      <tr>{% if r.spec.kind == 'text' %}<td class="mut">{{ kind }}</td>{% endif %}<td>{{ original }}</td><td class="mut">→</td><td>{{ replacement }}</td></tr>
+      {% endfor %}
+    </table></div>
+    {% else %}<p class="mut small">The tool reported no replacement list.</p>{% endif %}
+
+    {% if r.problems %}
+    <details><summary>Adapter contract notes ({{ r.problems|length }})</summary>
+      <ul class="small">{% for p in r.problems %}<li>{{ p }}</li>{% endfor %}</ul>
+    </details>
+    {% endif %}
+  {% endif %}
+</section>
+{% endfor %}
+</div>
+{% endblock %}

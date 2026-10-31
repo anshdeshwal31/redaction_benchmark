@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · Redaction demo{% endblock %}
+{% block body %}
+<h1>{{ title }}</h1>
+<p>{{ text }}</p>
+<p><a href="{{ url_for('index') }}">Back to the upload page</a></p>
+{% endblock %}
