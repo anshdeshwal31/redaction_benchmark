@@ -1,0 +1,21 @@
+# The client's redaction environment (RB_PRIVATEGPT_PYTHON), outside his repository. These are his own
+# requirements for the redaction path, unpinned as he leaves them:
+#   - requirements-local.txt ("minimal dependencies for running the backend locally");
+#   - torch and docling, which his README installs separately;
+#   - easyocr, from his requirements-docker.txt (docling's OCR fallback for scanned PDFs);
+#   - the spaCy model en_core_web_sm, which his README installs with `python -m spacy download`.
+# His Docker image uses Python 3.11. The runner itself needs nothing beyond these.
+# Install (adapters/privategpt/README.md): torch first (CUDA wheels on the GPU server, CPU wheels on a
+# laptop), then this file, then the spaCy model.
+requests
+python-dotenv
+PyPDF2
+cryptography
+python-docx
+PyMuPDF
+Pillow
+spacy
+torch
+torchvision
+docling
+easyocr

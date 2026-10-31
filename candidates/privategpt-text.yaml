@@ -1,0 +1,42 @@
+# The client's PrivateGPT redaction (privategpt-redaction-testing), graded exactly as built: his redaction
+# code is called unchanged from his repository by adapters/privategpt/run_privategpt.py, which lives here,
+# outside his repository. His tool redacts text, so it hands over redacted_text.json and is graded by the
+# text-level path (docs/adapter_guide.md, section 8). One benchmark matter is one of his projects.
+#
+# Environment:
+#   RB_PRIVATEGPT_PYTHON       his environment's interpreter (built from his requirements; see
+#                              adapters/privategpt/README.md).  Required.
+#   RB_PRIVATEGPT_REPO         his repository, read only.  Required.
+#   RB_PRIVATEGPT_OLLAMA_URL   the Ollama endpoint; default http://localhost:11434.
+#   RB_PRIVATEGPT_MODEL        the model; default qwen2.5:14b, his own.
+#   RB_PRIVATEGPT_ALLOW_REMOTE 1 to allow an endpoint on another machine (documents are sent to it): only
+#                              with the project owner's approval.
+#
+# No release verdict: his verifier's result is advisory, nothing holds a document back.
+# label_map: his PII types (backend/redaction/pii_detector.py), used for the labels of his mappings.
+schema: rb.candidate/0.1
+name: privategpt-text
+version_command: '{env:RB_PRIVATEGPT_PYTHON} {repo}/adapters/privategpt/run_privategpt.py --version --repo {env:RB_PRIVATEGPT_REPO}'
+command: '{env:RB_PRIVATEGPT_PYTHON} {repo}/adapters/privategpt/run_privategpt.py --repo {env:RB_PRIVATEGPT_REPO} --input {input} --workdir {workdir} --mode {mode} --matter {matter}'
+provides: [redacted_text, run_info]
+accepts_injection: []
+timeout_s: 14400
+label_map:
+  person_name: PERSON_NAME
+  email: EMAIL
+  phone: PHONE
+  mobile: PHONE
+  date_of_birth: DATE
+  date: DATE
+  address: ADDRESS
+  abn: ID_BUSINESS
+  tfn: ID_GOVERNMENT
+  medicare_number: ID_GOVERNMENT
+  bank_account: ID_FINANCIAL
+  bsb: ID_FINANCIAL
+  drivers_license: ID_GOVERNMENT
+  passport: ID_GOVERNMENT
+  legal_reference: ID_LEGAL_REF
+  claim_number: ID_CLAIM
+  provider_number: ID_PROVIDER
+  organisation_name: ORGANISATION

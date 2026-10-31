@@ -88,8 +88,11 @@ Real tools run in their own environments. Their manifests reach the interpreter 
 environment variable named `RB_<TOOL>_PYTHON`, as the measurement OCR does with `RB_PPOCR_PYTHON`:
 `RB_MLREDACT_PYTHON` for tool 2 (`candidates/mlredact-client.yaml`; run end to end on the synthetic
 dataset on 2026-10-22, results kept outside the repository, not yet on the seed documents);
-`RB_REDACTOR_PYTHON` (tool 1) and `RB_PRIVATEGPT_PYTHON` (the client's tool) are reserved for
-their manifests, which do not exist yet. `rb run` stops before running anything, naming the
+`RB_PRIVATEGPT_PYTHON` for the client's tool (`candidates/privategpt-text.yaml`, with
+`RB_PRIVATEGPT_REPO`: his code, called unchanged from his repository by
+`adapters/privategpt/run_privategpt.py` and graded by the text-level path; see that folder's README).
+`RB_REDACTOR_PYTHON` (tool 1) is reserved for its manifest, which does not exist yet. `rb run` stops
+before running anything, naming the
 variable, when one is not set. The command placeholders (`{policy}`, `{matter}` for one fake per
 person across a matter, `{env:NAME}`) and how values reach the tool are in the
 [adapter guide](docs/adapter_guide.md).

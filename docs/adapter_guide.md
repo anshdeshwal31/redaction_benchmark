@@ -92,7 +92,7 @@ does with `RB_PPOCR_PYTHON`:
 |---|---|
 | `RB_MLREDACT_PYTHON` | mlredact (tool 2), `candidates/mlredact-client.yaml` |
 | `RB_REDACTOR_PYTHON` | tool 1 (name reserved; no manifest yet) |
-| `RB_PRIVATEGPT_PYTHON` | the client's tool (name reserved; no manifest yet) |
+| `RB_PRIVATEGPT_PYTHON` | the client's tool, `candidates/privategpt-text.yaml` (with `RB_PRIVATEGPT_REPO`; text output, `adapters/privategpt/README.md`) |
 
 ```yaml
 version_command: '{env:RB_MLREDACT_PYTHON} -m mlredact.cli.main bench-version'
