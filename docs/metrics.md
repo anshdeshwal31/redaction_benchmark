@@ -539,8 +539,13 @@ the same evaluation version and digest, and the same summary keys:
 
 The tool's own extraction decides what can be aligned: on an OCR'd scan its original text may differ
 from GT enough to leave mentions `NOT_EVALUATED`, which the strict view (the board's and the report's
-strict leak rate) counts against it, like `NO_OUTPUT`; the completed-only view leaves them out. Run the
-tool on the benchmark's injected text as well, to tell extraction from redaction. The board and the
+strict leak rate) counts against it, like `NO_OUTPUT`; the completed-only view leaves them out. So does
+each document's own summary (`must_leak_rate`). The same holds for text the tool's reader drops
+altogether, such as running headers and footers: such a mention is not in the tool's output, so nothing
+leaks from it, but the tool never handled it, while a PDF-graded tool is graded on it in its PDF. The
+board therefore shows, for a text-graded run, how many required mentions were not in the tool's text
+("not in its text") next to both rates, and so does the demo's Benchmark page; read the two rates
+together. Run the tool on the benchmark's injected text as well, to tell extraction from redaction. The board and the
 report say what each run is graded on (the evidence column), and a text-only tool's failed documents
 list the same required mentions as its scored ones (no signatures, marks or images).
 

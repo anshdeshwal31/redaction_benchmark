@@ -769,6 +769,13 @@ def test_a_text_only_tool_is_scored_on_its_redacted_text(env, tmp_path):
     n_bad = sum(m["status"] not in ("SAFE_REPLACED", "SAFE_REMOVED", "NOT_REPLACED") for m in rm.mentions)
     assert row_m["leak"] == n_bad / row_m["n"]
     assert row_m["leak_completed"] == (n_bad - len(unaligned)) / (row_m["n"] - len(unaligned))
+    # The board shows how many required mentions were not in the tool's own text, next to both rates, and says the
+    # strict rate counts them as leaked.
+    assert row_m["not_seen"] == len(unaligned) and row_m["n_completed"] == row_m["n"] - len(unaligned)
+    assert row["not_seen"] == 0
+    misread_board = build_board(["text-misread"], tmp_path / "misread.html").read_text(encoding="utf-8")
+    assert "<th>not in its text</th>" in misread_board and "never reached its output" in misread_board
+    assert "never reached its output" not in build_board(["text-tool"], tmp_path / "t.html").read_text(encoding="utf-8")
     assert "not in the tool&#39;s own text" in build_report("text-misread", res_m).read_text(encoding="utf-8") or \
         "not in the tool's own text" in build_report("text-misread", res_m).read_text(encoding="utf-8")
     # A text-only tool that writes nothing has no output, named by its primary output's file.

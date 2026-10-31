@@ -167,6 +167,9 @@ def scorecard(runs: list[RunData]) -> list[dict]:
             "docs": len({m["doc_id"] for m in r.mentions}),
             "n": len(r.mentions), "leak": r.leak(), "ci": _bootstrap([tuple(v) for v in per_doc.values()]),
             "leak_completed": r.leak(done), "l12": len(l12) / len(r.mentions) if r.mentions else None,
+            # Required mentions a text-graded tool's own extraction never held (NOT_EVALUATED, e.g. running headers its
+            # reader dropped): counted as leaked in the strict rate, left out of the completed one (with NO_OUTPUT).
+            "not_seen": sum(m["status"] == "NOT_EVALUATED" for m in r.mentions), "n_completed": len(done),
             "not_replaced": len(not_replaced) / len(r.mentions) if r.mentions else None, "fail": r.fail(),
             "searchable": float(np.mean(searchable)) if searchable else None, "self_check": dict(verdicts),
             "matter": (sum(1 for m in r.matters if m.get("consistent")), len(r.matters)),
@@ -423,10 +426,25 @@ def build_board(run_ids: list[str], out: Path, title: str = "Candidate compariso
     parts.append(deviations.section(departures, policies))
 
     rows = scorecard(runs)
+    unseen = [x for x in rows if x["not_seen"]]
+    if unseen:
+        parts.append("<p><b>Required mentions missing from a text-graded tool's own text</b> (the scorecard's 'not in "
+                     "its text' column; for example running headers and footers its PDF reader dropped) never reached "
+                     "its output, so it neither leaked nor replaced them. The strict leak rate counts them as leaked, "
+                     "as it does a document with no output, and so do the 'where each candidate leaks' tables; "
+                     "'leak (completed)' leaves them out. A PDF-graded tool is graded on those same items in its "
+                     "PDF. Read both rates: " + _esc(", ".join(
+                         f"{x['candidate']} ({x['experiment']}): {x['not_seen']} of {x['n']}" for x in unseen))
+                     + ".</p>")
+    plumbing = [x for x in rows if "plumbing check" in (x["version"] or "")]
+    if plumbing:
+        parts.append("<p><b class=warn>Plumbing checks, not the tool as built</b>: "
+                     + _esc(", ".join(x["run"] for x in plumbing)) + " (a fake model or a switched setting; the "
+                     "version says which). Their numbers are not the tool's scores.</p>")
     parts.append("<h2>Scorecard</h2><div class=wrap><table><tr><th>candidate</th><th>experiment</th><th>dataset</th>"
                  "<th>policy</th><th>evidence</th><th>eval</th><th>docs</th><th>required</th><th>leak (strict)</th>"
                  "<th>95% CI</th>"
-                 "<th>leak (completed)</th>"
+                 "<th>leak (completed)</th><th>not in its text</th>"
                  "<th>visible/recoverable</th><th>not replaced</th><th>failure</th><th>clean docs</th>"
                  "<th>collateral</th><th>protected dmg</th><th>moved kept / displaced required</th>"
                  "<th>shared structure / pairs failed</th><th>searchable</th>"
@@ -438,7 +456,8 @@ def build_board(run_ids: list[str], out: Path, title: str = "Candidate compariso
                      + f"</td><td>{_esc(x['evidence'])}</td><td>{_esc(x['eval'] or '?')} <span class=mut>"
                      f"{_esc((x['eval_digest'] or '')[:8])}</span></td><td>{x['docs']}</td><td>{x['n']}</td>"
                      f"<td>{_pct(x['leak'])}</td><td>{_ci(x['ci'])}</td>"
-                     f"<td>{_pct(x['leak_completed'])}</td><td>{_pct(x['l12'])}</td>"
+                     f"<td>{_pct(x['leak_completed'])}</td>"
+                     f"<td>{x['not_seen'] if 'text' in x['evidence'] else 'N/A'}</td><td>{_pct(x['l12'])}</td>"
                      f"<td>{_pct(x['not_replaced'])}</td><td>{_pct(x['fail'])}</td><td>{x['clean']}</td>"
                      f"<td>{_pct(x['collateral'])}</td><td>{x['protected']}</td>"
                      f"<td>{x['moved']} / {x['displaced']}</td><td>{x['shared'][0]} / {x['shared'][1]}</td>"
