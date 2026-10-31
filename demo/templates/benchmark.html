@@ -14,7 +14,7 @@
     <td>{{ x.docs }} <span class="mut small">({{ x.required }} required items)</span></td>
     <td>{{ x.leak }}{% if x.leak_ci %}<br><span class="mut small">95% range {{ x.leak_ci }}</span>{% endif %}
       {% if x.leak_strict %}<br><span class="small">on the items it handled; {{ x.not_seen }} of {{ x.required }} never reached
-      its output (headers and footers its reader dropped); strict rate counting them as leaked: {{ x.leak_strict }}</span>
+      its output (text its reader never extracted, such as page headers and footers); strict rate counting them as leaked: {{ x.leak_strict }}</span>
       {% elif x.not_seen %}<br><span class="small">{{ x.not_seen }} of {{ x.required }} never reached its text (counted as leaked here)</span>{% endif %}
       {% if x.leak_completed %}<br><span class="small">{{ x.leak_completed }} on the {% if x.handled is not none %}{{ x.handled }} {% endif %}items it handled</span>{% endif %}</td>
     <td>{{ x.not_replaced }}</td>

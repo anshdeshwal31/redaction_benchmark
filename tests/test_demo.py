@@ -409,6 +409,14 @@ def test_scored_runs_and_boards_show_the_benchmarks_own_numbers(make_app, tmp_pa
     assert page.count("33.3%") >= 4 and page.count("16.7%") >= 2 and "released, but not clean 1" in page and "What the numbers mean" in page
     assert page.count("1 of 6 never reached its text") == 2 and page.count("20.0% on the 5 items it handled") == 2
     assert "<th>Required items leaked</th>" in page and "never in the text the tool's own reader" in page
+    # A text-graded row: not every item such a tool never saw is a header or footer (a sideways page, a scan its
+    # OCR missed), so the page does not say they all are.
+    (results / "board-text.html").write_text("<h1>Text board</h1>", encoding="utf-8")
+    (results / "board-text.json").write_text(json.dumps({"runs": ["x-e2e"], "scorecard": [dict(row, evidence="text")]}),
+                                             encoding="utf-8")
+    text_page = " ".join(client.get("/benchmark").get_data(as_text=True).split())
+    assert "1 of 6 never reached its output (text its reader never extracted, such as page headers and footers)" in text_page
+    assert "headers and footers its reader dropped" not in text_page
     assert "Check Now" in page and "plumbing check: not the tool as built" not in page
     assert str(tmp_path) not in page  # no results-folder path on the page the client sees
     # Only the runs named for the demo are listed (a folder may also hold plumbing checks); boards stay whole.
