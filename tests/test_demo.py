@@ -26,6 +26,7 @@ from benchmark.synth import ALL_VARIANTS  # noqa: E402
 from demo import jobs as J  # noqa: E402
 from demo.app import create_app  # noqa: E402
 from demo.config import CandidateSlot, DemoConfig, load_config  # noqa: E402
+from demo import results as R  # noqa: E402
 from demo.results import FolderRun, summary  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -467,6 +468,31 @@ def test_repeated_runs_report_how_often_output_and_verdicts_agree(tmp_path, monk
         candidate={"name": "tool-x", "version": "1.0"}, dataset={"name": "synthetic", "version": "0.0.1"},
         experiment=SimpleNamespace(mode="e2e", name="determinism")))
     assert board_mod.scorecard([board_mod.RunData("x-det")])[0]["stability"] == det["stability"]
+
+
+def test_the_overall_score_weighs_quality_accuracy_and_determinism(make_app, tmp_path, monkeypatch):
+    results = tmp_path / "results"
+    _repeated_run(results)
+    e2e, det = (board_mod.scorecard([FolderRun(results / r)])[0] for r in ("x-e2e", "x-det"))
+    (o,) = R.overall([e2e, det])
+    # 50% x (1 - 33.3% leaked) + 30% x (1 - 33.3% over-redaction) + 20% x (1 - 1/6 unstable) = 70.0
+    assert o["score"] == 70.0 and o["parts"] == {"quality": "66.7%", "accuracy": "66.7%", "determinism": "83.3%"}
+    assert o["runs"] == "x-e2e, x-det"
+    assert o["notes"]["determinism"] == ("1 of 6 required items changed verdict across 3 identical runs; "
+                                         "identical output every run on 1 of 2 documents")
+    # A text-graded tool's quality is on the items it handled, as in its headline.
+    (t,) = R.overall([dict(e2e, evidence="text"), det])
+    assert t["parts"]["quality"] == "80.0%" and t["notes"]["quality"].endswith("(of the items it handled)")
+    # Without a repeated run there is no overall score, and the page says why; plumbing checks are left out.
+    (n,) = R.overall([e2e, dict(det, candidate="tool-y", version="1 [plumbing check: fake model]")])
+    assert n["score"] is None and n["notes"]["determinism"] == "not measured: no repeated run"
+
+    monkeypatch.setenv("RB_RESULTS_DIR", str(results))
+    app, queue, client, token = make_app([])
+    page = " ".join(client.get("/benchmark").get_data(as_text=True).split())
+    assert "Overall score" in page and ">70.0<" in page.replace(" <", "<")
+    assert "Overall = 50% &times; redaction quality + 30% &times; accuracy + 20% &times; determinism" in page
+    assert "1 of 6 required items changed verdict across 3 identical runs" in page
 
 
 def test_config_file_and_environment(tmp_path):

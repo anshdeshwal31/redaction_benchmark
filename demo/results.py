@@ -180,3 +180,72 @@ def summary(row: dict) -> dict:
         "plumbing": "plumbing check" in version,
     }
 
+
+# -- overall score ---------------------------------------------------------------------------------
+
+# The owner's priorities (2026-11-01): redaction quality first, then accuracy, then determinism. The weights are
+# the demo's choice, not the benchmark's; every part is read from the benchmark's own scorecard.
+WEIGHTS = (("quality", 0.5), ("accuracy", 0.3), ("determinism", 0.2))
+
+
+def _headline_leak(row: dict) -> tuple[float | None, bool]:
+    """The leak rate the page shows as the tool's headline (see ``summary``), and whether it is the rate on the items
+    the tool handled (a text-graded tool whose reader never extracted some of them)."""
+    if (row.get("evidence") or "pdf") == "text" and row.get("not_seen") and row.get("leak_completed") is not None:
+        return row["leak_completed"], True
+    return row.get("leak"), False
+
+
+def overall(rows: list[dict]) -> list[dict]:
+    """One overall score per tool, out of 100: 50% redaction quality, 30% accuracy, 20% determinism.
+
+    - quality: 1 - the headline leak rate of the tool's end-to-end run;
+    - accuracy: 1 - its over-redaction (ordinary words damaged or removed);
+    - determinism: 1 - the share of required items whose verdict changed between the identical repeats of the
+      tool's repeated run (``experiments/determinism.yaml``).
+
+    The end-to-end run is the tool's run with a single repeat in end-to-end mode; the repeated run is its run with
+    the most repeats. A part that is missing leaves the overall score out, and says why."""
+    tools: dict[str, dict] = {}
+    for row in rows:
+        if row.get("mode") != "e2e" or "plumbing check" in (row.get("version") or ""):
+            continue
+        t = tools.setdefault(row.get("candidate") or "?", {"e2e": None, "repeated": None})
+        stability = row.get("stability")
+        if stability:
+            if t["repeated"] is None or stability["repeats"] > t["repeated"]["stability"]["repeats"]:
+                t["repeated"] = row
+        elif t["e2e"] is None:
+            t["e2e"] = row
+    out = []
+    for name, t in tools.items():
+        e2e, rep = t["e2e"], t["repeated"]
+        parts: dict[str, float | None] = {"quality": None, "accuracy": None, "determinism": None}
+        notes: dict[str, str] = {}
+        if e2e is not None:
+            leak, handled_only = _headline_leak(e2e)
+            parts["quality"] = None if leak is None else 1 - leak
+            notes["quality"] = f"{_pct(leak)} of required items leaked" + (" (of the items it handled)" if handled_only else "")
+            over = e2e.get("collateral")
+            parts["accuracy"] = None if over is None else 1 - over
+            notes["accuracy"] = f"{_pct(over)} of ordinary words damaged"
+        else:
+            notes["quality"] = notes["accuracy"] = "no end-to-end run"
+        if rep is not None:
+            s = rep["stability"]
+            unstable, n = s["unstable"]
+            parts["determinism"] = None if not n else 1 - unstable / n
+            same, docs = s["same_output"]
+            notes["determinism"] = (f"{unstable} of {n} required items changed verdict across {s['repeats']} identical "
+                                    f"runs; identical output every run on {same} of {docs} documents")
+        else:
+            notes["determinism"] = "not measured: no repeated run"
+        score = (None if any(v is None for v in parts.values())
+                 else round(100 * sum(parts[k] * w for k, w in WEIGHTS), 1))
+        out.append({
+            "candidate": name, "score": score,
+            "parts": {k: _pct(v) for k, v in parts.items()}, "notes": notes,
+            "runs": ", ".join(r["run"] for r in (e2e, rep) if r is not None),
+            "versions": ", ".join(sorted({r.get("version") or "?" for r in (e2e, rep) if r is not None})),
+        })
+    return sorted(out, key=lambda x: (x["score"] is None, -(x["score"] or 0)))

@@ -33,6 +33,37 @@ answers for every document, under the same policy. Rows in bold are end-to-end r
 would run it); the other rows give the tool perfect input for one stage, to show where its errors start. Compare rows
 only when their dataset and policy match.</p>
 
+{% if overall %}
+<h2>Overall score</h2>
+<div class="card">
+<div class="wrap"><table>
+  <tr><th>Tool</th><th>Overall<br><span class="small mut">out of 100</span></th><th>Redaction quality<br><span class="small mut">weight 50%</span></th>
+      <th>Accuracy<br><span class="small mut">weight 30%</span></th><th>Determinism<br><span class="small mut">weight 20%</span></th></tr>
+  {% for o in overall %}
+  <tr class="headline">
+    <td>{{ o.candidate }}<br><span class="mut small">{{ o.versions }}</span></td>
+    <td class="score">{% if o.score is not none %}{{ o.score }}{% else %}<span class="mut">not available</span>{% endif %}</td>
+    <td>{{ o.parts.quality }}<br><span class="small mut">{{ o.notes.quality }}</span></td>
+    <td>{{ o.parts.accuracy }}<br><span class="small mut">{{ o.notes.accuracy }}</span></td>
+    <td>{{ o.parts.determinism }}<br><span class="small mut">{{ o.notes.determinism }}</span></td>
+  </tr>
+  {% endfor %}
+</table></div>
+<p class="small"><b>How it is calculated.</b> Overall = 50% &times; redaction quality + 30% &times; accuracy + 20% &times;
+determinism, in that order of importance. Each part comes from the benchmark's own numbers further down this page:</p>
+<ul class="small">
+  <li><b>Redaction quality</b>: the share of required items the tool protected, that is 100% minus "Required items
+  leaked". For a tool graded on its text, this is on the items it handled, as in that column.</li>
+  <li><b>Accuracy</b>: the share of ordinary words the tool left intact, that is 100% minus "Over-redaction".</li>
+  <li><b>Determinism</b>: the share of required items that got the same verdict every time the same documents were
+  redacted again with nothing changed. The number of documents whose output was identical in every run is shown
+  under it, but does not count towards the score.</li>
+</ul>
+<p class="small mut">The weights are this page's choice, not part of the benchmark. Runs used:
+{% for o in overall %}{{ o.candidate }}: {{ o.runs }}{% if not loop.last %}; {% endif %}{% endfor %}.</p>
+</div>
+{% endif %}
+
 <h2>Comparison boards</h2>
 {% for b in boards %}
 <div class="card">
