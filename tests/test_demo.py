@@ -27,6 +27,7 @@ from demo import jobs as J  # noqa: E402
 from demo.app import create_app  # noqa: E402
 from demo.config import CandidateSlot, DemoConfig, load_config  # noqa: E402
 from demo import results as R  # noqa: E402
+from demo import power as P  # noqa: E402
 from demo.results import FolderRun, summary  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -514,6 +515,43 @@ def test_the_overall_score_weighs_quality_accuracy_and_determinism(make_app, tmp
     assert page.index("<!--email_off-->") < page.index("synthetic@0.0.1") < page.index("<!--/email_off-->")
 
 
+def test_the_server_switches_itself_off_once_unused():
+    now = [1000.0]
+    ran = []
+    queue = SimpleNamespace(jobs={}, shutdown=lambda: ran.append("shutdown"))
+    power = P.Power("sudo -n /usr/sbin/shutdown -h now", 15, queue, clock=lambda: now[0], run=ran.append, watch=False)
+    assert power.enabled and power.stops_in() == 900
+    now[0] += 600
+    assert not power.check() and power.stops_in() == 300
+    # A running or waiting job counts as use: the countdown starts again once it has finished.
+    queue.jobs["a"] = SimpleNamespace(state=J.RUNNING)
+    now[0] += 3600
+    assert not power.check() and power.stops_in() is None
+    queue.jobs["a"].state = J.FINISHED
+    assert power.stops_in() == 900
+    now[0] += 900
+    # Then it switches off: the job folders first, then the machine; once only.
+    assert power.check() and not power.check()
+    assert ran == ["shutdown", ["sudo", "-n", "/usr/sbin/shutdown", "-h", "now"]]
+    # Without both settings it never switches anything off.
+    for command, minutes in (("", 15), ("true", 0)):
+        off = P.Power(command, minutes, queue, clock=lambda: now[0] + 10**6, run=ran.append, watch=False)
+        assert not off.enabled and off.stops_in() is None and not off.check()
+    assert len(ran) == 2
+
+
+def test_opening_a_page_counts_as_use_and_nothing_about_it_is_shown(make_app):
+    app, queue, client, token = make_app([], power_off_command="true", idle_stop_minutes=15)
+    power = app.extensions["demo_power"]
+    power.last_use -= 600
+    assert power.stops_in() == pytest.approx(300, abs=5)
+    page = client.get("/benchmark").get_data(as_text=True).lower()
+    assert power.stops_in() == pytest.approx(900, abs=5)
+    for word in ("server", "stop", "switch", "shut", "aws", "ec2"):
+        assert word not in " ".join(page.split()).replace("stopped after", ""), word
+    assert client.get("/server/status.json").status_code == 404
+
+
 def test_config_file_and_environment(tmp_path):
     f = tmp_path / "demo.yaml"
     f.write_text("candidates:\n  - manifest: candidates/mock-reference.yaml\n    label: Mock\n    note: >-\n"
@@ -536,7 +574,10 @@ def test_config_file_and_environment(tmp_path):
     default = load_config(environ={})
     assert [c.manifest.name for c in default.candidates] == ["mlredact-client.yaml", "privategpt-text.yaml"]
     assert "Check Now" in default.candidates[1].note and default.runs == []
-    assert default.host == "127.0.0.1"
+    assert default.host == "127.0.0.1" and default.power_off_command == "" and default.idle_stop_minutes == 0
+    powered = load_config(f, environ={"RB_DEMO_POWER_OFF_COMMAND": "sudo -n /usr/sbin/shutdown -h now",
+                                      "RB_DEMO_IDLE_STOP_MINUTES": "15"})
+    assert (powered.power_off_command, powered.idle_stop_minutes) == ("sudo -n /usr/sbin/shutdown -h now", 15)
     with pytest.raises(FileNotFoundError):
         load_config(tmp_path / "missing.yaml", environ={})
     assert sys.executable  # the stand-ins run on the benchmark's own interpreter ({python})

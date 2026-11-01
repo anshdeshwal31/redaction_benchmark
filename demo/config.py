@@ -12,6 +12,8 @@ variables, which win. Relative paths are taken from the benchmark repository roo
 | job_timeout_s | RB_DEMO_TIMEOUT_S | 1800 |
 | max_upload_mb | RB_DEMO_MAX_UPLOAD_MB | 50 |
 | host, port | RB_DEMO_HOST, RB_DEMO_PORT | 127.0.0.1, 8765 |
+| power_off_command | RB_DEMO_POWER_OFF_COMMAND | empty: never switch the machine off (demo/power.py) |
+| idle_stop_minutes | RB_DEMO_IDLE_STOP_MINUTES | 0: never switch it off |
 """
 
 from __future__ import annotations
@@ -51,6 +53,8 @@ class DemoConfig:
     max_preview_pages: int = 30
     host: str = "127.0.0.1"
     port: int = 8765
+    power_off_command: str = ""
+    idle_stop_minutes: float = 0
 
 
 def _path(value: str | Path) -> Path:
@@ -81,7 +85,8 @@ def load_config(path: str | Path | None = None, environ: dict | None = None) -> 
         if raw.get(key):
             setattr(cfg, key, _path(raw[key]))
     for key, cast in (("keep_minutes", float), ("job_timeout_s", int), ("max_upload_mb", float),
-                      ("preview_dpi", int), ("max_preview_pages", int), ("host", str), ("port", int)):
+                      ("preview_dpi", int), ("max_preview_pages", int), ("host", str), ("port", int),
+                      ("power_off_command", str), ("idle_stop_minutes", float)):
         if raw.get(key) is not None:
             setattr(cfg, key, cast(raw[key]))
 
@@ -99,7 +104,9 @@ def load_config(path: str | Path | None = None, environ: dict | None = None) -> 
                            ("RB_DEMO_KEEP_MINUTES", "keep_minutes", float),
                            ("RB_DEMO_TIMEOUT_S", "job_timeout_s", int),
                            ("RB_DEMO_MAX_UPLOAD_MB", "max_upload_mb", float),
-                           ("RB_DEMO_HOST", "host", str), ("RB_DEMO_PORT", "port", int)):
+                           ("RB_DEMO_HOST", "host", str), ("RB_DEMO_PORT", "port", int),
+                           ("RB_DEMO_POWER_OFF_COMMAND", "power_off_command", str),
+                           ("RB_DEMO_IDLE_STOP_MINUTES", "idle_stop_minutes", float)):
         if env.get(var):
             setattr(cfg, key, cast(env[var]))
     return cfg

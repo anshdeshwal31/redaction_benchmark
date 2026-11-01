@@ -9,6 +9,7 @@ import time
 from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, send_from_directory, url_for
 
 from . import jobs as J
+from . import power as P
 from . import results as R
 from .config import DemoConfig, load_config
 
@@ -38,6 +39,8 @@ def create_app(cfg: DemoConfig | None = None) -> Flask:
     queue = J.JobQueue(cfg)
     app.extensions["demo_queue"] = queue
     app.extensions["demo_config"] = cfg
+    power = P.Power(cfg.power_off_command, cfg.idle_stop_minutes, queue)
+    app.extensions["demo_power"] = power
     # Every form carries this value, so another site open in the same browser cannot post to the app.
     form_token = secrets.token_urlsafe(24)
     app.jinja_env.globals.update(form_token=form_token, duration=J.duration, ago=_ago, S=J)
@@ -56,6 +59,10 @@ def create_app(cfg: DemoConfig | None = None) -> Flask:
         if not 0 <= index < len(job.runs):
             abort(404)
         return job.runs[index]
+
+    @app.before_request
+    def count_use():
+        power.used()
 
     @app.after_request
     def headers(resp):
