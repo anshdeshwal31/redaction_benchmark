@@ -39,7 +39,7 @@ only when their dataset and policy match.</p>
 <div class="wrap"><table>
   <tr><th>Tool</th><th>Overall<br><span class="small mut">out of 100</span></th><th>Redaction quality<br><span class="small mut">weight {{ weights.quality }}%</span></th>
       <th>Accuracy<br><span class="small mut">weight {{ weights.accuracy }}%</span></th><th>Determinism<br><span class="small mut">weight {{ weights.determinism }}%</span></th>
-      <th>Time per document<br><span class="small mut">not scored</span></th></tr>
+      <th>Time{% if cfg.hourly_usd %} and cost{% endif %} per document<br><span class="small mut">not scored</span></th></tr>
   {% for o in overall %}
   <tr class="headline">
     <td>{{ o.label }}<br><span class="mut small">{{ o.candidate }} · {{ o.versions }}</span></td>
@@ -47,7 +47,7 @@ only when their dataset and policy match.</p>
     <td>{{ o.parts.quality }}<br><span class="small mut">{{ o.notes.quality }}</span></td>
     <td>{{ o.parts.accuracy }}<br><span class="small mut">{{ o.notes.accuracy }}</span></td>
     <td>{{ o.parts.determinism }}<br><span class="small mut">{{ o.notes.determinism }}</span></td>
-    <td>{% if o.time %}{{ duration(o.time.median) }}<br><span class="small mut">typical (median); {{ duration(o.time.min) }}
+    <td>{% if o.time %}{{ duration(o.time.median) }}{% if cost(o.time.median) %} · {{ cost(o.time.median) }}{% endif %}<br><span class="small mut">typical (median); {{ duration(o.time.min) }}
         to {{ duration(o.time.max) }} over {{ o.time.documents }} document runs</span>{% else %}<span class="mut">not recorded</span>{% endif %}</td>
   </tr>
   {% endfor %}
@@ -63,7 +63,11 @@ only when their dataset and policy match.</p>
   under it, but does not count towards the score.</li>
   <li><b>Time per document</b> is shown for comparison and is not part of the score: the wall-clock time the tool
   took on each of the benchmark's documents (1 to 2 pages each), on this server, one tool at a time. A longer
-  document takes longer; the time each of your own uploads took is on its job page.</li>
+  document takes longer; the time each of your own uploads took is on its job page.{% if cfg.hourly_usd %} The cost is
+  the server's price, US${{ '%.2f'|format(cfg.hourly_usd) }} an hour{% if cfg.price_note %} ({{ cfg.price_note }}){% endif %},
+  times that time. Both tools run on the same server; Tool 2 uses only its processors, while PrivateGPT's language model
+  needs its graphics card. The server costs the same per hour while it waits, so the bill depends on how long it is
+  switched on more than on how many documents it redacts.{% endif %}</li>
 </ul>
 <p class="small mut">The weights are this page's choice, not part of the benchmark. Runs used:
 {% for o in overall %}{{ o.candidate }}: {{ o.runs }}{% if not loop.last %}; {% endif %}{% endfor %}.</p>

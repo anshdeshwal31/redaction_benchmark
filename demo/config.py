@@ -12,6 +12,11 @@ variables, which win. Relative paths are taken from the benchmark repository roo
 | job_timeout_s | RB_DEMO_TIMEOUT_S | 1800 |
 | max_upload_mb | RB_DEMO_MAX_UPLOAD_MB | 50 |
 | host, port | RB_DEMO_HOST, RB_DEMO_PORT | 127.0.0.1, 8765 |
+| hourly_usd | RB_DEMO_HOURLY_USD | none: no cost is shown |
+| price_note | RB_DEMO_PRICE_NOTE | empty |
+
+``hourly_usd`` is what the machine the demo runs on costs per hour, in US dollars; each tool's cost is that price
+times the time the tool ran. ``price_note`` says where the price comes from (machine, region, date).
 """
 
 from __future__ import annotations
@@ -51,6 +56,8 @@ class DemoConfig:
     max_preview_pages: int = 30
     host: str = "127.0.0.1"
     port: int = 8765
+    hourly_usd: float | None = None
+    price_note: str = ""
 
 
 def _path(value: str | Path) -> Path:
@@ -81,7 +88,8 @@ def load_config(path: str | Path | None = None, environ: dict | None = None) -> 
         if raw.get(key):
             setattr(cfg, key, _path(raw[key]))
     for key, cast in (("keep_minutes", float), ("job_timeout_s", int), ("max_upload_mb", float),
-                      ("preview_dpi", int), ("max_preview_pages", int), ("host", str), ("port", int)):
+                      ("preview_dpi", int), ("max_preview_pages", int), ("host", str), ("port", int),
+                      ("hourly_usd", float), ("price_note", str)):
         if raw.get(key) is not None:
             setattr(cfg, key, cast(raw[key]))
 
@@ -99,7 +107,8 @@ def load_config(path: str | Path | None = None, environ: dict | None = None) -> 
                            ("RB_DEMO_KEEP_MINUTES", "keep_minutes", float),
                            ("RB_DEMO_TIMEOUT_S", "job_timeout_s", int),
                            ("RB_DEMO_MAX_UPLOAD_MB", "max_upload_mb", float),
-                           ("RB_DEMO_HOST", "host", str), ("RB_DEMO_PORT", "port", int)):
+                           ("RB_DEMO_HOST", "host", str), ("RB_DEMO_PORT", "port", int),
+                           ("RB_DEMO_HOURLY_USD", "hourly_usd", float), ("RB_DEMO_PRICE_NOTE", "price_note", str)):
         if env.get(var):
             setattr(cfg, key, cast(env[var]))
     return cfg
