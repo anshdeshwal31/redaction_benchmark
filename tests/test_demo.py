@@ -552,6 +552,45 @@ def test_opening_a_page_counts_as_use_and_nothing_about_it_is_shown(make_app):
     assert client.get("/server/status.json").status_code == 404
 
 
+def test_the_front_passes_requests_on_and_says_when_the_demo_is_off(make_app, pdf):
+    import http.client
+    import threading
+    from werkzeug.serving import make_server
+    from demo import gate
+
+    app, queue, client, token = make_app([(STANDIN, "Text tool (stand-in)")])
+    demo = make_server("127.0.0.1", 0, app, threaded=True)
+    threading.Thread(target=demo.serve_forever, daemon=True).start()
+    front = gate.serve(0, ("127.0.0.1", demo.server_port))
+    threading.Thread(target=front.serve_forever, daemon=True).start()
+
+    def get(method, path, body=None, headers=None):
+        c = http.client.HTTPConnection("127.0.0.1", front.server_port, timeout=30)
+        c.request(method, path, body=body, headers=headers or {})
+        r = c.getresponse()
+        return r.status, dict(r.getheaders()), r.read()
+
+    try:
+        status, headers, body = get("GET", "/")
+        assert status == 200 and b"Upload and run" in body and headers["Content-Security-Policy"]
+        # An upload goes through and redirects to its job page, as without the front.
+        boundary = "x7Kq"
+        form = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\n{token}\r\n"
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"pdf\"; filename=\"a.pdf\"\r\n"
+                f"Content-Type: application/pdf\r\n\r\n").encode() + pdf + f"\r\n--{boundary}--\r\n".encode()
+        status, headers, _ = get("POST", "/upload", form, {"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        assert status == 303 and headers["Location"].endswith(queue.jobs[next(iter(queue.jobs))].id)
+        assert get("GET", "/jobs/0123")[0] == 404
+    finally:
+        demo.shutdown()
+    # With the demo off, every page says so, and nothing about why.
+    for method in ("GET", "POST"):
+        status, headers, body = get(method, "/benchmark")
+        assert status == 503 and b"The demo is not available right now." in body
+        assert not any(w in body.lower() for w in (b"server", b"aws", b"ec2", b"tunnel", b"proxy", b"gateway"))
+    front.shutdown()
+
+
 def test_config_file_and_environment(tmp_path):
     f = tmp_path / "demo.yaml"
     f.write_text("candidates:\n  - manifest: candidates/mock-reference.yaml\n    label: Mock\n    note: >-\n"

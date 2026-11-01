@@ -129,6 +129,24 @@ ssh -N -L 8765:127.0.0.1:8765 you@gpu-server
 and open <http://localhost:8765>. The app has no login: do not bind it to another address (`--host 0.0.0.0`)
 unless the network is private, and the app warns when you do.
 
+## A server that switches itself off
+
+On a paid server, set `RB_DEMO_POWER_OFF_COMMAND` and `RB_DEMO_IDLE_STOP_MINUTES` (for example
+`sudo -n /usr/sbin/shutdown -h now` and `15` on an AWS instance whose shutdown behaviour is "stop"). After that many
+minutes with no job running or waiting and no page opened, the demo stops any running tool, deletes the job folders
+and runs the command. Nothing about it is shown on the pages, and there is no button to start or stop the server:
+whoever runs the demo switches the server on.
+
+For a public address that keeps working while the server is off, run the front on the machine that holds the
+tunnel, and point the public address (for example a Cloudflare tunnel) at it instead of at the tunnel:
+
+```bash
+python -m demo.gate --port 8790 --upstream 127.0.0.1:8765   # the local end of the SSH tunnel
+```
+
+It passes every request on unchanged, and when the demo cannot be reached it shows "The demo is not available right
+now" instead of a proxy's error page. It uses the standard library only.
+
 ## What happens to an upload
 
 - The file is checked (a PDF that opens, not password-protected, within the size limit) and saved as `input.pdf`
