@@ -70,8 +70,12 @@ dl dd { margin: 2px 0 0 0; }
   <a href="{{ url_for('index') }}" {% if request.endpoint in ('index', 'upload', 'job_page') %}class="on"{% endif %}>Try a document</a>
   <a href="{{ url_for('benchmark') }}" {% if request.endpoint == 'benchmark' %}class="on"{% endif %}>Benchmark results</a>
 </header>
+{# Cloudflare's email obfuscation (when the demo is served through a Cloudflare tunnel) would rewrite version
+   labels such as synthetic@0.1.0 as "[email protected]"; these markers switch it off for the page. #}
+<!--email_off-->
 <main>
 {% block body %}{% endblock %}
 </main>
+<!--/email_off-->
 </body>
 </html>

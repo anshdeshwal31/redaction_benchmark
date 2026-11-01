@@ -493,6 +493,8 @@ def test_the_overall_score_weighs_quality_accuracy_and_determinism(make_app, tmp
     assert "Overall score" in page and ">70.0<" in page.replace(" <", "<")
     assert "Overall = 50% &times; redaction quality + 30% &times; accuracy + 20% &times; determinism" in page
     assert "1 of 6 required items changed verdict across 3 identical runs" in page
+    # Served through a Cloudflare tunnel, labels such as synthetic@0.0.1 must not be rewritten as email addresses.
+    assert page.index("<!--email_off-->") < page.index("synthetic@0.0.1") < page.index("<!--/email_off-->")
 
 
 def test_config_file_and_environment(tmp_path):
