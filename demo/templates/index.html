@@ -15,9 +15,6 @@ exactly as the benchmark calls it. The file's own name is not kept.</p>
   <p class="mut small">Up to {{ cfg.max_upload_mb|round|int }} MB. Jobs run one at a time; a tool still running after
   {{ duration(cfg.job_timeout_s) }} is stopped. The upload and every output are deleted {{ cfg.keep_minutes|round|int }} minutes
   after the job finishes, when you press Delete, or when the app stops (a running tool is stopped first) or restarts.</p>
-  {% if cfg.hourly_usd %}<p class="mut small">The server costs US${{ '%.2f'|format(cfg.hourly_usd) }} an hour while it is
-  switched on{% if cfg.price_note %} ({{ cfg.price_note }}){% endif %}, busy or not. Each job shows what each tool's
-  share cost: that price times the time the tool ran.</p>{% endif %}
 </div>
 
 <h2>Tools</h2>

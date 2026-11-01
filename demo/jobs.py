@@ -494,15 +494,6 @@ def purge_leftovers(work_dir: Path) -> int:
     return n
 
 
-def cost(seconds: float | None, hourly_usd: float | None) -> str:
-    """What ``seconds`` of the demo machine's time cost at ``hourly_usd`` (``US$0.011``); empty when either is unknown.
-    US dollars are named, because the client is not in the US."""
-    if seconds is None or not hourly_usd:
-        return ""
-    usd = seconds / 3600 * hourly_usd
-    return "under US$0.001" if usd < 0.0005 else f"US${usd:.3f}"
-
-
 def duration(seconds: float) -> str:
     seconds = int(round(seconds))
     if seconds < 60:

@@ -504,38 +504,14 @@ def test_the_overall_score_weighs_quality_accuracy_and_determinism(make_app, tmp
     assert n["score"] is None and n["notes"]["determinism"] == "not measured: no repeated run"
 
     monkeypatch.setenv("RB_RESULTS_DIR", str(results))
-    app, queue, client, token = make_app([], hourly_usd=3.6, price_note="a test machine")
+    app, queue, client, token = make_app([])
     page = " ".join(client.get("/benchmark").get_data(as_text=True).split())
-    # The cost of a typical document is the machine's hourly price times its time: 32 s at US$3.60 an hour.
-    assert "32s · US$0.032<br>" in page.replace(" <", "<") and "Time and cost per document" in page
-    assert "US$3.60 an hour (a test machine)" in page
-    assert "US$" not in " ".join(make_app([])[2].get("/benchmark").get_data(as_text=True).split())
     assert "Overall score" in page and ">68.3<" in page.replace(" <", "<")
     assert "Overall = 70% &times; redaction quality + 20% &times; accuracy + 10% &times; determinism" in page
     assert "1 of 6 required items changed verdict across 3 identical runs" in page
-    assert "30s to 50s over 5 document runs" in page
+    assert "Time per document" in page and "32s<br>" in page.replace(" <", "<") and "30s to 50s over 5 document runs" in page
     # Served through a Cloudflare tunnel, labels such as synthetic@0.0.1 must not be rewritten as email addresses.
     assert page.index("<!--email_off-->") < page.index("synthetic@0.0.1") < page.index("<!--/email_off-->")
-
-
-def test_each_tool_shows_what_its_server_time_cost(make_app, pdf):
-    assert J.cost(32, 3.6) == "US$0.032" and J.cost(None, 3.6) == J.cost(32, None) == ""
-    assert J.cost(0.3, 3.6) == "under US$0.001"
-    app, queue, client, token = make_app([(STANDIN, "Text tool (stand-in)")], hourly_usd=1.1739,
-                                         price_note="a g6.2xlarge")
-    assert "The server costs US$1.17 an hour while it is switched on (a g6.2xlarge)" in " ".join(
-        client.get("/").get_data(as_text=True).split())
-    job = _job(queue, _upload(client, token, pdf))
-    _wait(job)
-    page = " ".join(client.get(f"/jobs/{job.id}").get_data(as_text=True).split())
-    assert f"took {J.duration(job.runs[0].elapsed)} · {J.cost(job.runs[0].elapsed, 1.1739)} of server time" in page
-    assert "US$1.17 an hour (a g6.2xlarge), times the time the tool ran" in page
-    # Without a price, no cost is shown.
-    app, queue, client, token = make_app([(STANDIN, "Text tool (stand-in)")])
-    job = _job(queue, _upload(client, token, pdf))
-    _wait(job)
-    assert "US$" not in client.get(f"/jobs/{job.id}").get_data(as_text=True)
-    assert "US$" not in client.get("/").get_data(as_text=True)
 
 
 def test_config_file_and_environment(tmp_path):
@@ -560,9 +536,7 @@ def test_config_file_and_environment(tmp_path):
     default = load_config(environ={})
     assert [c.manifest.name for c in default.candidates] == ["mlredact-client.yaml", "privategpt-text.yaml"]
     assert "Check Now" in default.candidates[1].note and default.runs == []
-    assert default.host == "127.0.0.1" and default.hourly_usd is None
-    priced = load_config(f, environ={"RB_DEMO_HOURLY_USD": "1.1739", "RB_DEMO_PRICE_NOTE": "a g6.2xlarge"})
-    assert (priced.hourly_usd, priced.price_note) == (1.1739, "a g6.2xlarge")
+    assert default.host == "127.0.0.1"
     with pytest.raises(FileNotFoundError):
         load_config(tmp_path / "missing.yaml", environ={})
     assert sys.executable  # the stand-ins run on the benchmark's own interpreter ({python})

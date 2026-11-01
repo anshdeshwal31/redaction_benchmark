@@ -40,8 +40,7 @@ def create_app(cfg: DemoConfig | None = None) -> Flask:
     app.extensions["demo_config"] = cfg
     # Every form carries this value, so another site open in the same browser cannot post to the app.
     form_token = secrets.token_urlsafe(24)
-    app.jinja_env.globals.update(form_token=form_token, duration=J.duration, ago=_ago, S=J,
-                                 cost=lambda seconds: J.cost(seconds, cfg.hourly_usd))
+    app.jinja_env.globals.update(form_token=form_token, duration=J.duration, ago=_ago, S=J)
 
     def check_token():
         if not secrets.compare_digest(request.form.get("token", ""), form_token):
@@ -158,7 +157,7 @@ def create_app(cfg: DemoConfig | None = None) -> Flask:
         labels.update({s.name: s.label for s in queue.specs()})
         overall = R.overall([s.row for s in scored if s.row], labels)
         return render_template("benchmark.html", boards=boards, scored=scored, dirs=[d.name for d in cfg.results_dirs],
-                               summary=R.summary, only_runs=cfg.runs, overall=overall, cfg=cfg,
+                               summary=R.summary, only_runs=cfg.runs, overall=overall,
                                weights={k: round(100 * w) for k, w in R.WEIGHTS})
 
     @app.get("/benchmark/board/<int:folder>/<name>")
