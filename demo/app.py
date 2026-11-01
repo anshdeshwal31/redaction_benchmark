@@ -157,7 +157,8 @@ def create_app(cfg: DemoConfig | None = None) -> Flask:
         labels.update({s.name: s.label for s in queue.specs()})
         overall = R.overall([s.row for s in scored if s.row], labels)
         return render_template("benchmark.html", boards=boards, scored=scored, dirs=[d.name for d in cfg.results_dirs],
-                               summary=R.summary, only_runs=cfg.runs, overall=overall)
+                               summary=R.summary, only_runs=cfg.runs, overall=overall,
+                               weights={k: round(100 * w) for k, w in R.WEIGHTS})
 
     @app.get("/benchmark/board/<int:folder>/<name>")
     def board(folder, name):

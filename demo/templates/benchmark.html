@@ -37,8 +37,8 @@ only when their dataset and policy match.</p>
 <h2>Overall score</h2>
 <div class="card">
 <div class="wrap"><table>
-  <tr><th>Tool</th><th>Overall<br><span class="small mut">out of 100</span></th><th>Redaction quality<br><span class="small mut">weight 50%</span></th>
-      <th>Accuracy<br><span class="small mut">weight 30%</span></th><th>Determinism<br><span class="small mut">weight 20%</span></th></tr>
+  <tr><th>Tool</th><th>Overall<br><span class="small mut">out of 100</span></th><th>Redaction quality<br><span class="small mut">weight {{ weights.quality }}%</span></th>
+      <th>Accuracy<br><span class="small mut">weight {{ weights.accuracy }}%</span></th><th>Determinism<br><span class="small mut">weight {{ weights.determinism }}%</span></th></tr>
   {% for o in overall %}
   <tr class="headline">
     <td>{{ o.label }}<br><span class="mut small">{{ o.candidate }} · {{ o.versions }}</span></td>
@@ -49,8 +49,8 @@ only when their dataset and policy match.</p>
   </tr>
   {% endfor %}
 </table></div>
-<p class="small"><b>How it is calculated.</b> Overall = 50% &times; redaction quality + 30% &times; accuracy + 20% &times;
-determinism, in that order of importance. Each part comes from the benchmark's own numbers further down this page:</p>
+<p class="small"><b>How it is calculated.</b> Overall = {{ weights.quality }}% &times; redaction quality + {{ weights.accuracy }}%
+&times; accuracy + {{ weights.determinism }}% &times; determinism, in that order of importance. Each part comes from the benchmark's own numbers further down this page:</p>
 <ul class="small">
   <li><b>Redaction quality</b>: the share of required items the tool protected, that is 100% minus "Required items
   leaked". For a tool graded on its text, this is on the items it handled, as in that column.</li>

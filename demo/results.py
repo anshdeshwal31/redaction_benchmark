@@ -183,9 +183,9 @@ def summary(row: dict) -> dict:
 
 # -- overall score ---------------------------------------------------------------------------------
 
-# The owner's priorities (2026-11-01): redaction quality first, then accuracy, then determinism. The weights are
-# the demo's choice, not the benchmark's; every part is read from the benchmark's own scorecard.
-WEIGHTS = (("quality", 0.5), ("accuracy", 0.3), ("determinism", 0.2))
+# The owner's priorities (2026-11-01): redaction quality first (70%), then accuracy, then determinism. The weights
+# are the demo's choice, not the benchmark's; every part is read from the benchmark's own scorecard.
+WEIGHTS = (("quality", 0.7), ("accuracy", 0.2), ("determinism", 0.1))
 
 
 def _headline_leak(row: dict) -> tuple[float | None, bool]:
@@ -197,7 +197,7 @@ def _headline_leak(row: dict) -> tuple[float | None, bool]:
 
 
 def overall(rows: list[dict], labels: dict[str, str] | None = None) -> list[dict]:
-    """One overall score per tool, out of 100: 50% redaction quality, 30% accuracy, 20% determinism.
+    """One overall score per tool, out of 100: 70% redaction quality, 20% accuracy, 10% determinism (``WEIGHTS``).
 
     - quality: 1 - the headline leak rate of the tool's end-to-end run;
     - accuracy: 1 - its over-redaction (ordinary words damaged or removed);

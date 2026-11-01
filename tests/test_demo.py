@@ -475,8 +475,8 @@ def test_the_overall_score_weighs_quality_accuracy_and_determinism(make_app, tmp
     _repeated_run(results)
     e2e, det = (board_mod.scorecard([FolderRun(results / r)])[0] for r in ("x-e2e", "x-det"))
     (o,) = R.overall([e2e, det])
-    # 50% x (1 - 33.3% leaked) + 30% x (1 - 33.3% over-redaction) + 20% x (1 - 1/6 unstable) = 70.0
-    assert o["score"] == 70.0 and o["parts"] == {"quality": "66.7%", "accuracy": "66.7%", "determinism": "83.3%"}
+    # 70% x (1 - 33.3% leaked) + 20% x (1 - 33.3% over-redaction) + 10% x (1 - 1/6 unstable) = 68.3
+    assert o["score"] == 68.3 and o["parts"] == {"quality": "66.7%", "accuracy": "66.7%", "determinism": "83.3%"}
     assert o["runs"] == "x-e2e, x-det" and o["label"] == "tool-x"
     assert R.overall([e2e, det], {"tool-x": "Tool X (ours)"})[0]["label"] == "Tool X (ours)"
     assert o["notes"]["determinism"] == ("1 of 6 required items changed verdict across 3 identical runs; "
@@ -491,8 +491,8 @@ def test_the_overall_score_weighs_quality_accuracy_and_determinism(make_app, tmp
     monkeypatch.setenv("RB_RESULTS_DIR", str(results))
     app, queue, client, token = make_app([])
     page = " ".join(client.get("/benchmark").get_data(as_text=True).split())
-    assert "Overall score" in page and ">70.0<" in page.replace(" <", "<")
-    assert "Overall = 50% &times; redaction quality + 30% &times; accuracy + 20% &times; determinism" in page
+    assert "Overall score" in page and ">68.3<" in page.replace(" <", "<")
+    assert "Overall = 70% &times; redaction quality + 20% &times; accuracy + 10% &times; determinism" in page
     assert "1 of 6 required items changed verdict across 3 identical runs" in page
     # Served through a Cloudflare tunnel, labels such as synthetic@0.0.1 must not be rewritten as email addresses.
     assert page.index("<!--email_off-->") < page.index("synthetic@0.0.1") < page.index("<!--/email_off-->")
