@@ -70,6 +70,7 @@ class RunData:
                          and (m["status"] != "NOT_EVALUATED" or m["doc_id"] in text_docs)]
         self.words = [w for w in _rows(run_id, "words") if w["repeat"] == 0 and w["status"] != "NOT_EVALUATED"]
         self.determinism = _rows(run_id, "determinism")
+        self.stability = repeat_stability(_rows(run_id, "documents"), _rows(run_id, "mentions"))
         self.matters = _rows(run_id, "matters")
         self.label = f"{self.candidate} · {self.run.experiment.name}"
         scoring = results_root() / run_id / "scoring.json"
@@ -86,6 +87,33 @@ class RunData:
     def fail(self, mentions=None) -> float | None:
         ms = self.mentions if mentions is None else mentions
         return sum(m["status"] not in PASS for m in ms) / len(ms) if ms else None
+
+
+def repeat_stability(documents: list[dict], mentions: list[dict]) -> dict | None:
+    """How a run with several identical repeats (``experiments/determinism.yaml``) held up between them, read from its
+    scored tables so that it works for PDF- and text-graded tools alike (the ``determinism`` table compares output
+    PDFs only):
+
+    - ``same_output``: documents whose output (``output_sha256``) was identical in every repeat, and of how many;
+    - ``unstable``: required mentions whose verdict (``status``) was not the same in every repeat, and of how many.
+
+    None for a run with a single repeat. Mentions are counted as the scorecard counts them: required, and for a
+    PDF-graded document only where the scorer could judge them."""
+    if len({d.get("repeat") for d in documents}) < 2:
+        return None
+    text_docs = {d["doc_id"] for d in documents if d.get("evidence") == "text"}
+    outputs: dict = defaultdict(set)
+    for d in documents:
+        outputs[d["doc_id"]].add(d.get("output_sha256"))
+    verdicts: dict = defaultdict(set)
+    for m in mentions:
+        if m["requirement"] == "MUST" and (m["status"] != "NOT_EVALUATED" or m["doc_id"] in text_docs):
+            verdicts[(m["doc_id"], m["mention_id"])].add(m["status"])
+    return {
+        "repeats": len({d.get("repeat") for d in documents}),
+        "same_output": (sum(len(v) == 1 and None not in v for v in outputs.values()), len(outputs)),
+        "unstable": (sum(len(v) > 1 for v in verdicts.values()), len(verdicts)),
+    }
 
 
 def _ci(ci) -> str:
@@ -188,6 +216,7 @@ def scorecard(runs: list[RunData]) -> list[dict]:
                            if m.get("shared_pairs"))),
             "precision": tp / (tp + fp) if tp + fp else None, "recall": tp / len(must_w) if must_w else None,
             "flip": float(np.mean(flips)) if flips else None,
+            "stability": r.stability,
         })
     return rows
 

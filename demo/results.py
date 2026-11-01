@@ -17,7 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from benchmark.report import deviations
-from benchmark.report.board import RunData, scorecard
+from benchmark.report.board import RunData, repeat_stability, scorecard
 from benchmark.report.store import read_rows
 
 _TITLE = re.compile(r"<h1>(.*?)</h1>", re.S)
@@ -44,6 +44,7 @@ class FolderRun(RunData):
                          and (m["status"] != "NOT_EVALUATED" or m["doc_id"] in text_docs)]
         self.words = [w for w in read_rows(folder, "words") if w["repeat"] == 0 and w["status"] != "NOT_EVALUATED"]
         self.determinism = read_rows(folder, "determinism")
+        self.stability = repeat_stability(documents, read_rows(folder, "mentions"))
         self.matters = read_rows(folder, "matters")
         self.label = f"{self.candidate} · {self.run.experiment.name}"
         scoring = folder / "scoring.json"
@@ -178,3 +179,4 @@ def summary(row: dict) -> dict:
         "handled": row.get("n_completed"),
         "plumbing": "plumbing check" in version,
     }
+

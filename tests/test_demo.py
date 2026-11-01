@@ -431,6 +431,44 @@ def test_scored_runs_and_boards_show_the_benchmarks_own_numbers(make_app, tmp_pa
         assert client.get(bad).status_code == 404
 
 
+def _repeated_run(results: Path) -> None:
+    """``x-e2e`` (one repeat, ``_tables``) and ``x-det``, the same tool's repeated run: 3 identical repeats. d2's output
+    differs once, and d1's first item leaks in the last repeat, so 1 of its 6 counted items changes verdict."""
+    write_tables(results / "x-e2e" / "tables", _tables())
+    reps = {"documents": [], "mentions": [], "words": []}
+    for r in range(3):
+        base = _tables()
+        for d in base["documents"]:
+            d.update(repeat=r, experiment="determinism",
+                     output_sha256="a" if d["doc_id"] == "d1" else ("c" if r == 1 else "b"))
+        for m in base["mentions"]:
+            m.update(repeat=r, experiment="determinism")
+            if r == 2 and m["mention_id"] == "m0":
+                m["status"] = "LEAK_VISIBLE"
+        for w in base["words"]:
+            w.update(repeat=r, experiment="determinism")
+        for k in reps:
+            reps[k] += base[k]
+    write_tables(results / "x-det" / "tables", reps)
+    for run in ("x-e2e", "x-det"):
+        (results / run / "scoring.json").write_text(json.dumps({"policy_id": "au-medicolegal@1.2.0"}), encoding="utf-8")
+
+
+def test_repeated_runs_report_how_often_output_and_verdicts_agree(tmp_path, monkeypatch):
+    # Read from the scored tables, so it works for a text-graded tool too (the determinism table compares PDFs only).
+    results = tmp_path / "results"
+    _repeated_run(results)
+    e2e, det = (board_mod.scorecard([FolderRun(results / r)])[0] for r in ("x-e2e", "x-det"))
+    assert e2e["stability"] is None
+    assert det["stability"] == {"repeats": 3, "same_output": (1, 2), "unstable": (1, 6)}
+    assert board_mod.repeat_stability(*(_tables()[k] for k in ("documents", "mentions"))) is None
+    monkeypatch.setenv("RB_RESULTS_DIR", str(results))
+    monkeypatch.setattr(board_mod, "load_run", lambda run_id: SimpleNamespace(
+        candidate={"name": "tool-x", "version": "1.0"}, dataset={"name": "synthetic", "version": "0.0.1"},
+        experiment=SimpleNamespace(mode="e2e", name="determinism")))
+    assert board_mod.scorecard([board_mod.RunData("x-det")])[0]["stability"] == det["stability"]
+
+
 def test_config_file_and_environment(tmp_path):
     f = tmp_path / "demo.yaml"
     f.write_text("candidates:\n  - manifest: candidates/mock-reference.yaml\n    label: Mock\n    note: >-\n"
