@@ -211,7 +211,10 @@ def overall(rows: list[dict], labels: dict[str, str] | None = None) -> list[dict
 
     The end-to-end run is the tool's run with a single repeat in end-to-end mode; the repeated run is its run with
     the most repeats. A part that is missing leaves the overall score out, and says why. ``labels``: names to show
-    for the tools, by candidate name."""
+    for the tools, by candidate name.
+
+    ``time`` is the time per document (``scorecard``'s ``time``), shown next to the score but not part of it: from
+    the repeated run, which has the most documents, else from the end-to-end run."""
     tools: dict[str, dict] = {}
     for row in rows:
         if row.get("mode") != "e2e" or "plumbing check" in (row.get("version") or ""):
@@ -251,6 +254,7 @@ def overall(rows: list[dict], labels: dict[str, str] | None = None) -> list[dict
         out.append({
             "candidate": name, "label": (labels or {}).get(name, name), "score": score,
             "parts": {k: _pct(v) for k, v in parts.items()}, "notes": notes,
+            "time": next((r["time"] for r in (rep, e2e) if r is not None and r.get("time")), None),
             "runs": ", ".join(r["run"] for r in (e2e, rep) if r is not None),
             "versions": ", ".join(sorted({r.get("version") or "?" for r in (e2e, rep) if r is not None})),
         })

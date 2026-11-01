@@ -484,12 +484,15 @@ def test_repeated_runs_report_how_often_output_and_verdicts_agree(tmp_path, monk
 
 def test_the_overall_score_weighs_quality_accuracy_and_determinism(make_app, tmp_path, monkeypatch):
     results = tmp_path / "results"
+    monkeypatch.setenv("RB_RUNS_DIR", str(tmp_path / "runs"))
     _repeated_run(results)
     e2e, det = (board_mod.scorecard([FolderRun(results / r)])[0] for r in ("x-e2e", "x-det"))
     (o,) = R.overall([e2e, det])
     # 70% x (1 - 33.3% leaked) + 20% x (1 - 33.3% over-redaction) + 10% x (1 - 1/6 unstable) = 68.3
     assert o["score"] == 68.3 and o["parts"] == {"quality": "66.7%", "accuracy": "66.7%", "determinism": "83.3%"}
     assert o["runs"] == "x-e2e, x-det" and o["label"] == "tool-x"
+    # The time per document is shown beside the score, from the repeated run, and does not change it.
+    assert o["time"] == {"documents": 5, "median": 32.0, "min": 30.0, "max": 50.0}
     assert R.overall([e2e, det], {"tool-x": "Tool X (ours)"})[0]["label"] == "Tool X (ours)"
     assert o["notes"]["determinism"] == ("1 of 6 required items changed verdict across 3 identical runs; "
                                          "identical output every run on 1 of 2 documents")
@@ -506,6 +509,7 @@ def test_the_overall_score_weighs_quality_accuracy_and_determinism(make_app, tmp
     assert "Overall score" in page and ">68.3<" in page.replace(" <", "<")
     assert "Overall = 70% &times; redaction quality + 20% &times; accuracy + 10% &times; determinism" in page
     assert "1 of 6 required items changed verdict across 3 identical runs" in page
+    assert "Time per document" in page and "32s<br>" in page.replace(" <", "<") and "30s to 50s over 5 document runs" in page
     # Served through a Cloudflare tunnel, labels such as synthetic@0.0.1 must not be rewritten as email addresses.
     assert page.index("<!--email_off-->") < page.index("synthetic@0.0.1") < page.index("<!--/email_off-->")
 
