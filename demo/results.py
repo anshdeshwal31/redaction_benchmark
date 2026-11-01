@@ -196,7 +196,7 @@ def _headline_leak(row: dict) -> tuple[float | None, bool]:
     return row.get("leak"), False
 
 
-def overall(rows: list[dict]) -> list[dict]:
+def overall(rows: list[dict], labels: dict[str, str] | None = None) -> list[dict]:
     """One overall score per tool, out of 100: 50% redaction quality, 30% accuracy, 20% determinism.
 
     - quality: 1 - the headline leak rate of the tool's end-to-end run;
@@ -205,7 +205,8 @@ def overall(rows: list[dict]) -> list[dict]:
       tool's repeated run (``experiments/determinism.yaml``).
 
     The end-to-end run is the tool's run with a single repeat in end-to-end mode; the repeated run is its run with
-    the most repeats. A part that is missing leaves the overall score out, and says why."""
+    the most repeats. A part that is missing leaves the overall score out, and says why. ``labels``: names to show
+    for the tools, by candidate name."""
     tools: dict[str, dict] = {}
     for row in rows:
         if row.get("mode") != "e2e" or "plumbing check" in (row.get("version") or ""):
@@ -243,7 +244,7 @@ def overall(rows: list[dict]) -> list[dict]:
         score = (None if any(v is None for v in parts.values())
                  else round(100 * sum(parts[k] * w for k, w in WEIGHTS), 1))
         out.append({
-            "candidate": name, "score": score,
+            "candidate": name, "label": (labels or {}).get(name, name), "score": score,
             "parts": {k: _pct(v) for k, v in parts.items()}, "notes": notes,
             "runs": ", ".join(r["run"] for r in (e2e, rep) if r is not None),
             "versions": ", ".join(sorted({r.get("version") or "?" for r in (e2e, rep) if r is not None})),

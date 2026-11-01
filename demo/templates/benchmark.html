@@ -41,7 +41,7 @@ only when their dataset and policy match.</p>
       <th>Accuracy<br><span class="small mut">weight 30%</span></th><th>Determinism<br><span class="small mut">weight 20%</span></th></tr>
   {% for o in overall %}
   <tr class="headline">
-    <td>{{ o.candidate }}<br><span class="mut small">{{ o.versions }}</span></td>
+    <td>{{ o.label }}<br><span class="mut small">{{ o.candidate }} · {{ o.versions }}</span></td>
     <td class="score">{% if o.score is not none %}{{ o.score }}{% else %}<span class="mut">not available</span>{% endif %}</td>
     <td>{{ o.parts.quality }}<br><span class="small mut">{{ o.notes.quality }}</span></td>
     <td>{{ o.parts.accuracy }}<br><span class="small mut">{{ o.notes.accuracy }}</span></td>

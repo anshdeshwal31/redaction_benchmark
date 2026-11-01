@@ -477,7 +477,8 @@ def test_the_overall_score_weighs_quality_accuracy_and_determinism(make_app, tmp
     (o,) = R.overall([e2e, det])
     # 50% x (1 - 33.3% leaked) + 30% x (1 - 33.3% over-redaction) + 20% x (1 - 1/6 unstable) = 70.0
     assert o["score"] == 70.0 and o["parts"] == {"quality": "66.7%", "accuracy": "66.7%", "determinism": "83.3%"}
-    assert o["runs"] == "x-e2e, x-det"
+    assert o["runs"] == "x-e2e, x-det" and o["label"] == "tool-x"
+    assert R.overall([e2e, det], {"tool-x": "Tool X (ours)"})[0]["label"] == "Tool X (ours)"
     assert o["notes"]["determinism"] == ("1 of 6 required items changed verdict across 3 identical runs; "
                                          "identical output every run on 1 of 2 documents")
     # A text-graded tool's quality is on the items it handled, as in its headline.

@@ -152,7 +152,10 @@ def create_app(cfg: DemoConfig | None = None) -> Flask:
         boards = R.find_boards(cfg.results_dirs)
         scored = R.find_scored_runs(cfg.results_dirs, cfg.runs)
         # Folder names only: the page is shown to the client, and a full path names the machine's user and layout.
-        overall = R.overall([s.row for s in scored if s.row])
+        # The tools' names as the job pages show them (the demo's labels), and a plain name for the reference.
+        labels = {"mock-reference-replace": "Perfect reference (a stand-in)"}
+        labels.update({s.name: s.label for s in queue.specs()})
+        overall = R.overall([s.row for s in scored if s.row], labels)
         return render_template("benchmark.html", boards=boards, scored=scored, dirs=[d.name for d in cfg.results_dirs],
                                summary=R.summary, only_runs=cfg.runs, overall=overall)
 
