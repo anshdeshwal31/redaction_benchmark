@@ -383,7 +383,7 @@ def test_scored_runs_and_boards_show_the_benchmarks_own_numbers(make_app, tmp_pa
     monkeypatch.setenv("RB_RESULTS_DIR", str(results))
     monkeypatch.setattr(board_mod, "load_run", lambda run_id: SimpleNamespace(
         candidate={"name": "tool-x", "version": "1.0"}, dataset={"name": "synthetic", "version": "0.0.1"},
-        experiment=SimpleNamespace(mode="e2e", name="e2e")))
+        experiment=SimpleNamespace(mode="e2e", name="e2e"), items=[]))
     row = board_mod.scorecard([FolderRun(run)])[0]
     assert row == board_mod.scorecard([board_mod.RunData("x-e2e")])[0]
     assert row["n"] == 6 and row["evidence"] == "pdf+text" and row["clean"] == "1/2"  # d1's NOT_EVALUATED left out
@@ -451,6 +451,12 @@ def _repeated_run(results: Path) -> None:
         for k in reps:
             reps[k] += base[k]
     write_tables(results / "x-det" / "tables", reps)
+    # The time each document took is in the run's run.json, in the runs folder next to the results folder.
+    items = [{"doc_id": d, "repeat": r, "duration_s": s, "error": None}
+             for d, r, s in (("d1", 0, 30.0), ("d2", 0, 50.0), ("d1", 1, 31.0), ("d2", 1, 49.0), ("d1", 2, 32.0))]
+    items.append({"doc_id": "d2", "repeat": 2, "duration_s": 600.0, "error": "timed out after 600s"})
+    (results.parent / "runs" / "x-det").mkdir(parents=True)
+    (results.parent / "runs" / "x-det" / "run.json").write_text(json.dumps({"items": items}), encoding="utf-8")
     for run in ("x-e2e", "x-det"):
         (results / run / "scoring.json").write_text(json.dumps({"policy_id": "au-medicolegal@1.2.0"}), encoding="utf-8")
 
@@ -458,16 +464,22 @@ def _repeated_run(results: Path) -> None:
 def test_repeated_runs_report_how_often_output_and_verdicts_agree(tmp_path, monkeypatch):
     # Read from the scored tables, so it works for a text-graded tool too (the determinism table compares PDFs only).
     results = tmp_path / "results"
+    monkeypatch.setenv("RB_RUNS_DIR", str(tmp_path / "runs"))
     _repeated_run(results)
     e2e, det = (board_mod.scorecard([FolderRun(results / r)])[0] for r in ("x-e2e", "x-det"))
     assert e2e["stability"] is None
     assert det["stability"] == {"repeats": 3, "same_output": (1, 2), "unstable": (1, 6)}
+    # Time per document: from run.json when the run is in the runs folder; the item that timed out is left out.
+    assert e2e["time"] is None and det["time"] == {"documents": 5, "median": 32.0, "min": 30.0, "max": 50.0}
     assert board_mod.repeat_stability(*(_tables()[k] for k in ("documents", "mentions"))) is None
     monkeypatch.setenv("RB_RESULTS_DIR", str(results))
     monkeypatch.setattr(board_mod, "load_run", lambda run_id: SimpleNamespace(
         candidate={"name": "tool-x", "version": "1.0"}, dataset={"name": "synthetic", "version": "0.0.1"},
-        experiment=SimpleNamespace(mode="e2e", name="determinism")))
-    assert board_mod.scorecard([board_mod.RunData("x-det")])[0]["stability"] == det["stability"]
+        experiment=SimpleNamespace(mode="e2e", name="determinism"),
+        items=[SimpleNamespace(model_dump=lambda i=i: i) for i in json.loads(
+            (tmp_path / "runs" / "x-det" / "run.json").read_text(encoding="utf-8"))["items"]]))
+    row = board_mod.scorecard([board_mod.RunData("x-det")])[0]
+    assert row["stability"] == det["stability"] and row["time"] == det["time"]
 
 
 def test_the_overall_score_weighs_quality_accuracy_and_determinism(make_app, tmp_path, monkeypatch):

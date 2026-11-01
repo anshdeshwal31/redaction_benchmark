@@ -17,16 +17,18 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from benchmark.report import deviations
-from benchmark.report.board import RunData, repeat_stability, scorecard
+from benchmark.report.board import RunData, repeat_stability, scorecard, time_per_document
 from benchmark.report.store import read_rows
+from benchmark.runner.runner import runs_root
 
 _TITLE = re.compile(r"<h1>(.*?)</h1>", re.S)
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.html$")
 
 
 class FolderRun(RunData):
-    """A scored run read from its results folder alone. ``RunData`` also reads the run's ``run.json``
-    from the runs folder, for the names its tables already hold; the rows kept are the same."""
+    """A scored run read from its results folder. ``RunData`` also reads the run's ``run.json`` from the runs
+    folder, for the names its tables already hold; the rows kept are the same. The time each document took is only
+    in ``run.json``: it is read from the runs folder when the run is there, and left out otherwise."""
 
     def __init__(self, folder: Path):  # noqa: D107 - mirrors RunData.__init__ without run.json
         self.run_id = folder.name
@@ -45,6 +47,9 @@ class FolderRun(RunData):
         self.words = [w for w in read_rows(folder, "words") if w["repeat"] == 0 and w["status"] != "NOT_EVALUATED"]
         self.determinism = read_rows(folder, "determinism")
         self.stability = repeat_stability(documents, read_rows(folder, "mentions"))
+        run_json = runs_root() / self.run_id / "run.json"
+        self.time = (time_per_document(json.loads(run_json.read_text(encoding="utf-8")).get("items") or [])
+                     if run_json.is_file() else None)
         self.matters = read_rows(folder, "matters")
         self.label = f"{self.candidate} · {self.run.experiment.name}"
         scoring = folder / "scoring.json"

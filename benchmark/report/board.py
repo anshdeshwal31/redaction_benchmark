@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import html
 import json
+import statistics
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -71,6 +72,7 @@ class RunData:
         self.words = [w for w in _rows(run_id, "words") if w["repeat"] == 0 and w["status"] != "NOT_EVALUATED"]
         self.determinism = _rows(run_id, "determinism")
         self.stability = repeat_stability(_rows(run_id, "documents"), _rows(run_id, "mentions"))
+        self.time = time_per_document([i.model_dump() for i in self.run.items])
         self.matters = _rows(run_id, "matters")
         self.label = f"{self.candidate} · {self.run.experiment.name}"
         scoring = results_root() / run_id / "scoring.json"
@@ -114,6 +116,15 @@ def repeat_stability(documents: list[dict], mentions: list[dict]) -> dict | None
         "same_output": (sum(len(v) == 1 and None not in v for v in outputs.values()), len(outputs)),
         "unstable": (sum(len(v) > 1 for v in verdicts.values()), len(verdicts)),
     }
+
+
+def time_per_document(items: list[dict]) -> dict | None:
+    """How long the tool took per document, in seconds of wall-clock time, from the items of the run's ``run.json``:
+    each repeat of each document that ran without error counts once. None when no time was recorded."""
+    secs = sorted(float(i["duration_s"]) for i in items if i.get("duration_s") is not None and not i.get("error"))
+    if not secs:
+        return None
+    return {"documents": len(secs), "median": statistics.median(secs), "min": secs[0], "max": secs[-1]}
 
 
 def _ci(ci) -> str:
@@ -217,6 +228,7 @@ def scorecard(runs: list[RunData]) -> list[dict]:
             "precision": tp / (tp + fp) if tp + fp else None, "recall": tp / len(must_w) if must_w else None,
             "flip": float(np.mean(flips)) if flips else None,
             "stability": r.stability,
+            "time": r.time,
         })
     return rows
 
